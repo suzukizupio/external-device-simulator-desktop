@@ -5,7 +5,8 @@
   "main": "main.js",
   "license": "UNLICENSED",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node test/locker2.test.js && node test/locker4.test.js && node test/noncontact-key.test.js"
   },
   "dependencies": {
     "serialport": "^12.0.0"
