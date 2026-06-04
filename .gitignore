@@ -1,0 +1,13 @@
+# 依存パッケージ
+node_modules/
+
+# ビルド成果物
+dist/
+out/
+build/
+
+# ログ・一時ファイル
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

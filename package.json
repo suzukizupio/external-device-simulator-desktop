@@ -1,0 +1,16 @@
+{
+  "name": "gaibu-giji-simulator",
+  "version": "0.1.0",
+  "description": "集合システム外部擬似装置 デスクトップ版 (Electron + node-serialport)",
+  "main": "main.js",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "serialport": "^12.0.0"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}

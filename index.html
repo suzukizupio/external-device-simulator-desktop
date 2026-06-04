@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>外部擬似装置 — 通信ターミナル (デスクトップ版)</title>
+<style>
+  :root{
+    --bg:#1e1e1e; --panel:#252526; --border:#3c3c3c; --fg:#d4d4d4;
+    --muted:#858585; --accent:#1177bb; --accent2:#0e639c;
+    --tx:#4fc1ff; --rx:#4ec9b0; --info:#858585; --err:#f48771; --warn:#dcdcaa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:"Segoe UI","Yu Gothic UI",Meiryo,sans-serif;font-size:13px}
+  header{padding:10px 16px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:12px}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  header .ver{color:var(--muted);font-size:11px}
+  .badge{margin-left:auto;font-size:11px;padding:3px 8px;border-radius:10px}
+  .badge.ok{background:#143d2b;color:#4ec9b0}
+  .badge.ng{background:#4a1f1a;color:#f48771}
+  main{padding:14px;display:flex;flex-direction:column;gap:12px;max-width:1100px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:12px}
+  .panel h2{font-size:12px;margin:0 0 10px;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  label.field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
+  select,input[type=text]{background:#1e1e1e;color:var(--fg);
+    border:1px solid var(--border);border-radius:4px;padding:5px 7px;font-size:13px;
+    font-family:Consolas,"Courier New",monospace}
+  input[type=text]{min-width:220px}
+  select#port{min-width:240px}
+  button{background:var(--accent2);color:#fff;border:none;border-radius:4px;
+    padding:6px 14px;font-size:13px;cursor:pointer}
+  button:hover{background:var(--accent)}
+  button:disabled{background:#3a3a3a;color:#777;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--border);color:var(--fg)}
+  button.ghost:hover{background:#2d2d30}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;user-select:none}
+  .chk input{cursor:pointer}
+  .pill{font-size:11px;padding:4px 9px;border:1px solid var(--border);
+    border-radius:12px;background:#2d2d30;cursor:pointer}
+  .pill:hover{border-color:var(--accent)}
+  .sep{width:1px;align-self:stretch;background:var(--border);margin:0 2px}
+  .status{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+  .dot{width:9px;height:9px;border-radius:50%;background:#777}
+  .dot.on{background:#4ec9b0;box-shadow:0 0 6px #4ec9b0}
+  #log{background:#141414;border:1px solid var(--border);border-radius:4px;
+    height:360px;overflow:auto;padding:8px 10px;
+    font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6}
+  .le{white-space:pre-wrap;word-break:break-all}
+  .le .ts{color:#6a6a6a}
+  .le .dir{font-weight:bold;margin:0 6px}
+  .le.tx .dir{color:var(--tx)} .le.rx .dir{color:var(--rx)}
+  .le.info{color:var(--info)} .le.err{color:var(--err)} .le.warn{color:var(--warn)}
+  .le .asc{color:#c8c8c8}
+  .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+  .hint{font-size:11px;color:var(--muted);margin-top:6px}
+  code{background:#333;padding:1px 5px;border-radius:3px;font-size:11px}
+  details{margin-top:4px}
+  summary{cursor:pointer;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>外部擬似装置 — 通信ターミナル</h1>
+  <span class="ver">デスクトップ版 / Electron + serialport</span>
+  <button onclick="location.href='locker4.html'">宅配4線式画面 →</button>
+  <span id="apiBadge" class="badge ng">初期化中…</span>
+</header>
+
+<main>
+  <!-- 接続設定 -->
+  <section class="panel">
+    <h2>接続設定（シリアルポート）</h2>
+    <div class="row">
+      <label class="field">ポート
+        <select id="port"><option value="">（更新を押してください）</option></select>
+      </label>
+      <button id="btnRefresh" class="ghost">更新</button>
+      <div class="sep"></div>
+      <label class="field">ボーレート
+        <select id="baud">
+          <option>1200</option><option>2400</option><option>4800</option>
+          <option selected>9600</option><option>19200</option><option>38400</option>
+          <option>57600</option><option>115200</option>
+        </select>
+      </label>
+      <label class="field">データビット
+        <select id="data"><option>7</option><option selected>8</option></select>
+      </label>
+      <label class="field">パリティ
+        <select id="parity">
+          <option value="none">なし (N)</option>
+          <option value="even" selected>偶数 (E)</option>
+          <option value="odd">奇数 (O)</option>
+        </select>
+      </label>
+      <label class="field">ストップビット
+        <select id="stop"><option>1</option><option selected>2</option></select>
+      </label>
+      <label class="field">フロー制御
+        <select id="flow">
+          <option value="none" selected>なし</option>
+          <option value="hardware">ハードウェア(RTS/CTS)</option>
+        </select>
+      </label>
+      <div class="sep"></div>
+      <button id="btnConnect">接続</button>
+      <button id="btnDisconnect" class="ghost" disabled>切断</button>
+      <span class="status"><span id="dot" class="dot"></span><span id="statusText">未接続</span></span>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span style="font-size:11px;color:var(--muted)">実機由来プリセット:</span>
+      <span class="pill" data-set="9600,even,8,1">9600,E,8,1</span>
+      <span class="pill" data-set="9600,even,8,2">9600,E,8,2</span>
+      <span class="pill" data-set="9600,none,8,2">9600,N,8,2</span>
+      <span class="pill" data-set="9600,odd,8,2">9600,O,8,2</span>
+      <span class="pill" data-set="4800,even,8,1">4800,E,8,1</span>
+    </div>
+  </section>
+
+  <!-- 送信 -->
+  <section class="panel">
+    <h2>送信</h2>
+    <div class="row">
+      <label class="field">入力モード
+        <select id="mode">
+          <option value="hex" selected>HEX（16進）</option>
+          <option value="ascii">ASCII（半角文字）</option>
+        </select>
+      </label>
+      <label class="field" style="flex:1;min-width:260px">データ
+        <input type="text" id="payload" placeholder="例: 41 42 43  または  ABC" style="width:100%">
+      </label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span class="chk"><input type="checkbox" id="addSTX" checked><label for="addSTX">STX(02)付与</label></span>
+      <span class="chk"><input type="checkbox" id="addETX" checked><label for="addETX">ETX(03)付与</label></span>
+      <span class="chk"><input type="checkbox" id="addBCC" checked><label for="addBCC">BCC付与</label></span>
+      <label class="field">BCC方式
+        <select id="bccMethod"><option value="xor" selected>XOR</option><option value="sum">加算(SUM)</option></select>
+      </label>
+      <span class="chk"><input type="checkbox" id="errBCC"><label for="errBCC" style="color:var(--err)">BCC誤り注入</label></span>
+      <div class="sep"></div>
+      <button id="btnSend" disabled>送信</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span style="font-size:11px;color:var(--muted)">クイック送信(生1バイト):</span>
+      <button class="ghost" data-byte="5" disabled>ENQ(05)</button>
+      <button class="ghost" data-byte="6" disabled>ACK(06)</button>
+      <button class="ghost" data-byte="21" disabled>NAK(15)</button>
+      <button class="ghost" data-byte="4" disabled>EOT(04)</button>
+    </div>
+    <div class="hint">
+      BCC計算範囲は暫定で <code>STX除外・ETXを含む</code> 全バイトの XOR/加算 です。
+      実機仕様の確定後に <code>renderer.js</code> の <code>calcBCC()</code> を調整してください。
+    </div>
+  </section>
+
+  <!-- ログ -->
+  <section class="panel">
+    <h2>通信ログ</h2>
+    <div class="toolbar">
+      <span class="chk"><input type="checkbox" id="autoscroll" checked><label for="autoscroll">自動スクロール</label></span>
+      <span class="chk"><input type="checkbox" id="showAscii" checked><label for="showAscii">ASCII併記</label></span>
+      <div class="sep"></div>
+      <button class="ghost" id="btnClear">クリア</button>
+      <button class="ghost" id="btnSave">ログ保存(.txt)</button>
+      <span id="counter" style="font-size:11px;color:var(--muted);margin-left:auto">0 件</span>
+    </div>
+    <div id="log"></div>
+    <details>
+      <summary>使い方 / 注意</summary>
+      <div class="hint">
+        ① 「更新」でポート一覧を取得し、対象ポート（USB-シリアル変換器も可）を選んで「接続」。<br>
+        ② 送信欄に HEX か 半角ASCII を入力。<code>STX/ETX/BCC</code> トグルでフレーミングを自動付加。<br>
+        ③ <code>BCC誤り注入</code>で異常系テスト。受信は16進＋ASCII（制御文字は ⟨STX⟩ 等）で表示。<br>
+        ④ 受信は届いたチャンク単位で表示します（STX〜ETXのフレーム再構成は次段階で実装）。
+      </div>
+    </details>
+  </section>
+</main>
+
+<script src="renderer.js"></script>
+</body>
+</html>
