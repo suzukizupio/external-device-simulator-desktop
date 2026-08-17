@@ -1,189 +1,264 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ja">
 <head>
-<meta charset="utf-8">
-<title>外部擬似装置 — 通信ターミナル (デスクトップ版)</title>
-<style>
-  :root{
-    --bg:#1e1e1e; --panel:#252526; --border:#3c3c3c; --fg:#d4d4d4;
-    --muted:#858585; --accent:#1177bb; --accent2:#0e639c;
-    --tx:#4fc1ff; --rx:#4ec9b0; --info:#858585; --err:#f48771; --warn:#dcdcaa;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-    font-family:"Segoe UI","Yu Gothic UI",Meiryo,sans-serif;font-size:13px}
-  header{padding:10px 16px;border-bottom:1px solid var(--border);
-    display:flex;align-items:center;gap:12px}
-  header h1{font-size:15px;margin:0;font-weight:600}
-  header .ver{color:var(--muted);font-size:11px}
-  .badge{margin-left:auto;font-size:11px;padding:3px 8px;border-radius:10px}
-  .badge.ok{background:#143d2b;color:#4ec9b0}
-  .badge.ng{background:#4a1f1a;color:#f48771}
-  main{padding:14px;display:flex;flex-direction:column;gap:12px;max-width:1100px;margin:0 auto}
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:12px}
-  .panel h2{font-size:12px;margin:0 0 10px;color:var(--muted);
-    text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-  label.field{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted)}
-  select,input[type=text]{background:#1e1e1e;color:var(--fg);
-    border:1px solid var(--border);border-radius:4px;padding:5px 7px;font-size:13px;
-    font-family:Consolas,"Courier New",monospace}
-  input[type=text]{min-width:220px}
-  select#port{min-width:240px}
-  button{background:var(--accent2);color:#fff;border:none;border-radius:4px;
-    padding:6px 14px;font-size:13px;cursor:pointer}
-  button:hover{background:var(--accent)}
-  button:disabled{background:#3a3a3a;color:#777;cursor:not-allowed}
-  button.ghost{background:transparent;border:1px solid var(--border);color:var(--fg)}
-  button.ghost:hover{background:#2d2d30}
-  .chk{display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;user-select:none}
-  .chk input{cursor:pointer}
-  .pill{font-size:11px;padding:4px 9px;border:1px solid var(--border);
-    border-radius:12px;background:#2d2d30;cursor:pointer}
-  .pill:hover{border-color:var(--accent)}
-  .sep{width:1px;align-self:stretch;background:var(--border);margin:0 2px}
-  .status{display:inline-flex;align-items:center;gap:6px;font-size:12px}
-  .dot{width:9px;height:9px;border-radius:50%;background:#777}
-  .dot.on{background:#4ec9b0;box-shadow:0 0 6px #4ec9b0}
-  #log{background:#141414;border:1px solid var(--border);border-radius:4px;
-    height:360px;overflow:auto;padding:8px 10px;
-    font-family:Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.6}
-  .le{white-space:pre-wrap;word-break:break-all}
-  .le .ts{color:#6a6a6a}
-  .le .dir{font-weight:bold;margin:0 6px}
-  .le.tx .dir{color:var(--tx)} .le.rx .dir{color:var(--rx)}
-  .le.info{color:var(--info)} .le.err{color:var(--err)} .le.warn{color:var(--warn)}
-  .le .asc{color:#c8c8c8}
-  .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-  .hint{font-size:11px;color:var(--muted);margin-top:6px}
-  code{background:#333;padding:1px 5px;border-radius:3px;font-size:11px}
-  details{margin-top:4px}
-  summary{cursor:pointer;color:var(--muted);font-size:12px}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>外部疑似装置 Next</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header>
-  <h1>外部擬似装置 — 通信ターミナル</h1>
-  <span class="ver">デスクトップ版 / Electron + serialport</span>
-  <button onclick="location.href='locker4.html'">宅配4線式 →</button>
-  <button onclick="location.href='locker2.html'">宅配2線式 →</button>
-  <button onclick="location.href='noncontact-key.html'">非接触キー →</button>
-  <span id="apiBadge" class="badge ng">初期化中…</span>
-</header>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">EXT</span>
+      <div><strong>外部疑似装置 Next</strong><small>通信仕様準拠シミュレータ</small></div>
+    </div>
+    <div class="connection-strip">
+      <select id="serialPort" aria-label="COMポート"><option value="">COMポートを選択</option></select>
+      <button id="refreshPorts" class="icon-button" title="ポート更新">↻</button>
+      <select id="serialPreset" aria-label="通信プリセット">
+        <option value="custom">カスタム</option>
+        <option value="locker" selected>宅配／MC 4800,E,8,1</option>
+        <option value="key">非接触キー 9600,E,8,1</option>
+        <option value="elevator">EV 1200,E,8,1</option>
+        <option value="alarm">警報 1200,E,8,1</option>
+      </select>
+      <button id="connectButton" class="primary">接続</button>
+      <button id="disconnectButton" class="secondary" disabled>切断</button>
+      <span class="connection-state"><i id="connectionDot"></i><span id="connectionText">未接続</span></span>
+    </div>
+  </header>
 
-<main>
-  <!-- 接続設定 -->
-  <section class="panel">
-    <h2>接続設定（シリアルポート）</h2>
-    <div class="row">
-      <label class="field">ポート
-        <select id="port"><option value="">（更新を押してください）</option></select>
-      </label>
-      <button id="btnRefresh" class="ghost">更新</button>
-      <div class="sep"></div>
-      <label class="field">ボーレート
-        <select id="baud">
-          <option>1200</option><option>2400</option><option>4800</option>
-          <option selected>9600</option><option>19200</option><option>38400</option>
-          <option>57600</option><option>115200</option>
-        </select>
-      </label>
-      <label class="field">データビット
-        <select id="data"><option>7</option><option selected>8</option></select>
-      </label>
-      <label class="field">パリティ
-        <select id="parity">
-          <option value="none">なし (N)</option>
-          <option value="even" selected>偶数 (E)</option>
-          <option value="odd">奇数 (O)</option>
-        </select>
-      </label>
-      <label class="field">ストップビット
-        <select id="stop"><option>1</option><option selected>2</option></select>
-      </label>
-      <label class="field">フロー制御
-        <select id="flow">
-          <option value="none" selected>なし</option>
-          <option value="hardware">ハードウェア(RTS/CTS)</option>
-        </select>
-      </label>
-      <div class="sep"></div>
-      <button id="btnConnect">接続</button>
-      <button id="btnDisconnect" class="ghost" disabled>切断</button>
-      <span class="status"><span id="dot" class="dot"></span><span id="statusText">未接続</span></span>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <span style="font-size:11px;color:var(--muted)">実機由来プリセット:</span>
-      <span class="pill" data-set="9600,even,8,1">9600,E,8,1</span>
-      <span class="pill" data-set="9600,even,8,2">9600,E,8,2</span>
-      <span class="pill" data-set="9600,none,8,2">9600,N,8,2</span>
-      <span class="pill" data-set="9600,odd,8,2">9600,O,8,2</span>
-      <span class="pill" data-set="4800,even,8,1">4800,E,8,1</span>
-    </div>
-  </section>
+  <div class="layout">
+    <nav class="sidebar" aria-label="機能一覧">
+      <button class="nav-item active" data-view="overview"><span>⌂</span>概要</button>
+      <button class="nav-item" data-view="terminal"><span>⌁</span>汎用ターミナル</button>
+      <p>宅配・入退館</p>
+      <button class="nav-item" data-view="locker4"><span>4</span>宅配 4線式</button>
+      <button class="nav-item" data-view="locker2"><span>2</span>宅配 2線式</button>
+      <button class="nav-item" data-view="key"><span>K</span>非接触キー</button>
+      <p>設備連動</p>
+      <button class="nav-item" data-view="mansion"><span>M</span>マンション制御</button>
+      <button class="nav-item" data-view="elevator"><span>E</span>エレベータ</button>
+      <button class="nav-item" data-view="alarm"><span>A</span>警報発信装置</button>
+      <p>試験</p>
+      <button class="nav-item" data-view="faults"><span>!</span>異常注入</button>
+      <button class="nav-item" data-view="settings"><span>⚙</span>通信設定</button>
+    </nav>
 
-  <!-- 送信 -->
-  <section class="panel">
-    <h2>送信</h2>
-    <div class="row">
-      <label class="field">入力モード
-        <select id="mode">
-          <option value="hex" selected>HEX（16進）</option>
-          <option value="ascii">ASCII（半角文字）</option>
-        </select>
-      </label>
-      <label class="field" style="flex:1;min-width:260px">データ
-        <input type="text" id="payload" placeholder="例: 41 42 43  または  ABC" style="width:100%">
-      </label>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <span class="chk"><input type="checkbox" id="addSTX" checked><label for="addSTX">STX(02)付与</label></span>
-      <span class="chk"><input type="checkbox" id="addETX" checked><label for="addETX">ETX(03)付与</label></span>
-      <span class="chk"><input type="checkbox" id="addBCC" checked><label for="addBCC">BCC付与</label></span>
-      <label class="field">BCC方式
-        <select id="bccMethod"><option value="xor" selected>XOR</option><option value="sum">加算(SUM)</option></select>
-      </label>
-      <span class="chk"><input type="checkbox" id="errBCC"><label for="errBCC" style="color:var(--err)">BCC誤り注入</label></span>
-      <div class="sep"></div>
-      <button id="btnSend" disabled>送信</button>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <span style="font-size:11px;color:var(--muted)">クイック送信(生1バイト):</span>
-      <button class="ghost" data-byte="5" disabled>ENQ(05)</button>
-      <button class="ghost" data-byte="6" disabled>ACK(06)</button>
-      <button class="ghost" data-byte="21" disabled>NAK(15)</button>
-      <button class="ghost" data-byte="4" disabled>EOT(04)</button>
-    </div>
-    <div class="hint">
-      BCC計算範囲は暫定で <code>STX除外・ETXを含む</code> 全バイトの XOR/加算 です。
-      実機仕様の確定後に <code>renderer.js</code> の <code>calcBCC()</code> を調整してください。
-    </div>
-  </section>
+    <main class="content">
+      <section class="view active" id="view-overview">
+        <div class="page-heading"><div><h1>試験ダッシュボード</h1><p>仕様書6冊と旧2アプリの機能を1つの通信基盤で扱います。</p></div><span class="spec-badge">通信仕様書6冊準拠</span></div>
+        <div class="metric-grid">
+          <article class="metric"><span>接続</span><strong id="metricConnection">未接続</strong><small id="metricPort">—</small></article>
+          <article class="metric"><span>送信</span><strong id="metricTx">0</strong><small>フレーム／制御コード</small></article>
+          <article class="metric"><span>受信</span><strong id="metricRx">0</strong><small>シリアル受信チャンク</small></article>
+          <article class="metric"><span>異常</span><strong id="metricErrors">0</strong><small>検証・通信エラー</small></article>
+        </div>
+        <article class="card">
+          <div class="card-title"><div><h2>対応プロトコル</h2><p>専用ビルダー、受信検証、異常試験の対象</p></div></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>機能</th><th>仕様</th><th>通信</th><th>実装範囲</th></tr></thead>
+            <tbody>
+              <tr><td>宅配ボックス 4線式(B方式)</td><td>Q48-005F Ver.1.24</td><td>4800,E,8,1</td><td><span class="ok">電文・分割・ENQ手順</span></td></tr>
+              <tr><td>宅配ボックス 2線式</td><td>Q55-001D V1.24</td><td>4800,E,8,1</td><td><span class="ok">11byte・5件バースト</span></td></tr>
+              <tr><td>非接触キー</td><td>Q48-006F Ver.1.15</td><td>1200–19200,E,8,1</td><td><span class="ok">10/13byte・ACK/NAK</span></td></tr>
+              <tr><td>マンションコントローラ</td><td>Q48-008I Ver.3.12</td><td>4800,E,8,1</td><td><span class="ok">全110 CMD台帳・Ver/方向制約</span></td></tr>
+              <tr><td>エレベータ連動</td><td>Q46-005J Ver.1.25</td><td>1200–19200,E,8,1</td><td><span class="ok">21byte・制御手順</span></td></tr>
+              <tr><td>警報発信装置</td><td>Q49-023G Ver.1.22</td><td>1200–9600,E,8,1</td><td><span class="ok">11byte・履歴</span></td></tr>
+              <tr><td>旧外部疑似装置の独自機能</td><td>0.84.22</td><td>プロファイル依存</td><td><span class="warn">汎用／拡張プロファイル</span></td></tr>
+            </tbody>
+          </table></div>
+        </article>
+        <div class="two-column">
+          <article class="card"><h2>設計上の安全策</h2><ul class="check-list"><li>COMポートの読み取りはメインプロセス1か所だけ</li><li>送信を直列化し、ACK待ちとの競合を防止</li><li>BCC・長さ・文字範囲を検証後に応答</li><li>桁超過や不正HEXを黙って補正しない</li></ul></article>
+          <article class="card"><h2>クイック開始</h2><ol class="steps"><li>上部でCOMポートを選び接続</li><li>左側から対象装置を選択</li><li>プレビューを確認して送信</li><li>右側ログでHEX・ASCII・解析結果を確認</li></ol></article>
+        </div>
+      </section>
 
-  <!-- ログ -->
-  <section class="panel">
-    <h2>通信ログ</h2>
-    <div class="toolbar">
-      <span class="chk"><input type="checkbox" id="autoscroll" checked><label for="autoscroll">自動スクロール</label></span>
-      <span class="chk"><input type="checkbox" id="showAscii" checked><label for="showAscii">ASCII併記</label></span>
-      <div class="sep"></div>
-      <button class="ghost" id="btnClear">クリア</button>
-      <button class="ghost" id="btnSave">ログ保存(.txt)</button>
-      <span id="counter" style="font-size:11px;color:var(--muted);margin-left:auto">0 件</span>
-    </div>
-    <div id="log"></div>
-    <details>
-      <summary>使い方 / 注意</summary>
-      <div class="hint">
-        ① 「更新」でポート一覧を取得し、対象ポート（USB-シリアル変換器も可）を選んで「接続」。<br>
-        ② 送信欄に HEX か 半角ASCII を入力。<code>STX/ETX/BCC</code> トグルでフレーミングを自動付加。<br>
-        ③ <code>BCC誤り注入</code>で異常系テスト。受信は16進＋ASCII（制御文字は ⟨STX⟩ 等）で表示。<br>
-        ④ 受信は届いたチャンク単位で表示します（STX〜ETXのフレーム再構成は次段階で実装）。
-      </div>
-    </details>
-  </section>
-</main>
+      <section class="view" id="view-terminal">
+        <div class="page-heading"><div><h1>汎用ターミナル</h1><p>厳格なHEX／ASCII入力と任意フレーミング</p></div></div>
+        <article class="card form-card">
+          <div class="form-grid cols-2">
+            <label>入力形式<select id="terminalMode"><option value="hex">HEX</option><option value="ascii">ASCII</option></select></label>
+            <label>BCC方式<select id="terminalBcc"><option value="none">なし</option><option value="xor">XOR</option><option value="sum">加算</option></select></label>
+            <label class="span-2">送信データ<textarea id="terminalPayload" rows="5" placeholder="例: 02 31 03 32"></textarea></label>
+          </div>
+          <div class="inline-options"><label><input id="terminalStx" type="checkbox"> STXを付加</label><label><input id="terminalEtx" type="checkbox"> ETXを付加</label><label><input id="terminalBadBcc" type="checkbox"> BCCを故意に破壊</label></div>
+          <div class="preview"><span>プレビュー</span><code id="terminalPreview">—</code></div>
+          <div class="actions"><button id="terminalPreviewButton" class="secondary">検証・プレビュー</button><button id="terminalSendButton" class="primary requires-connection" disabled>送信</button></div>
+        </article>
+        <article class="card"><h2>制御コード</h2><div class="button-row"><button class="control-byte requires-connection" data-byte="5" disabled>ENQ 05</button><button class="control-byte requires-connection" data-byte="6" disabled>ACK 06</button><button class="control-byte requires-connection" data-byte="21" disabled>NAK 15</button><button class="control-byte requires-connection" data-byte="4" disabled>EOT 04</button><button class="control-byte requires-connection" data-byte="2" disabled>STX 02</button><button class="control-byte requires-connection" data-byte="3" disabled>ETX 03</button></div></article>
+      </section>
 
-<script src="renderer.js"></script>
+      <section class="view" id="view-locker4">
+        <div class="page-heading"><div><h1>宅配ボックス 4線式(B方式)</h1><p>Q48-005F：要求／応答、複数パケット、ENQ–ACK–TEXT–ACK–EOT</p></div><span class="spec-badge">4800,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>動作<select id="locker4Action"><option value="response">宅配側：情報応答／変化通知</option><option value="request">システム側：情報要求</option></select></label>
+            <label>機種No<input id="locker4Model" value="001" maxlength="3"></label>
+            <label>1パケット件数<select id="locker4PacketSize"><option value="3">3件</option><option value="10" selected>10件</option></select></label>
+            <label>対象プロファイル<select id="locker4Profile"><option value="standard">標準</option><option value="vixus">VIXUS</option><option value="dearis">dearis</option><option value="adapter2">2方向アダプター</option></select></label>
+            <label>送信方式<select id="locker4Transport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
+            <label class="span-3">ロッカーデータ（状態,ロッカーNo,棟No,住戸No／1行1件）<textarea id="locker4Rows" rows="8">31,001,0,0101</textarea></label>
+          </div>
+          <div class="preview"><span>生成結果</span><code id="locker4Preview">—</code></div>
+          <div class="actions"><button class="secondary" id="locker4PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker4SendButton" disabled>送信開始</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-locker2">
+        <div class="page-heading"><div><h1>宅配ボックス 2線式</h1><p>Q55-001D：棟No→住戸番号の正規11byte、最大5件を1秒ごとに送信</p></div><span class="spec-badge">4800,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>状態<select id="locker2Command"><option value="17">11H 着荷</option><option value="18">12H 滞留</option><option value="19">13H 取出</option></select></label>
+            <label>棟No<input id="locker2Building" type="number" min="0" max="8" value="1"></label>
+            <label>住戸番号<input id="locker2Room" type="number" min="1" max="9999" value="101"></label>
+            <label>住戸アドレス<input id="locker2Address" type="number" min="1" max="800" value="1"></label>
+            <label>対象システム<select id="locker2Profile"><option value="standard">標準</option><option value="patmo">PATMO α</option></select></label>
+            <label>反復<select id="locker2Repeat"><option value="once">1回</option><option value="cycle">登録一覧を循環</option></select></label>
+            <label class="span-3">登録一覧（状態,棟No,住戸番号,住戸アドレス／空欄時は上の1件）<textarea id="locker2Rows" rows="7" placeholder="11,1,101,001&#10;12,1,102,002"></textarea></label>
+          </div>
+          <div class="preview"><span>プレビュー</span><code id="locker2Preview">—</code></div>
+          <div class="actions"><button class="secondary" id="locker2PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker2SendButton" disabled>送信開始</button><button class="danger" id="locker2StopButton" disabled>反復停止</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-key">
+        <div class="page-heading"><div><h1>非接触キー</h1><p>Q48-006F：10／13byte形式、BCC、NAK時のみ最大5回再送</p></div><span class="spec-badge">1200–19200,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>形式<select id="keyFormat"><option value="withPerson">13byte（個人番号あり）</option><option value="roomOnly">10byte（個人番号なし）</option></select></label>
+            <label>ゲートNo<input id="keyGate" type="number" min="1" max="99" value="1"></label>
+            <label>ルーム5桁<input id="keyRoom" inputmode="numeric" value="00101" maxlength="5"></label>
+            <label>個人番号<input id="keyPerson" type="number" min="0" max="999" value="1"></label>
+            <label>対象システム<select id="keyProfile"><option value="general">一般（000–999）</option><option value="limited8">V-fine等（000–008）</option></select></label>
+            <label>送信<select id="keyWaitAck"><option value="ack">ACK/NAKを待つ</option><option value="direct">電文のみ</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="keyBadBcc" type="checkbox"> BCC異常</label><label><input id="keyAutoResponse" type="checkbox"> 受信電文へ自動ACK/NAK</label></div>
+          <div class="preview"><span>プレビュー</span><code id="keyPreview">—</code></div>
+          <div class="actions"><button class="secondary" id="keyPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="keySendButton" disabled>送信</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-mansion">
+        <div class="page-heading"><div><h1>マンションコントローラ</h1><p>Q48-008I：全110 KIND/CMD台帳、汎用MESG、Ver別ADDR、EOTなしのENQ通信</p></div><span class="spec-badge">4800,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>仕様Ver<select id="mcVersion"><option value="3">Ver3</option><option value="2">Ver2</option><option value="1">Ver1</option></select></label>
+            <label>役割<select id="mcRole"><option value="MC">マンションコントローラ</option><option value="IC">インターホン制御装置</option></select></label>
+            <label>システム<select id="mcTopology"><option value="standard">標準</option><option value="multiBuilding">多棟</option><option value="multiStation">1棟多局</option></select></label>
+            <label>KIND<select id="mcKind"><option value="30">30 初期化</option><option value="31">31 IC→MC 呼出</option><option value="32">32 住戸全情報</option><option value="33">33 MC→IC 呼出</option><option value="34">34 防犯</option><option value="35">35 警報</option><option value="36">36 宅配</option><option value="37">37 非接触キー</option><option value="38">38 メッセージ</option><option value="39">39 静止画</option><option value="3A">3A ヘルス</option><option value="3B">3B グループ</option></select></label>
+            <label>CMD<select id="mcCommand"></select></label>
+            <label>送信方式<select id="mcTransport"><option value="handshake">仕様手順（EOTなし）</option><option value="direct">電文のみ</option></select></label>
+            <label>ADDRヘルパ<select id="mcAddressType"><option value="none">使用しない</option><option value="room">住戸</option><option value="manager">管理室</option><option value="entrance">集合玄関</option><option value="group">グループ</option><option value="floor">階層</option><option value="common">共用部</option></select></label>
+            <label>棟<input id="mcBuilding" value="BB" maxlength="2"></label>
+            <label>番号<input id="mcAddressNumber" value="101"></label>
+            <label class="span-3">MESG（ASCII。ADDRヘルパ使用時は先頭へ自動付加）<textarea id="mcMessage" rows="6"></textarea></label>
+          </div>
+          <div class="preview"><span>プレビュー</span><code id="mcPreview">—</code></div>
+          <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-elevator">
+        <div class="page-heading"><div><h1>エレベータ連動</h1><p>Q46-005J：21byte固定、全13コマンド、ENQ通信</p></div><span class="spec-badge">1200–19200,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>コマンド<select id="elevatorCommand"><option>ECALL</option><option>HINFO</option><option>GINFO</option><option>KINFO</option><option>COPEN</option><option>CCLSE</option><option>EOPEN</option><option>ECLSE</option><option>INITI</option><option>ESTAT</option><option>ESTOP</option><option>INITE</option><option>CHECK</option></select></label>
+            <label>対象<select id="elevatorProfile"><option value="full">標準</option><option value="dash-vhx">DASH VHX</option><option value="dash-wism">DASH WISM</option><option value="v-fine-vbz">V-fine VBZ</option><option value="fagus">FAGUS</option><option value="vixus">VIXUS</option><option value="vixus-1pr">VIXUS 1Pr</option><option value="vixus-advance">VIXUS Advance</option><option value="dearis">dearis</option></select></label>
+            <label>送信元<select id="elevatorDirection"><option value="toElevator">集合インターホン → EV（優先）</option><option value="fromElevator">EV → 集合インターホン（非優先）</option></select></label>
+            <label>送信方式<select id="elevatorTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
+            <label>ゲート棟（2桁）<input id="elevatorGateBuilding" value="00" maxlength="2"></label>
+            <label>ゲートID（2桁）<input id="elevatorGateId" value="00" maxlength="2"></label>
+            <label>個人番号（3桁）<input id="elevatorPerson" value="000" maxlength="3"></label>
+            <label>住戸棟（2桁）<input id="elevatorRoomBuilding" value="00" maxlength="2"></label>
+            <label>住戸番号<input id="elevatorRoom" value="101"></label>
+          </div>
+          <div class="preview"><span>プレビュー</span><code id="elevatorPreview">—</code></div>
+          <div class="actions"><button class="secondary" id="elevatorPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="elevatorSendButton" disabled>送信</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-alarm">
+        <div class="page-heading"><div><h1>警報発信装置</h1><p>Q49-023G：11byte固定、加算BCC、履歴番号</p></div><span class="spec-badge">1200–9600,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>動作側<select id="alarmRole"><option value="intercom">集合インターホン（優先局）</option><option value="alarm">警報発信装置（非優先局）</option></select></label>
+            <label>発信種別<select id="alarmType"><option value="00">00 警報情報①</option><option value="01">01 警報情報②</option><option value="04">04 警戒設定</option><option value="44">44 警戒解除</option><option value="30">30 ヒストリー要求</option></select></label>
+            <label>発信情報 (HEX)<input id="alarmInfo" value="01" maxlength="2"></label>
+            <label>棟番号（00～99、BCD符号化）<input id="alarmBuilding" value="00" maxlength="2"></label>
+            <label>発報元<select id="alarmSource"><option value="room">住戸</option><option value="manager">管理室</option><option value="entrance">集合玄関</option><option value="common">共用部</option><option value="none">なし</option></select></label>
+            <label>発報元番号<input id="alarmSourceNumber" value="101"></label>
+            <label>履歴番号<input id="alarmHistory" type="number" min="0" max="15" value="0"></label>
+            <label>送信方式<select id="alarmTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="alarmAutoRecord" type="checkbox" checked> 警報①②の送信成功時に履歴へ記録</label><label><input id="alarmAutoHistoryResponse" type="checkbox" checked> 履歴要求を受信したら自動応答</label></div>
+          <p class="callout" id="alarmHistoryState">保持 0/15件</p>
+          <div class="preview"><span>プレビュー</span><code id="alarmPreview">—</code></div>
+          <div class="actions"><button class="secondary" id="alarmPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="alarmSendButton" disabled>送信</button><button class="secondary" id="alarmRecordButton">現在値を履歴へ記録</button><button class="secondary" id="alarmNextButton">次の履歴を準備</button><button class="primary requires-connection" id="alarmHistorySendButton" disabled>履歴応答を送信</button><button class="danger" id="alarmClearButton">履歴消去</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-faults">
+        <div class="page-heading"><div><h1>異常注入</h1><p>全プロトコル共通の再現可能な故障ルール</p></div></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>プリセット<select id="faultPreset"><option value="none">正常</option><option value="bad-bcc">BCC異常</option><option value="missing-bcc">BCC欠落</option><option value="delay">送信遅延</option><option value="drop">無送信</option><option value="duplicate-stx">STX重複</option></select></label>
+            <label>対象段階<select id="faultTarget"><option value="all">全送信</option><option value="enq">ENQだけ</option><option value="frame">電文だけ</option><option value="response">ACK/NAK応答だけ</option><option value="eot">EOTだけ</option></select></label>
+            <label>適用回<select id="faultOccurrence"><option value="every">毎回</option><option value="1">1回目だけ</option><option value="2">2回目だけ</option><option value="3">3回目だけ</option></select></label>
+            <label>遅延 ms<input id="faultDelay" type="number" min="0" max="60000" step="10" value="1000"></label>
+            <label>受信時の自動応答<select id="autoTransportResponse"><option value="valid">検証結果に応じてACK/NAK</option><option value="ack">常にACK</option><option value="nak">常にNAK</option><option value="drop">無応答</option><option value="manual">手動</option></select></label>
+            <label>応答遅延 ms<input id="autoResponseDelay" type="number" min="0" max="60000" step="10" value="0"></label>
+          </div>
+          <p class="callout">異常は送信直前に適用されます。対象段階は遅延／無送信に適用し、BCC異常・欠落・STX重複は電文だけが対象です。プレビューには正常電文、ログには実送信値を記録します。</p>
+          <div class="actions"><button id="faultReset" class="secondary">回数をリセット</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="page-heading"><div><h1>通信設定</h1><p>serialApp相当の詳細設定とモデム制御</p></div></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>ボーレート<input id="serialBaud" type="number" min="50" max="4000000" value="4800"></label>
+            <label>データビット<select id="serialDataBits"><option>5</option><option>6</option><option>7</option><option selected>8</option></select></label>
+            <label>パリティ<select id="serialParity"><option value="none">None</option><option value="odd">Odd</option><option value="even" selected>Even</option><option value="mark">Mark</option><option value="space">Space</option></select></label>
+            <label>ストップビット<select id="serialStopBits"><option>1</option><option>1.5</option><option>2</option></select></label>
+            <label>フロー制御<select id="serialFlow"><option value="none">なし</option><option value="hardware">RTS/CTS</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="signalDtr" type="checkbox"> DTR</label><label><input id="signalRts" type="checkbox"> RTS</label></div>
+          <div class="actions"><button id="applySignals" class="secondary requires-connection" disabled>信号線へ反映</button><button id="readSignals" class="secondary requires-connection" disabled>CTS/DSR/DCD取得</button><button id="flushSerial" class="danger requires-connection" disabled>入出力バッファ破棄</button></div>
+          <div class="preview"><span>モデム状態</span><code id="signalState">—</code></div>
+        </article>
+        <article class="card form-card">
+          <div class="card-title"><div><h2>設定プロファイル</h2><p>全画面の入力値・機種・通信条件・異常条件を保存／共有</p></div></div>
+          <input id="profileImportFile" type="file" accept="application/json,.json" hidden>
+          <div class="actions"><button id="saveProfile" class="primary">このPCへ保存</button><button id="exportProfile" class="secondary">JSON書き出し</button><button id="importProfile" class="secondary">JSON読み込み</button><button id="resetProfile" class="danger">保存設定を削除</button></div>
+        </article>
+      </section>
+    </main>
+
+    <aside class="log-pane">
+      <div class="log-header"><div><strong>通信ログ</strong><small id="logCount">0件</small></div><div><button id="saveLog" title="保存">↓</button><button id="clearLog" title="消去">×</button></div></div>
+      <div class="log-filters"><button class="active" data-filter="all">全て</button><button data-filter="tx">TX</button><button data-filter="rx">RX</button><button data-filter="info">INFO</button><label><input id="autoScroll" type="checkbox" checked>追従</label></div>
+      <div id="communicationLog" class="log-list" aria-live="polite"></div>
+      <div class="quick-controls" aria-label="手動制御コード"><button class="control-byte requires-connection" data-byte="5" disabled>ENQ</button><button class="control-byte requires-connection" data-byte="6" disabled>ACK</button><button class="control-byte requires-connection" data-byte="21" disabled>NAK</button><button class="control-byte requires-connection" data-byte="4" disabled>EOT</button></div>
+      <div class="sequence-state"><span>シーケンス</span><strong id="sequenceState">待機</strong></div>
+    </aside>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="protocol/locker2.js"></script>
+  <script src="protocol/locker4.js"></script>
+  <script src="protocol/locker4-receiver.js"></script>
+  <script src="protocol/noncontact-key.js"></script>
+  <script src="protocol/mansion-controller.js"></script>
+  <script src="protocol/stream-decoder.js"></script>
+  <script src="protocol/elevator.js"></script>
+  <script src="protocol/alarm.js"></script>
+  <script src="protocol/handshake.js"></script>
+  <script src="protocol/fault-engine.js"></script>
+  <script src="renderer.js"></script>
 </body>
 </html>

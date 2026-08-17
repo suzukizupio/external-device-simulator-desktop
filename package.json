@@ -1,17 +1,56 @@
 {
-  "name": "gaibu-giji-simulator",
-  "version": "0.1.0",
-  "description": "集合システム外部擬似装置 デスクトップ版 (Electron + node-serialport)",
+  "name": "external-device-simulator-next",
+  "version": "1.0.0",
+  "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "main": "main.js",
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
-    "test": "node test/locker2.test.js && node test/locker4.test.js && node test/noncontact-key.test.js"
+    "test": "node test/run-all.js",
+    "test:smoke": "node test/electron-smoke.js",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win portable --x64"
   },
   "dependencies": {
     "serialport": "^12.0.0"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "43.4.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "jp.aiphone.external-device-simulator.next",
+    "productName": "外部疑似装置 Next",
+    "asar": true,
+    "npmRebuild": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "locker*.html",
+      "locker*-ui.js",
+      "noncontact-key.html",
+      "noncontact-key-ui.js",
+      "protocol/**/*",
+      "lib/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/@serialport/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "external-device-simulator-next-${version}-${arch}.${ext}"
+    }
   }
 }

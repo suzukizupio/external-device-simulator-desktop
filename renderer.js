@@ -1,209 +1,1264 @@
 "use strict";
-// レンダラー: UI操作 + フレーミング/BCC/ログ。通信は preload 経由の window.serialAPI を使用。
 
-// ===== 制御文字シンボル =====
-const CTRL = {0x02:"STX",0x03:"ETX",0x04:"EOT",0x05:"ENQ",0x06:"ACK",
-  0x10:"DLE",0x15:"NAK",0x0D:"CR",0x0A:"LF",0x1B:"ESC",0x00:"NUL"};
+const $ = (id) => document.getElementById(id);
+const CONTROL_NAMES = Object.freeze({ 0x02: "STX", 0x03: "ETX", 0x04: "EOT", 0x05: "ENQ", 0x06: "ACK", 0x15: "NAK" });
+const MAX_LOGS = 2000;
+const PROFILE_STORAGE_KEY = "external-device-simulator-next.profile.v1";
 
-// ===== 状態 =====
-let connected = false;
-const rows = []; // {ts,dir,hex,asc}
-
-// ===== DOM =====
-const $ = id => document.getElementById(id);
-const logEl = $("log"), counterEl = $("counter"), portSel = $("port");
-
-// ===== API存在チェック =====
-const hasAPI = (typeof window !== "undefined" && window.serialAPI);
-{
-  const b = $("apiBadge");
-  if (hasAPI) { b.textContent = "serialport: 利用可"; b.className = "badge ok"; }
-  else {
-    b.textContent = "serialAPI 未ロード"; b.className = "badge ng";
-    $("btnConnect").disabled = true; $("btnRefresh").disabled = true;
-    logLine("err", "serialAPI が読み込まれていません（Electron外で開いた可能性）。");
-  }
-}
-
-// ===== ユーティリティ =====
-function nowStr(){
-  const d=new Date(), p=(n,l=2)=>String(n).padStart(l,"0");
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(),3)}`;
-}
-function toHex(u8){ return Array.from(u8).map(b=>b.toString(16).toUpperCase().padStart(2,"0")).join(" "); }
-function toAsciiSym(u8){
-  return Array.from(u8).map(b=>{
-    if(CTRL[b]) return `⟨${CTRL[b]}⟩`;
-    if(b>=0x20 && b<=0x7e) return String.fromCharCode(b);
-    return "·";
-  }).join("");
-}
-function parseHex(s){
-  const clean=s.replace(/0x/gi,"").replace(/[^0-9a-fA-F]/g,"");
-  if(clean.length===0) return [];
-  if(clean.length%2!==0) throw new Error("HEXの桁数が奇数です");
-  const out=[];
-  for(let i=0;i<clean.length;i+=2) out.push(parseInt(clean.substr(i,2),16));
-  return out;
-}
-function parsePayload(){
-  const raw=$("payload").value;
-  if($("mode").value==="hex") return parseHex(raw);
-  // ASCIIモード: 半角文字を1バイト(0x00-0xFF)。日本語送信は当面HEX入力で対応。
-  return Array.from(raw).map(c=>c.charCodeAt(0)&0xFF);
-}
-// BCC計算（暫定: STX除外・ETX含む）
-function calcBCC(frame, method){
-  const start=(frame[0]===0x02)?1:0;
-  let v=0;
-  for(let i=start;i<frame.length;i++){
-    if(method==="xor") v^=frame[i]; else v=(v+frame[i])&0xFF;
-  }
-  return v&0xFF;
-}
-
-// ===== ログ表示 =====
-function logLine(kind,text){
-  const div=document.createElement("div");
-  div.className="le "+kind;
-  div.innerHTML=`<span class="ts">[${nowStr()}]</span> ${escapeHtml(text)}`;
-  logEl.appendChild(div); afterAppend();
-}
-function logFrame(dir,u8){
-  const ts=nowStr(), hex=toHex(u8), asc=toAsciiSym(u8);
-  rows.push({ts,dir,hex,asc});
-  const div=document.createElement("div");
-  div.className="le "+dir.toLowerCase();
-  const ascHtml = $("showAscii").checked ? ` <span class="asc">| ${escapeHtml(asc)}</span>` : "";
-  div.innerHTML=`<span class="ts">[${ts}]</span><span class="dir">${dir}</span>${escapeHtml(hex)}${ascHtml}`;
-  logEl.appendChild(div); afterAppend();
-}
-function afterAppend(){
-  counterEl.textContent=`${logEl.childElementCount} 件`;
-  if($("autoscroll").checked) logEl.scrollTop=logEl.scrollHeight;
-}
-function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
-
-// ===== ポート列挙 =====
-async function refreshPorts(){
-  if(!hasAPI) return;
-  try{
-    const ports = await window.serialAPI.list();
-    const prev = portSel.value;
-    portSel.innerHTML="";
-    if(ports.length===0){
-      const o=document.createElement("option"); o.value=""; o.textContent="(ポートが見つかりません)";
-      portSel.appendChild(o);
-    }
-    for(const p of ports){
-      const o=document.createElement("option");
-      o.value=p.path;
-      const label = p.friendlyName || p.manufacturer;
-      o.textContent = label ? `${p.path} — ${label}` : p.path;
-      portSel.appendChild(o);
-    }
-    if(prev) portSel.value = prev;
-    logLine("info", `ポート一覧を更新（${ports.length}件）`);
-  }catch(e){ logLine("err","ポート列挙に失敗: "+e.message); }
-}
-
-// ===== 接続 / 切断 =====
-async function connect(){
-  if(!hasAPI) return;
-  const path = portSel.value;
-  if(!path){ logLine("err","ポートを選択してください"); return; }
-  const opt={
-    path,
-    baudRate:parseInt($("baud").value,10),
-    dataBits:parseInt($("data").value,10),
-    stopBits:parseInt($("stop").value,10),
-    parity:$("parity").value,
-    flowControl:$("flow").value
-  };
-  try{
-    await window.serialAPI.open(opt);
-    setConnected(true);
-    logLine("info",`接続しました: ${path}（${opt.baudRate},${opt.parity},${opt.dataBits},${opt.stopBits} / flow:${opt.flowControl}）`);
-  }catch(e){
-    logLine("err","接続に失敗: "+e.message);
-  }
-}
-async function disconnect(){
-  if(!hasAPI) return;
-  try{ await window.serialAPI.close(); }catch(e){ logLine("err","切断エラー: "+e.message); }
-  setConnected(false);
-  logLine("info","切断しました。");
-}
-function setConnected(on){
-  connected=on;
-  $("dot").className="dot"+(on?" on":"");
-  $("statusText").textContent=on?"接続中":"未接続";
-  $("btnConnect").disabled=on || !hasAPI;
-  $("btnDisconnect").disabled=!on;
-  $("btnSend").disabled=!on;
-  $("port").disabled=on; $("btnRefresh").disabled=on || !hasAPI;
-  document.querySelectorAll("[data-byte]").forEach(b=>b.disabled=!on);
-}
-
-// ===== 送信 =====
-async function sendBytes(bytes){
-  if(!connected){ logLine("err","未接続です"); return; }
-  try{
-    await window.serialAPI.write(bytes);
-    logFrame("TX", Uint8Array.from(bytes));
-  }catch(e){ logLine("err","送信エラー: "+e.message); }
-}
-function buildAndSend(){
-  let payload;
-  try{ payload=parsePayload(); }
-  catch(e){ logLine("err","入力エラー: "+e.message); return; }
-  const frame=[];
-  if($("addSTX").checked) frame.push(0x02);
-  for(const b of payload) frame.push(b);
-  if($("addETX").checked) frame.push(0x03);
-  if($("addBCC").checked){
-    let bcc=calcBCC(frame,$("bccMethod").value);
-    if($("errBCC").checked){ bcc=(bcc+1)&0xFF; logLine("warn","BCC誤り注入: 正規値に+1して送信します"); }
-    frame.push(bcc);
-  }
-  sendBytes(frame);
-}
-
-// ===== 受信イベント（preload経由）=====
-if(hasAPI){
-  window.serialAPI.onData(arr => logFrame("RX", Uint8Array.from(arr)));
-  window.serialAPI.onError(msg => logLine("err","受信エラー: "+msg));
-  window.serialAPI.onClosed(() => { if(connected){ setConnected(false); logLine("info","ポートが閉じられました。"); } });
-}
-
-// ===== UIイベント =====
-$("btnRefresh").onclick=refreshPorts;
-$("btnConnect").onclick=connect;
-$("btnDisconnect").onclick=disconnect;
-$("btnSend").onclick=buildAndSend;
-$("payload").addEventListener("keydown",e=>{ if(e.key==="Enter" && !$("btnSend").disabled) buildAndSend(); });
-document.querySelectorAll("[data-byte]").forEach(b=>{
-  b.onclick=()=>sendBytes([parseInt(b.dataset.byte,10)]);
-});
-document.querySelectorAll(".pill").forEach(p=>{
-  p.onclick=()=>{
-    const [baud,par,data,stop]=p.dataset.set.split(",");
-    $("baud").value=baud; $("parity").value=par; $("data").value=data; $("stop").value=stop;
-  };
-});
-$("btnClear").onclick=()=>{ logEl.innerHTML=""; rows.length=0; counterEl.textContent="0 件"; };
-$("btnSave").onclick=()=>{
-  if(rows.length===0){ logLine("info","保存するログがありません"); return; }
-  const text=rows.map(r=>`[${r.ts}] ${r.dir}\t${r.hex}\t| ${r.asc}`).join("\r\n");
-  const blob=new Blob([text],{type:"text/plain;charset=utf-8"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=`commlog_${new Date().toISOString().replace(/[:.]/g,"-")}.txt`;
-  a.click(); URL.revokeObjectURL(a.href);
+const state = {
+  connected: false,
+  sessionId: 0,
+  currentView: "overview",
+  logs: [],
+  filter: "all",
+  txCount: 0,
+  rxCount: 0,
+  errorCount: 0,
+  controlWaiters: [],
+  locker2Run: null,
+  faultPlan: null,
+  faultSignature: "",
+  receiveBuffer: [],
+  inboundLink: false,
+  receiveTimer: null,
+  alarmHistory: null,
+  alarmHistoryPending: null,
+  activeTransaction: null,
+  lastIoAt: 0,
+  manualReceiveStage: null,
+  pendingFrameValid: null,
+  locker4Inbound: null,
+  locker4Series: null,
 };
 
-// ===== 起動処理 =====
-if(hasAPI){
-  refreshPorts();
-  logLine("info","準備完了。ポートを選択し「接続」を押してください。");
+function requireApi(name) {
+  const api = window[name];
+  if (!api) throw new Error(`${name} のプロトコルモジュールを読み込めません`);
+  return api;
 }
+
+function toHex(bytes) {
+  return Array.from(bytes || [], (byte) => Number(byte).toString(16).toUpperCase().padStart(2, "0")).join(" ");
+}
+
+function toAscii(bytes) {
+  return Array.from(bytes || [], (byte) => {
+    if (CONTROL_NAMES[byte]) return `<${CONTROL_NAMES[byte]}>`;
+    return byte >= 0x20 && byte <= 0x7E ? String.fromCharCode(byte) : ".";
+  }).join("");
+}
+
+function timestamp() {
+  const date = new Date();
+  const pad = (value, width = 2) => String(value).padStart(width, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+let toastTimer = null;
+function toast(message, error = false) {
+  const element = $("toast");
+  element.textContent = message;
+  element.className = error ? "show error" : "show";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { element.className = ""; }, 2800);
+}
+
+function addLog(kind, label, bytes, detail) {
+  const entry = {
+    time: timestamp(),
+    kind,
+    label,
+    bytes: bytes == null ? null : Array.from(bytes),
+    detail: detail || "",
+  };
+  state.logs.push(entry);
+  if (state.logs.length > MAX_LOGS) state.logs.shift();
+
+  const row = document.createElement("div");
+  row.className = `log-entry ${kind}`;
+  row.dataset.kind = kind;
+  const meta = document.createElement("div");
+  meta.className = "log-meta";
+  const time = document.createElement("span");
+  time.textContent = entry.time;
+  const direction = document.createElement("span");
+  direction.className = "log-dir";
+  direction.textContent = label;
+  meta.append(time, direction);
+  row.append(meta);
+  if (entry.bytes) {
+    const hex = document.createElement("div");
+    hex.className = "log-hex";
+    hex.textContent = toHex(entry.bytes);
+    const ascii = document.createElement("div");
+    ascii.className = "log-ascii";
+    ascii.textContent = toAscii(entry.bytes);
+    row.append(hex, ascii);
+  }
+  if (entry.detail) {
+    const info = document.createElement("div");
+    info.className = "log-ascii";
+    info.textContent = entry.detail;
+    row.append(info);
+  }
+
+  const list = $("communicationLog");
+  list.append(row);
+  while (list.childElementCount > MAX_LOGS) list.firstElementChild.remove();
+  applyLogFilter(row);
+  $("logCount").textContent = `${state.logs.length}件`;
+  if ($("autoScroll").checked) list.scrollTop = list.scrollHeight;
+}
+
+function applyLogFilter(row) {
+  const visible = state.filter === "all" || row.dataset.kind === state.filter ||
+    (state.filter === "info" && ["info", "warn", "error"].includes(row.dataset.kind));
+  row.classList.toggle("hidden", !visible);
+}
+
+function logError(error, context) {
+  state.errorCount += 1;
+  updateMetrics();
+  const message = String(error && error.message || error);
+  addLog("error", "ERROR", null, context ? `${context}: ${message}` : message);
+  toast(message, true);
+}
+
+function updateMetrics() {
+  $("metricConnection").textContent = state.connected ? "接続中" : "未接続";
+  $("metricTx").textContent = String(state.txCount);
+  $("metricRx").textContent = String(state.rxCount);
+  $("metricErrors").textContent = String(state.errorCount);
+}
+
+function setSequence(text) {
+  $("sequenceState").textContent = text;
+}
+
+function parseHex(text) {
+  const source = String(text || "").trim();
+  if (!source) return [];
+  if (/^[0-9a-fA-F]+$/.test(source) && source.length > 2) {
+    if (source.length % 2 !== 0) throw new RangeError("連続HEXは偶数桁で入力してください");
+    return source.match(/.{2}/g).map((token) => Number.parseInt(token, 16));
+  }
+  const tokens = source.split(/[\s,]+/).filter(Boolean);
+  return tokens.map((token, index) => {
+    if (!/^(?:0x)?[0-9a-fA-F]{2}$/.test(token)) throw new RangeError(`HEX ${index + 1}個目「${token}」が不正です`);
+    return Number.parseInt(token.replace(/^0x/i, ""), 16);
+  });
+}
+
+function parseHexByte(text, name) {
+  const value = String(text || "").trim();
+  if (!/^(?:0x)?[0-9a-fA-F]{2}$/.test(value)) throw new RangeError(`${name}は2桁HEXで入力してください`);
+  return Number.parseInt(value.replace(/^0x/i, ""), 16);
+}
+
+function latin1(text, name = "ASCII") {
+  return Array.from(String(text || ""), (character) => {
+    const code = character.charCodeAt(0);
+    if (code > 0xFF) throw new RangeError(`${name}には1byteで表せない文字「${character}」があります`);
+    return code;
+  });
+}
+
+function integerValue(id, name, min, max) {
+  const value = Number($(id).value);
+  if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name}は${min}～${max}で入力してください`);
+  return value;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function withTransaction(name, operation) {
+  if (state.activeTransaction) throw new Error(`${state.activeTransaction}の通信処理が実行中です`);
+  state.activeTransaction = name;
+  try {
+    return await operation();
+  } finally {
+    state.activeTransaction = null;
+  }
+}
+
+async function waitForBusIdle(milliseconds) {
+  for (;;) {
+    const remaining = milliseconds - (Date.now() - state.lastIoAt);
+    if (remaining <= 0) return;
+    await sleep(remaining);
+  }
+}
+
+function serialOptions() {
+  const path = $("serialPort").value;
+  if (!path) throw new RangeError("COMポートを選択してください");
+  return {
+    path,
+    baudRate: integerValue("serialBaud", "ボーレート", 50, 4_000_000),
+    dataBits: Number($("serialDataBits").value),
+    stopBits: Number($("serialStopBits").value),
+    parity: $("serialParity").value,
+    flowControl: $("serialFlow").value,
+  };
+}
+
+const SERIAL_PRESETS = Object.freeze({
+  locker: { baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+  key: { baudRate: 9600, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+  elevator: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+  alarm: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+});
+
+function applySerialPreset(name) {
+  const preset = SERIAL_PRESETS[name];
+  if (!preset) return;
+  $("serialBaud").value = preset.baudRate;
+  $("serialDataBits").value = preset.dataBits;
+  $("serialStopBits").value = preset.stopBits;
+  $("serialParity").value = preset.parity;
+  $("serialFlow").value = preset.flowControl;
+}
+
+async function refreshPorts() {
+  if (!window.serialAPI) return;
+  try {
+    const previous = $("serialPort").value;
+    const ports = await window.serialAPI.list();
+    $("serialPort").replaceChildren();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = ports.length ? "COMポートを選択" : "利用可能なポートなし";
+    $("serialPort").append(placeholder);
+    for (const port of ports) {
+      const option = document.createElement("option");
+      option.value = port.path;
+      const label = port.friendlyName || port.manufacturer;
+      option.textContent = label ? `${port.path} — ${label}` : port.path;
+      $("serialPort").append(option);
+    }
+    if (previous && ports.some((port) => port.path === previous)) $("serialPort").value = previous;
+    addLog("info", "PORT", null, `${ports.length}件のポートを検出`);
+  } catch (error) {
+    logError(error, "ポート一覧取得");
+  }
+}
+
+function applyConnectionState(snapshot) {
+  const status = snapshot && snapshot.status || "closed";
+  state.connected = status === "open";
+  state.sessionId = snapshot && snapshot.sessionId || 0;
+  $("connectionDot").className = status;
+  const labels = { closed: "未接続", opening: "接続中…", open: "接続済み", error: "接続エラー" };
+  $("connectionText").textContent = labels[status] || status;
+  $("connectButton").disabled = status === "opening" || status === "open";
+  $("disconnectButton").disabled = !["open", "opening", "error"].includes(status);
+  $("serialPort").disabled = status === "opening" || status === "open";
+  document.querySelectorAll(".requires-connection").forEach((button) => { button.disabled = !state.connected; });
+  $("metricPort").textContent = snapshot && snapshot.options ? `${snapshot.options.path} / ${snapshot.options.baudRate}` : "—";
+  if (!state.connected) {
+    rejectControlWaiters(new Error("シリアル接続が切断されました"));
+    state.receiveBuffer = [];
+    state.inboundLink = false;
+    state.manualReceiveStage = null;
+    state.pendingFrameValid = null;
+    resetLocker4Inbound();
+    state.lastIoAt = 0;
+    clearReceiveTimer();
+    if (keyReceiver) keyReceiver.reset();
+  }
+  updateMetrics();
+}
+
+async function connect() {
+  try {
+    const snapshot = await window.serialAPI.open(serialOptions());
+    state.lastIoAt = Date.now();
+    applyConnectionState(snapshot);
+    addLog("info", "OPEN", null, `${snapshot.options.path} ${snapshot.options.baudRate},${snapshot.options.parity},${snapshot.options.dataBits},${snapshot.options.stopBits}`);
+  } catch (error) {
+    logError(error, "接続");
+  }
+}
+
+async function disconnect() {
+  try {
+    const snapshot = await window.serialAPI.close();
+    applyConnectionState(snapshot);
+    addLog("info", "CLOSE", null, "シリアルポートを切断");
+  } catch (error) {
+    logError(error, "切断");
+  }
+}
+
+function faultConfiguration() {
+  return {
+    preset: $("faultPreset").value,
+    target: $("faultTarget").value,
+    occurrence: $("faultOccurrence").value,
+    delayMs: Number($("faultDelay").value),
+  };
+}
+
+function currentFaultPlan() {
+  const config = faultConfiguration();
+  const signature = JSON.stringify(config);
+  if (state.faultPlan && signature === state.faultSignature) return state.faultPlan;
+  const Fault = requireApi("FaultEngine");
+  const occurrence = config.occurrence === "every" ? "every" : Number(config.occurrence);
+  const target = config.target === "all" ? "*" : config.target;
+  const actions = Fault.ACTION;
+  let rules = [];
+  if (config.preset === "bad-bcc") rules = [{ phase: "frame", occurrence, action: actions.CORRUPT_LAST, note: "BCC異常" }];
+  else if (config.preset === "missing-bcc") rules = [{ phase: "frame", occurrence, action: actions.OMIT_LAST, note: "BCC欠落" }];
+  else if (config.preset === "delay") rules = [{ phase: target, direction: "tx", occurrence, action: actions.DELAY, delayMs: config.delayMs, note: "送信遅延" }];
+  else if (config.preset === "drop") rules = [{ phase: target, direction: "tx", occurrence, action: actions.DROP, note: "無送信" }];
+  else if (config.preset === "duplicate-stx") rules = [{ phase: "frame", occurrence, action: actions.DUPLICATE_STX, note: "STX重複" }];
+  state.faultPlan = new Fault.FaultPlan(rules);
+  state.faultSignature = signature;
+  return state.faultPlan;
+}
+
+async function transmit(bytes, phase = "frame") {
+  if (!state.connected) throw new Error("シリアルポートが未接続です");
+  const result = currentFaultPlan().apply({ bytes, phase, direction: "tx" });
+  if (result.applied) addLog("warn", "FAULT", result.bytes, `${result.note || result.action} (${result.ruleId}, ${result.count}回目)`);
+  if (result.delayMs > 0) await sleep(result.delayMs);
+  if (result.bytes == null) return { dropped: true };
+  const written = await window.serialAPI.write(result.bytes);
+  state.lastIoAt = Date.now();
+  return written;
+}
+
+function createControlWaiter(timeoutMs, acceptedCodes = [0x05, 0x06, 0x15]) {
+  let waiter;
+  const promise = new Promise((resolve, reject) => {
+    waiter = { resolve, reject, timer: null, acceptedCodes: new Set(acceptedCodes), done: false };
+    state.controlWaiters.push(waiter);
+  });
+  promise.catch(() => undefined);
+  return {
+    promise,
+    arm() {
+      if (waiter.done || waiter.timer) return;
+      waiter.timer = setTimeout(() => {
+        const index = state.controlWaiters.indexOf(waiter);
+        if (index !== -1) state.controlWaiters.splice(index, 1);
+        waiter.done = true;
+        waiter.reject(new Error("ACK待ちタイムアウト"));
+      }, timeoutMs);
+    },
+    cancel() {
+      const index = state.controlWaiters.indexOf(waiter);
+      if (index !== -1) state.controlWaiters.splice(index, 1);
+      waiter.done = true;
+      clearTimeout(waiter.timer);
+    },
+  };
+}
+
+function dispatchControl(bytes) {
+  if (state.controlWaiters.length === 0 || bytes.length !== 1) return false;
+  const value = bytes[0];
+  if (![0x05, 0x06, 0x15].includes(value)) return false;
+  const waiter = state.controlWaiters[0];
+  if (!waiter.acceptedCodes.has(value)) return false;
+  state.controlWaiters.shift();
+  waiter.done = true;
+  clearTimeout(waiter.timer);
+  waiter.resolve(value);
+  return true;
+}
+
+function rejectControlWaiters(error) {
+  for (const waiter of state.controlWaiters.splice(0)) {
+    waiter.done = true;
+    clearTimeout(waiter.timer);
+    waiter.reject(error);
+  }
+}
+
+function viewUsesHandshake(view) {
+  return ["locker4", "mansion", "elevator", "alarm"].includes(view);
+}
+
+function clearReceiveTimer() {
+  if (state.receiveTimer) clearTimeout(state.receiveTimer);
+  state.receiveTimer = null;
+}
+
+function resetLocker4Inbound() {
+  state.locker4Inbound = null;
+  if (state.locker4Series) state.locker4Series.abort();
+}
+
+function receiveTimeoutFor(view, stage) {
+  if (view === "locker4") return stage === "link" ? 5_000 : 60_000;
+  if (["mansion", "elevator", "alarm"].includes(view)) return 6_000;
+  return null;
+}
+
+function armReceiveTimer(view, stage = "frame") {
+  const timeoutMs = receiveTimeoutFor(view, stage);
+  if (!timeoutMs) return;
+  const shouldRestart = stage === "link" || (view === "locker4" && stage === "frame");
+  if (state.receiveTimer && !shouldRestart) return;
+  clearReceiveTimer();
+  state.receiveTimer = setTimeout(() => {
+    const partial = state.receiveBuffer.slice();
+    state.receiveBuffer = [];
+    state.inboundLink = false;
+    state.receiveTimer = null;
+    resetLocker4Inbound();
+    addLog("warn", "RX-TIMEOUT", partial.length ? partial : null, `受信完了タイムアウト (${timeoutMs / 1000}秒)`);
+    setSequence("受信タイムアウト");
+  }, timeoutMs);
+}
+
+async function sendAutomaticResponse(valid, stage) {
+  const mode = $("autoTransportResponse").value;
+  if (mode === "manual") return null;
+  if (mode === "drop") {
+    addLog("warn", "AUTO", null, `${stage}への応答を抑止`);
+    return null;
+  }
+  const delay = Number($("autoResponseDelay").value);
+  if (!Number.isFinite(delay) || delay < 0 || delay > 60000) throw new RangeError("自動応答遅延は0～60000msで指定してください");
+  if (delay) await sleep(delay);
+  const control = mode === "ack" ? 0x06 : mode === "nak" ? 0x15 : (valid ? 0x06 : 0x15);
+  await transmit([control], "response");
+  addLog(control === 0x06 ? "info" : "warn", "AUTO", [control], `${stage}へ${CONTROL_NAMES[control]}`);
+  return control;
+}
+
+function handleInboundControl(bytes, consumedBySender) {
+  if (consumedBySender || !viewUsesHandshake(state.currentView) || bytes.length !== 1) return;
+  if (bytes[0] === 0x04 && state.currentView === "locker4") {
+    clearReceiveTimer();
+    let completed = null;
+    try { completed = state.locker4Series.finish(); } catch (_error) { /* logged below */ }
+    addLog(completed ? "info" : "warn", "EOT", bytes, completed ? `4線式 ${completed.packetCount}パケット受信完了` : "パケット列が未完了のままEOTを受信");
+    state.locker4Inbound = null;
+    state.inboundLink = false;
+    state.manualReceiveStage = null;
+    setSequence(completed ? "EOT受信・完了" : "EOT受信・パケット不足");
+    return;
+  }
+  if (bytes[0] !== 0x05) return;
+  state.inboundLink = false;
+  if ($("autoTransportResponse").value === "manual") {
+    state.manualReceiveStage = "link-response";
+    setSequence("ENQへ手動ACK/NAK待ち");
+    return;
+  }
+  sendAutomaticResponse(true, "ENQ").then((control) => {
+    state.inboundLink = control === 0x06;
+    if (control === 0x06) {
+      armReceiveTimer(state.currentView, "link");
+      setSequence("受信電文待ち");
+    }
+  }).catch((error) => logError(error, "ENQ自動応答"));
+}
+
+function handleCompletedInboundFrame(valid) {
+  clearReceiveTimer();
+  if (!valid && state.currentView === "locker4") resetLocker4Inbound();
+  if (!state.inboundLink || !viewUsesHandshake(state.currentView)) return Promise.resolve(null);
+  state.inboundLink = false;
+  if ($("autoTransportResponse").value === "manual") {
+    state.manualReceiveStage = "frame-response";
+    state.pendingFrameValid = valid;
+    setSequence(`電文へ手動ACK/NAK待ち (${valid ? "検証OK" : "検証NG"})`);
+    return Promise.resolve(null);
+  }
+  return sendAutomaticResponse(valid, "電文").then((control) => {
+    if (control === 0x06 && state.currentView === "locker4" && state.locker4Inbound) {
+      armReceiveTimer("locker4", "link");
+      setSequence(state.locker4Inbound.expectedPackage < 0 ? "ACK送信・EOT待ち" : `ACK送信・package ${state.locker4Inbound.expectedPackage}待ち`);
+    } else {
+      setSequence(control === 0x06 ? "受信完了" : control === 0x15 ? "受信異常" : "応答なし");
+    }
+    return control;
+  }).catch((error) => {
+    logError(error, "電文自動応答");
+    return null;
+  });
+}
+
+async function runHandshake(packets, options) {
+  const H = requireApi("HandshakeProtocol");
+  const opts = options || {};
+  const fsm = new H.SendHandshakeFSM({
+    packets,
+    maxRetries: opts.maxRetries == null ? 5 : opts.maxRetries,
+    sendEot: opts.sendEot !== false,
+    textRetryMode: opts.textRetryMode || "restart",
+  });
+  const queue = fsm.start();
+  setSequence("ENQ送信");
+
+  while (queue.length) {
+    const event = queue.shift();
+    if (event.type === "retry") {
+      addLog("warn", "RETRY", null, `${event.reason} / ${event.retriesUsed}/${event.maxRetries}`);
+      continue;
+    }
+    if (event.type === "failed") {
+      setSequence("失敗");
+      throw new Error(`再送上限に到達しました (${event.reason})`);
+    }
+    if (event.type === "complete") {
+      setSequence("完了");
+      addLog("info", "SEQ", null, `正常完了 / 再送${event.retriesUsed}回`);
+      return event;
+    }
+    if (event.type !== "send") continue;
+
+    if (event.kind === "EOT") {
+      setSequence("EOT送信");
+      await transmit(event.bytes, "eot");
+      continue;
+    }
+
+    if (event.kind === "ENQ" && opts.idleBeforeEnqMs) await waitForBusIdle(opts.idleBeforeEnqMs);
+    const timeout = event.kind === "ENQ" ? (opts.linkTimeoutMs || 1000) : (opts.textTimeoutMs || 1000);
+    setSequence(event.kind === "ENQ" ? "リンクACK待ち" : `電文ACK待ち ${event.packetIndex + 1}/${event.packetCount}`);
+    const waiter = createControlWaiter(timeout);
+    try {
+      await transmit(event.bytes, event.kind === "TEXT" ? "frame" : "enq");
+      waiter.arm();
+      const control = await waiter.promise;
+      if (control === H.CODE.ENQ) {
+        if (opts.priority) {
+          queue.push(...fsm.timeout("collision-priority"));
+        } else {
+          state.inboundLink = true;
+          armReceiveTimer(state.currentView, "link");
+          try {
+            await transmit([H.CODE.ACK], "response");
+          } catch (error) {
+            state.inboundLink = false;
+            clearReceiveTimer();
+            throw error;
+          }
+          fsm.cancel("collision-yield");
+          setSequence("衝突・受信へ譲渡");
+          addLog("warn", "COLLISION", [H.CODE.ENQ], "相手機器へ送信権を譲り、受信電文を待機");
+          return { type: "yielded" };
+        }
+      } else {
+        queue.push(...fsm.receiveControl(control));
+      }
+    } catch (error) {
+      waiter.cancel();
+      if (/ACK待ちタイムアウト/.test(String(error.message))) queue.push(...fsm.timeout("timeout"));
+      else throw error;
+    }
+  }
+  throw new Error("送信シーケンスが完了せず終了しました");
+}
+
+function terminalFrame() {
+  let bytes = $("terminalMode").value === "hex" ? parseHex($("terminalPayload").value) : latin1($("terminalPayload").value);
+  if ($("terminalStx").checked) bytes.unshift(0x02);
+  if ($("terminalEtx").checked) bytes.push(0x03);
+  const method = $("terminalBcc").value;
+  if (method !== "none") {
+    let value = 0;
+    const start = bytes[0] === 0x02 ? 1 : 0;
+    for (let index = start; index < bytes.length; index += 1) value = method === "xor" ? value ^ bytes[index] : (value + bytes[index]) & 0xFF;
+    if ($("terminalBadBcc").checked) value ^= 0x01;
+    bytes.push(value & 0xFF);
+  }
+  if (bytes.length === 0) throw new RangeError("送信データが空です");
+  return bytes;
+}
+
+function buildLocker2Frames() {
+  const api = requireApi("Telegram2");
+  const text = $("locker2Rows").value.trim();
+  let entries;
+  if (text) {
+    entries = text.split(/\r?\n/).filter((line) => line.trim()).map((line, index) => {
+      const fields = line.split(",").map((field) => field.trim());
+      if (fields.length !== 4) throw new RangeError(`登録一覧${index + 1}行目は4項目で入力してください`);
+      return { command: parseHexByte(fields[0], `状態(${index + 1}行)`), buildingNo: Number(fields[1]), roomNo: Number(fields[2]), address: Number(fields[3]) };
+    });
+  } else {
+    entries = [{
+      command: Number($("locker2Command").value),
+      buildingNo: integerValue("locker2Building", "棟No", 0, 8),
+      roomNo: integerValue("locker2Room", "住戸番号", 1, 9999),
+      address: integerValue("locker2Address", "住戸アドレス", 1, 800),
+    }];
+  }
+  const patmo = $("locker2Profile").value === "patmo";
+  const normalized = api.validateRegistrationList(entries, { maxEntries: patmo ? 40 : 100, allowedBuildingNos: patmo ? [0, 1] : [0, 1, 2, 3, 4, 5, 6, 7, 8] });
+  return normalized.map((entry) => api.buildTelegram(entry));
+}
+
+function locker4State(value, index) {
+  const stateByte = parseHexByte(value, `状態(${index + 1}行)`);
+  const allowed = [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x40, 0x41, 0x42];
+  if (!allowed.includes(stateByte)) throw new RangeError(`状態(${index + 1}行)が仕様範囲外です`);
+  const profile = $("locker4Profile").value;
+  if (profile === "adapter2" && ![0x30, 0x31].includes(stateByte)) throw new RangeError("2方向アダプターは30/31Hのみ対応です");
+  if (profile !== "dearis" && ![0x30, 0x31].includes(stateByte)) throw new RangeError("32～35H・40～42Hはdearisプロファイル専用です");
+  return stateByte;
+}
+
+function buildLocker4Packets() {
+  const api = requireApi("Telegram4");
+  const modelText = $("locker4Model").value.trim();
+  const modelNo = modelText === "" ? undefined : Number(modelText);
+  if ($("locker4Action").value === "request") return [api.buildRequestTelegram({ modelNo })];
+  const lines = $("locker4Rows").value.split(/\r?\n/).filter((line) => line.trim());
+  if (lines.length === 0) throw new RangeError("ロッカーデータを1件以上入力してください");
+  const lockers = lines.map((line, index) => {
+    const fields = line.split(",").map((field) => field.trim());
+    if (fields.length !== 4) throw new RangeError(`${index + 1}行目は4項目で入力してください`);
+    const stateByte = locker4State(fields[0], index);
+    const lockerNo = Number(fields[1]);
+    if ([0x40, 0x41, 0x42].includes(stateByte) && lockerNo !== 0) throw new RangeError("宅配ロボ状態のロッカーNoは000固定です");
+    return { state: stateByte, lockerNo, buildingNo: Number(fields[2]), roomNo: Number(fields[3]) };
+  });
+  return api.buildResponsePackets({ modelNo, packetSize: Number($("locker4PacketSize").value), lockers });
+}
+
+function buildKeyFrame() {
+  const api = requireApi("NoncontactKey");
+  const personMax = $("keyProfile").value === "limited8" ? 8 : 999;
+  const options = {
+    format: $("keyFormat").value,
+    gateNo: integerValue("keyGate", "ゲートNo", 1, 99),
+    roomNo5: $("keyRoom").value.trim(),
+    personMax,
+  };
+  if (options.format === api.FORMAT.WITH_PERSON) options.personNo = integerValue("keyPerson", "個人番号", 0, personMax);
+  let frame = api.buildTelegram(options);
+  if ($("keyBadBcc").checked) frame = api.corruptBCC(frame);
+  return frame;
+}
+
+function buildElevatorFrame() {
+  const api = requireApi("ElevatorProtocol");
+  const command = $("elevatorCommand").value;
+  const meta = api.COMMAND_META[command];
+  const profile = $("elevatorProfile").value;
+  const options = { command, profile, direction: $("elevatorDirection").value };
+  options.gate = meta.gate ? { buildingNo: Number($("elevatorGateBuilding").value), id: Number($("elevatorGateId").value) } : "0000";
+  options.room = meta.room ? { buildingNo: Number($("elevatorRoomBuilding").value), roomNo: Number($("elevatorRoom").value) } : "000000";
+  options.person = meta.person ? $("elevatorPerson").value.trim() : "000";
+  return api.buildFrame(options);
+}
+
+function buildAlarmFrame() {
+  const api = requireApi("AlarmProtocol");
+  const type = parseHexByte($("alarmType").value, "発信種別");
+  if (($("alarmRole").value === "intercom" && type === api.TYPE.HISTORY_REQUEST) ||
+      ($("alarmRole").value === "alarm" && type !== api.TYPE.HISTORY_REQUEST)) {
+    throw new Error("選択した動作側からはこの発信種別を送信できません");
+  }
+  if (type === api.TYPE.HISTORY_REQUEST) return api.buildFrame({ type, info: 0, buildingNo: 0, source: api.sourceNone(), historyNumber: 0 });
+  const sourceType = $("alarmSource").value;
+  const number = Number($("alarmSourceNumber").value);
+  const source = sourceType === "room" ? api.sourceDwelling(number)
+    : sourceType === "manager" ? api.sourceManagement(number)
+      : sourceType === "entrance" ? api.sourceEntrance(number)
+        : sourceType === "common" ? api.sourceCommon() : api.sourceNone();
+  return api.buildFrame({
+    type,
+    info: parseHexByte($("alarmInfo").value, "発信情報"),
+    buildingNo: Number.parseInt($("alarmBuilding").value, 10),
+    source,
+    historyNumber: integerValue("alarmHistory", "履歴番号", 0, 15),
+  });
+}
+
+function updateAlarmHistoryStatus(detail) {
+  if (!state.alarmHistory) return;
+  $("alarmHistoryState").textContent = `保持 ${state.alarmHistory.size}/15件${detail ? ` — ${detail}` : ""}`;
+}
+
+function recordAlarmHistory(frame = buildAlarmFrame()) {
+  const api = requireApi("AlarmProtocol");
+  const parsed = api.parseFrame(frame);
+  state.alarmHistory.record(frame);
+  state.alarmHistoryPending = null;
+  updateAlarmHistoryStatus(`${parsed.typeName} / 棟${String(parsed.buildingNo).padStart(2, "0")} を記録`);
+  addLog("info", "HISTORY", frame, `警報履歴へ記録 (${state.alarmHistory.size}/15件)`);
+  return frame;
+}
+
+function prepareNextAlarmHistory() {
+  const api = requireApi("AlarmProtocol");
+  const frame = state.alarmHistory.nextFrame();
+  const parsed = api.parseFrame(frame);
+  state.alarmHistoryPending = frame;
+  $("alarmPreview").textContent = toHex(frame);
+  updateAlarmHistoryStatus(parsed.info === 0 && parsed.source.kind === api.SOURCE_KIND.NONE ? "履歴なし応答を準備" : `履歴${parsed.historyNumber}を準備`);
+  return frame;
+}
+
+async function sendNextAlarmHistory(forceHandshake = false) {
+  if ($("alarmRole").value !== "intercom") throw new Error("履歴応答は集合インターホン側から送信します");
+  const frame = state.alarmHistoryPending || prepareNextAlarmHistory();
+  state.alarmHistoryPending = null;
+  if (!forceHandshake && $("alarmTransport").value === "direct") await transmit(frame, "frame");
+  else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", maxRetries: 255, priority: true });
+  updateAlarmHistoryStatus("履歴応答を送信");
+}
+
+function handleApplicationFrame(view, frame, transportResponse) {
+  if (transportResponse !== 0x06 || view !== "alarm" || !$("alarmAutoHistoryResponse").checked) return;
+  const api = requireApi("AlarmProtocol");
+  const parsed = api.parseFrame(frame);
+  if (parsed.type !== api.TYPE.HISTORY_REQUEST || $("alarmRole").value !== "intercom") return;
+  setTimeout(() => {
+    withTransaction("警報履歴自動応答", () => sendNextAlarmHistory(true))
+      .catch((error) => logError(error, "履歴自動応答"));
+  }, 0);
+}
+
+function mcAddressHelper(api) {
+  const type = $("mcAddressType").value;
+  if (type === "none") return "";
+  const topologyValue = $("mcTopology").value;
+  const topology = topologyValue === "standard" ? api.TOPOLOGY.STANDARD
+    : topologyValue === "multiStation" ? api.TOPOLOGY.SINGLE_BUILDING_MULTI_CONTROLLER
+      : api.TOPOLOGY.MULTI_BUILDING;
+  const number = Number($("mcAddressNumber").value);
+  const options = {
+    version: Number($("mcVersion").value),
+    topology,
+    building: $("mcBuilding").value.trim(),
+  };
+  const addressType = type === "room" ? api.ADDRESS_TYPE.RESIDENCE
+    : type === "manager" ? api.ADDRESS_TYPE.MANAGEMENT_STATION
+      : type === "entrance" ? api.ADDRESS_TYPE.ENTRANCE_STATION
+        : type === "group" ? api.ADDRESS_TYPE.GROUP
+          : type === "floor" ? api.ADDRESS_TYPE.FLOOR : api.ADDRESS_TYPE.COMMON_AREA;
+  if (type === "room") options.room = number;
+  else if (type === "manager" || type === "entrance") options.station = number;
+  else if (type === "group") options.group = number;
+  else if (type === "floor") options.floor = number;
+  if (typeof api.buildAddress === "function") return api.buildAddress(addressType, options);
+  if (typeof api.formatAddress === "function") return api.formatAddress({ type, ...options });
+  throw new Error("ADDRヘルパAPIを利用できません");
+}
+
+function buildMcFrame() {
+  const api = requireApi("MansionController");
+  const address = mcAddressHelper(api);
+  const messageText = `${address}${$("mcMessage").value}`;
+  const kind = parseHexByte($("mcKind").value, "KIND");
+  const command = parseHexByte($("mcCommand").value, "CMD");
+  const topologyValue = $("mcTopology").value;
+  const topology = topologyValue === "standard" ? api.TOPOLOGY.STANDARD
+    : topologyValue === "multiStation" ? api.TOPOLOGY.SINGLE_BUILDING_MULTI_CONTROLLER
+      : api.TOPOLOGY.MULTI_BUILDING;
+  const options = {
+    kind,
+    command,
+    cmd: command,
+    message: latin1(messageText, "MESG"),
+    version: Number($("mcVersion").value),
+    from: $("mcRole").value,
+    topology,
+  };
+  const builder = api.buildFrame || api.buildTelegram || api.build;
+  if (typeof builder !== "function") throw new Error("MCフレームビルダーを利用できません");
+  return builder.call(api, options);
+}
+
+function refreshMcCommands() {
+  const api = window.MansionController;
+  if (!api) return;
+  const previous = $("mcCommand").value;
+  const kind = parseHexByte($("mcKind").value, "KIND");
+  const definitions = api.listCommandDefinitions({
+    version: Number($("mcVersion").value),
+    from: $("mcRole").value,
+  }).filter((definition) => definition.kind === kind);
+  $("mcCommand").replaceChildren();
+  for (const definition of definitions) {
+    const option = document.createElement("option");
+    option.value = definition.command.toString(16).toUpperCase().padStart(2, "0");
+    option.textContent = `${option.value} ${definition.name}`;
+    $("mcCommand").append(option);
+  }
+  if (definitions.some((definition) => definition.command.toString(16).toUpperCase().padStart(2, "0") === previous)) $("mcCommand").value = previous;
+}
+
+async function preview(id, builder, multiple = false) {
+  try {
+    const result = builder();
+    $(id).textContent = multiple ? result.map((frame, index) => `#${index + 1} ${toHex(frame)}`).join("\n") : toHex(result);
+    return result;
+  } catch (error) {
+    $(id).textContent = `ERROR: ${error.message}`;
+    throw error;
+  }
+}
+
+async function sendKey() {
+  const api = requireApi("NoncontactKey");
+  const frame = await preview("keyPreview", buildKeyFrame);
+  if ($("keyWaitAck").value === "direct") {
+    await transmit(frame, "frame");
+    return;
+  }
+  const sender = new api.NoncontactSender({ maxRetries: 5 });
+  let action = sender.start(frame);
+  while (action.type === "send") {
+    setSequence(`非接触キー ACK待ち ${action.attempt}/6`);
+    const waiter = createControlWaiter(5000, [api.CODE.ACK, api.CODE.NAK]);
+    try {
+      await transmit(action.packet, "frame");
+      waiter.arm();
+      const control = await waiter.promise;
+      action = sender.onControl(control);
+      if (action.type === "ignored") continue;
+    } catch (error) {
+      waiter.cancel();
+      if (/ACK待ちタイムアウト/.test(String(error && error.message))) action = sender.onTimeout();
+      else throw error;
+    }
+  }
+  if (action.type === "complete") {
+    setSequence("完了");
+    addLog("info", "SEQ", null, `ACK受信 / ${action.attempts}回目`);
+  } else {
+    setSequence("失敗");
+    throw new Error(action.reason === "timeout" ? "5秒以内に応答がありません" : "NAK再送上限に到達しました");
+  }
+}
+
+async function sendControlByte(value) {
+  if (state.activeTransaction) throw new Error(`${state.activeTransaction}の通信中は手動byteを割り込ませられません`);
+  await transmit([value], "control");
+  if ($("autoTransportResponse").value !== "manual") return;
+  if (state.manualReceiveStage === "link-response") {
+    if (value === 0x06) {
+      state.inboundLink = true;
+      state.manualReceiveStage = "frame";
+      armReceiveTimer(state.currentView, "link");
+      setSequence("手動ACK送信・受信電文待ち");
+    } else if (value === 0x15) {
+      state.manualReceiveStage = null;
+      setSequence("手動NAK送信");
+    }
+  } else if (state.manualReceiveStage === "frame-response" && [0x06, 0x15].includes(value)) {
+    state.manualReceiveStage = null;
+    state.pendingFrameValid = null;
+    if (value === 0x06 && state.currentView === "locker4" && state.locker4Inbound) {
+      armReceiveTimer("locker4", "link");
+      setSequence(state.locker4Inbound.expectedPackage < 0 ? "手動ACK・EOT待ち" : `手動ACK・package ${state.locker4Inbound.expectedPackage}待ち`);
+    } else {
+      if (value === 0x15 && state.currentView === "locker4") resetLocker4Inbound();
+      setSequence(value === 0x06 ? "手動ACK送信・受信完了" : "手動NAK送信・受信破棄");
+    }
+  }
+}
+
+async function sendLocker2() {
+  const frames = await preview("locker2Preview", buildLocker2Frames, true);
+  const token = { cancelled: false };
+  state.locker2Run = token;
+  $("locker2StopButton").disabled = false;
+  const cycle = $("locker2Repeat").value === "cycle";
+  try {
+    do {
+      for (let offset = 0; offset < frames.length && !token.cancelled; offset += 5) {
+        const group = frames.slice(offset, offset + 5);
+        setSequence(`2線式 ${offset + 1}～${offset + group.length}/${frames.length}`);
+        for (const frame of group) await transmit(frame, "frame");
+        if (!token.cancelled && (cycle || offset + 5 < frames.length)) await sleep(1000);
+      }
+    } while (cycle && !token.cancelled);
+    setSequence(token.cancelled ? "反復停止" : "完了");
+  } finally {
+    if (state.locker2Run === token) state.locker2Run = null;
+    $("locker2StopButton").disabled = true;
+  }
+}
+
+function expectedFrameLength(view, buffer) {
+  if (view === "locker2") return 11;
+  if (view === "elevator") return 21;
+  if (view === "alarm") return 11;
+  if (view === "key") {
+    const etx = buffer.indexOf(0x03, 1);
+    return etx === -1 ? null : etx + 2;
+  }
+  if (view === "locker4" && buffer.length >= 6) {
+    const text = String.fromCharCode(...buffer.slice(3, 6));
+    return /^\d{3}$/.test(text) ? Number(text) + 8 : -1;
+  }
+  if (view === "mansion" && buffer.length >= 3) {
+    const text = String.fromCharCode(buffer[1], buffer[2]);
+    return /^\d{2}$/.test(text) ? Number(text) + 2 : -1;
+  }
+  return null;
+}
+
+function trackLocker4Packet(value) {
+  state.locker4Inbound = state.locker4Series.accept(value);
+}
+
+function describeFrame(view, frame) {
+  if (view === "locker2") {
+    const api = requireApi("Telegram2");
+    const value = api.parseTelegram(frame);
+    const patmo = $("locker2Profile").value === "patmo";
+    api.validateRegistrationList([value], {
+      maxEntries: patmo ? 40 : 100,
+      allowedBuildingNos: patmo ? [0, 1] : [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    });
+    return `2線式 状態=${value.command.toString(16).toUpperCase()} 棟=${value.buildingNo} 住戸=${value.roomNo} addr=${value.address}`;
+  }
+  if (view === "locker4") {
+    const value = requireApi("Telegram4").parseTelegram(frame);
+    const expectedType = $("locker4Action").value === "request" ? "response" : "request";
+    if (value.type !== expectedType) throw new Error(`現在の動作側では${value.type}電文を受信できません`);
+    value.lockers.forEach((locker, index) => {
+      locker4State(locker.state.toString(16).padStart(2, "0"), index);
+      if ([0x40, 0x41, 0x42].includes(locker.state) && locker.lockerNo !== 0) {
+        throw new Error("宅配ロボ状態のロッカーNoは000固定です");
+      }
+    });
+    if (state.inboundLink) trackLocker4Packet(value);
+    return `4線式 ${value.type} pkg=${value.packageNo} model=${value.modelNo == null ? "空白" : value.modelNo} ${value.lockers.length}件`;
+  }
+  if (view === "key") {
+    const value = requireApi("NoncontactKey").parseTelegram(frame, {
+      personMax: $("keyProfile").value === "limited8" ? 8 : 999,
+    });
+    return `非接触キー gate=${value.gateNo} room=${value.roomNo5} person=${value.personNo == null ? "なし" : value.personNo}`;
+  }
+  if (view === "elevator") {
+    const api = requireApi("ElevatorProtocol");
+    const incomingDirection = $("elevatorDirection").value === api.DIRECTION.TO_ELEVATOR
+      ? api.DIRECTION.FROM_ELEVATOR : api.DIRECTION.TO_ELEVATOR;
+    const value = api.parseFrame(frame, { profile: $("elevatorProfile").value, direction: incomingDirection });
+    return `EV ${value.command} gate=${value.gate.raw} room=${value.room.raw}`;
+  }
+  if (view === "alarm") {
+    const api = requireApi("AlarmProtocol");
+    const value = api.parseFrame(frame);
+    const localRole = $("alarmRole").value;
+    if ((localRole === "intercom" && value.type !== api.TYPE.HISTORY_REQUEST) ||
+        (localRole === "alarm" && value.type === api.TYPE.HISTORY_REQUEST)) {
+      throw new Error("現在の動作側に対して送信方向が逆です");
+    }
+    return `警報 ${value.typeName} info=${value.info.toString(16).padStart(2, "0")} source=${value.source.kind}`;
+  }
+  if (view === "mansion") {
+    const api = requireApi("MansionController");
+    const incomingRole = $("mcRole").value === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
+    const value = (api.parseFrame || api.parseTelegram || api.parse).call(api, frame, {
+      version: Number($("mcVersion").value),
+      from: incomingRole,
+    });
+    return `MC KIND=${Number(value.kind).toString(16).toUpperCase()} CMD=${Number(value.command == null ? value.cmd : value.command).toString(16).toUpperCase()}`;
+  }
+  return "";
+}
+
+function inspectReceive(bytes) {
+  const controls = [];
+  if (!["locker2", "locker4", "key", "mansion", "elevator", "alarm"].includes(state.currentView)) {
+    return Array.from(bytes).filter((byte) => [0x04, 0x05, 0x06, 0x15].includes(byte));
+  }
+  for (const byte of bytes) {
+    if (state.receiveBuffer.length === 0) {
+      if (byte === 0x02) {
+        state.receiveBuffer.push(byte);
+        armReceiveTimer(state.currentView, "frame");
+      } else if ([0x04, 0x05, 0x06, 0x15].includes(byte)) controls.push(byte);
+      continue;
+    }
+    const expectedBeforeAppend = expectedFrameLength(state.currentView, state.receiveBuffer);
+    // Once the declared/fixed length is known, every byte is payload or BCC.
+    // In particular a valid BCC may itself equal STX (02); restarting here would
+    // discard a specification-compliant frame at exactly its final byte.
+    const asciiFramed = ["locker2", "locker4", "key", "mansion", "elevator"].includes(state.currentView);
+    const isFinalBcc = expectedBeforeAppend && state.receiveBuffer.length === expectedBeforeAppend - 1;
+    if (byte === 0x02 && (expectedBeforeAppend == null || (asciiFramed && !isFinalBcc))) {
+      state.receiveBuffer = [byte];
+      armReceiveTimer(state.currentView, "frame");
+    } else state.receiveBuffer.push(byte);
+    const expected = expectedFrameLength(state.currentView, state.receiveBuffer);
+    if (expected === -1 || state.receiveBuffer.length > 1100) {
+      addLog("warn", "PARSE", state.receiveBuffer, "不正なフレーム長／ヘッダのため破棄");
+      state.receiveBuffer = [];
+      handleCompletedInboundFrame(false);
+    } else if (expected && state.receiveBuffer.length === expected) {
+      const frame = state.receiveBuffer.slice();
+      state.receiveBuffer = [];
+      try {
+        const view = state.currentView;
+        addLog("info", "PARSE", null, describeFrame(view, frame));
+        handleCompletedInboundFrame(true).then((control) => handleApplicationFrame(view, frame, control));
+      } catch (error) {
+        logError(error, "受信電文検証");
+        handleCompletedInboundFrame(false);
+      }
+    }
+  }
+  return controls;
+}
+
+const keyReceiver = window.NoncontactKey ? new window.NoncontactKey.NoncontactReceiver() : null;
+async function autoRespondKey(bytes) {
+  if (state.currentView !== "key" || !keyReceiver || !$(`keyAutoResponse`).checked) return;
+  const events = keyReceiver.push(bytes);
+  for (const event of events) {
+    if (event.type !== "frame") continue;
+    addLog(event.accepted ? "info" : "warn", "KEY-RX", event.packet, event.error || "受信正常");
+    try { await transmit([event.response], "response"); } catch (error) { logError(error, "非接触キー自動応答"); }
+  }
+}
+
+function navigate(view) {
+  if (state.activeTransaction && view !== state.currentView) {
+    toast(`${state.activeTransaction}の通信中は画面を切り替えられません`, true);
+    return;
+  }
+  state.currentView = view;
+  state.receiveBuffer = [];
+  state.inboundLink = false;
+  resetLocker4Inbound();
+  state.manualReceiveStage = null;
+  clearReceiveTimer();
+  if (keyReceiver) keyReceiver.reset();
+  document.querySelectorAll(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
+  document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
+  const preset = ["locker2", "locker4", "mansion"].includes(view) ? "locker" : view === "key" ? "key" : view === "elevator" ? "elevator" : view === "alarm" ? "alarm" : null;
+  if (preset && !state.connected) {
+    $("serialPreset").value = preset;
+    applySerialPreset(preset);
+  }
+}
+
+function bindPreview(buttonId, previewId, builder, multiple = false) {
+  $(buttonId).addEventListener("click", () => preview(previewId, builder, multiple).catch((error) => logError(error, "プレビュー")));
+}
+
+function saveLogs() {
+  if (state.logs.length === 0) return toast("保存するログがありません", true);
+  const text = state.logs.map((entry) => `[${entry.time}]\t${entry.label}\t${entry.bytes ? toHex(entry.bytes) : ""}\t${entry.detail}`).join("\r\n");
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = `external-simulator-${new Date().toISOString().replace(/[:.]/g, "-")}.log.txt`;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
+
+function clearLogs() {
+  state.logs.length = 0;
+  $("communicationLog").replaceChildren();
+  $("logCount").textContent = "0件";
+}
+
+function collectProfile() {
+  const values = {};
+  document.querySelectorAll("input[id], select[id], textarea[id]").forEach((element) => {
+    if (["serialPort", "profileImportFile"].includes(element.id) || element.type === "file") return;
+    values[element.id] = element.type === "checkbox" ? { checked: element.checked } : { value: element.value };
+  });
+  return { format: "external-device-simulator-next-profile", version: 1, savedAt: new Date().toISOString(), values };
+}
+
+function applyProfile(profile) {
+  if (!profile || profile.format !== "external-device-simulator-next-profile" || profile.version !== 1 || !profile.values) {
+    throw new Error("対応していないプロファイル形式です");
+  }
+  const delayedCommand = profile.values.mcCommand;
+  for (const [id, setting] of Object.entries(profile.values)) {
+    if (id === "mcCommand") continue;
+    const element = $(id);
+    if (!element || !setting || typeof setting !== "object") continue;
+    if (element.type === "checkbox" && typeof setting.checked === "boolean") element.checked = setting.checked;
+    else if (typeof setting.value === "string") {
+      if (element.tagName === "SELECT" && !Array.from(element.options).some((option) => option.value === setting.value)) continue;
+      element.value = setting.value;
+    }
+  }
+  refreshMcCommands();
+  if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
+    $("mcCommand").value = delayedCommand.value;
+  }
+}
+
+function saveProfile() {
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(collectProfile()));
+  toast("現在の設定を保存しました");
+}
+
+function exportProfile() {
+  const blob = new Blob([JSON.stringify(collectProfile(), null, 2)], { type: "application/json;charset=utf-8" });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = `external-simulator-profile-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
+
+async function importProfile(file) {
+  if (!file || file.size > 1_000_000) throw new Error("プロファイルは1MB以下のJSONを指定してください");
+  const profile = JSON.parse(await file.text());
+  applyProfile(profile);
+  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  toast("プロファイルを読み込みました");
+}
+
+function loadSavedProfile() {
+  const source = localStorage.getItem(PROFILE_STORAGE_KEY);
+  if (!source) return false;
+  try {
+    applyProfile(JSON.parse(source));
+    return true;
+  } catch (error) {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+    logError(error, "保存プロファイル読込");
+    return false;
+  }
+}
+
+function bindEvents() {
+  document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
+  $("refreshPorts").addEventListener("click", refreshPorts);
+  $("connectButton").addEventListener("click", connect);
+  $("disconnectButton").addEventListener("click", disconnect);
+  $("serialPreset").addEventListener("change", (event) => applySerialPreset(event.target.value));
+  ["mcVersion", "mcRole", "mcKind"].forEach((id) => $(id).addEventListener("change", refreshMcCommands));
+  $("elevatorCommand").addEventListener("change", () => {
+    const api = requireApi("ElevatorProtocol");
+    const directions = api.COMMAND_META[$("elevatorCommand").value].directions;
+    if (directions.length === 1) $("elevatorDirection").value = directions[0];
+  });
+  $("alarmRole").addEventListener("change", () => {
+    $("alarmType").value = $("alarmRole").value === "intercom" ? "00" : "30";
+  });
+  $("saveLog").addEventListener("click", saveLogs);
+  $("clearLog").addEventListener("click", clearLogs);
+  document.querySelectorAll(".log-filters button").forEach((button) => button.addEventListener("click", () => {
+    state.filter = button.dataset.filter;
+    document.querySelectorAll(".log-filters button").forEach((item) => item.classList.toggle("active", item === button));
+    document.querySelectorAll(".log-entry").forEach(applyLogFilter);
+  }));
+
+  bindPreview("terminalPreviewButton", "terminalPreview", terminalFrame);
+  bindPreview("locker2PreviewButton", "locker2Preview", buildLocker2Frames, true);
+  bindPreview("locker4PreviewButton", "locker4Preview", buildLocker4Packets, true);
+  bindPreview("keyPreviewButton", "keyPreview", buildKeyFrame);
+  bindPreview("mcPreviewButton", "mcPreview", buildMcFrame);
+  bindPreview("elevatorPreviewButton", "elevatorPreview", buildElevatorFrame);
+  bindPreview("alarmPreviewButton", "alarmPreview", buildAlarmFrame);
+
+  $("terminalSendButton").addEventListener("click", () => withTransaction("汎用送信", async () => transmit(await preview("terminalPreview", terminalFrame), "frame")).catch((error) => logError(error, "送信")));
+  document.querySelectorAll(".control-byte").forEach((button) => button.addEventListener("click", () => sendControlByte(Number(button.dataset.byte)).catch((error) => logError(error, "制御コード送信"))));
+  $("locker2SendButton").addEventListener("click", () => withTransaction("2線式", sendLocker2).catch((error) => logError(error, "2線式送信")));
+  $("locker2StopButton").addEventListener("click", () => { if (state.locker2Run) state.locker2Run.cancelled = true; });
+  $("locker4SendButton").addEventListener("click", async () => {
+    try { await withTransaction("4線式", async () => {
+      const packets = await preview("locker4Preview", buildLocker4Packets, true);
+      if ($("locker4Transport").value === "direct") { for (const frame of packets) await transmit(frame, "frame"); }
+      else await runHandshake(packets, { sendEot: true, textRetryMode: "restart", linkTimeoutMs: $("locker4Action").value === "request" ? 3000 : 5000, textTimeoutMs: 5000, priority: $("locker4Action").value === "request" });
+    }); } catch (error) { logError(error, "4線式送信"); }
+  });
+  $("keySendButton").addEventListener("click", () => withTransaction("非接触キー", sendKey).catch((error) => logError(error, "非接触キー送信")));
+  $("mcSendButton").addEventListener("click", async () => {
+    try { await withTransaction("マンションコントローラ", async () => {
+      const frame = await preview("mcPreview", buildMcFrame);
+      if ($("mcTransport").value === "direct") await transmit(frame, "frame");
+      else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC", idleBeforeEnqMs: $("mcRole").value === "IC" ? 50 : 0 });
+    }); } catch (error) { logError(error, "MC送信"); }
+  });
+  $("elevatorSendButton").addEventListener("click", async () => {
+    try { await withTransaction("エレベータ", async () => {
+      const frame = await preview("elevatorPreview", buildElevatorFrame);
+      if ($("elevatorTransport").value === "direct") await transmit(frame, "frame");
+      else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", priority: $("elevatorDirection").value === requireApi("ElevatorProtocol").DIRECTION.TO_ELEVATOR });
+    }); } catch (error) { logError(error, "EV送信"); }
+  });
+  $("alarmSendButton").addEventListener("click", async () => {
+    try { await withTransaction("警報発信装置", async () => {
+      const frame = await preview("alarmPreview", buildAlarmFrame);
+      if ($("alarmTransport").value === "direct") await transmit(frame, "frame");
+      else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", maxRetries: 255, priority: $("alarmRole").value === "intercom" });
+      const parsed = requireApi("AlarmProtocol").parseFrame(frame);
+      if ($("alarmAutoRecord").checked && parsed.historyNumber === 0 && [0x00, 0x01].includes(parsed.type)) recordAlarmHistory(frame);
+    }); } catch (error) { logError(error, "警報送信"); }
+  });
+  $("alarmRecordButton").addEventListener("click", () => { try { recordAlarmHistory(); } catch (error) { logError(error, "履歴記録"); } });
+  $("alarmNextButton").addEventListener("click", () => { try { prepareNextAlarmHistory(); } catch (error) { logError(error, "履歴準備"); } });
+  $("alarmHistorySendButton").addEventListener("click", () => withTransaction("警報履歴応答", sendNextAlarmHistory).catch((error) => logError(error, "履歴応答送信")));
+  $("alarmClearButton").addEventListener("click", () => {
+    state.alarmHistory.clear();
+    state.alarmHistoryPending = null;
+    updateAlarmHistoryStatus("消去しました");
+  });
+
+  $("faultReset").addEventListener("click", () => { state.faultPlan = null; state.faultSignature = ""; toast("異常注入の適用回数をリセットしました"); });
+  $("applySignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.setSignals({ dtr: $("signalDtr").checked, rts: $("signalRts").checked })); } catch (error) { logError(error, "信号線設定"); } });
+  $("readSignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.getSignals()); } catch (error) { logError(error, "信号線取得"); } });
+  $("flushSerial").addEventListener("click", async () => { try { await window.serialAPI.flush(); addLog("warn", "FLUSH", null, "入出力バッファを破棄"); } catch (error) { logError(error, "バッファ破棄"); } });
+  $("saveProfile").addEventListener("click", saveProfile);
+  $("exportProfile").addEventListener("click", exportProfile);
+  $("importProfile").addEventListener("click", () => $("profileImportFile").click());
+  $("profileImportFile").addEventListener("change", (event) => {
+    importProfile(event.target.files[0]).catch((error) => logError(error, "プロファイル読込"));
+    event.target.value = "";
+  });
+  $("resetProfile").addEventListener("click", () => {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+    toast("保存設定を削除しました。次回起動時は初期値になります");
+  });
+}
+
+async function initialize() {
+  bindEvents();
+  const profileLoaded = loadSavedProfile();
+  refreshMcCommands();
+  state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
+  state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();
+  updateAlarmHistoryStatus();
+  if (!window.serialAPI) {
+    applyConnectionState({ status: "error", error: "serialAPI unavailable" });
+    return logError(new Error("ElectronのserialAPIを利用できません"), "初期化");
+  }
+  window.serialAPI.onStatus(applyConnectionState);
+  window.serialAPI.onWrite((event) => {
+    state.txCount += 1;
+    updateMetrics();
+    addLog("tx", "TX", event.bytes, `session=${event.sessionId} seq=${event.sequence}`);
+  });
+  window.serialAPI.onData((bytes, event) => {
+    state.lastIoAt = Date.now();
+    state.rxCount += 1;
+    updateMetrics();
+    addLog("rx", "RX", bytes, `session=${event.sessionId} seq=${event.sequence}`);
+    const controls = inspectReceive(bytes);
+    for (const control of controls) {
+      const packet = [control];
+      const consumed = dispatchControl(packet);
+      handleInboundControl(packet, consumed);
+    }
+    autoRespondKey(bytes);
+  });
+  window.serialAPI.onError((message) => logError(new Error(message), "シリアル"));
+  applyConnectionState(await window.serialAPI.status());
+  if (!profileLoaded) {
+    $("serialPreset").value = "locker";
+    applySerialPreset("locker");
+  }
+  await refreshPorts();
+  updateMetrics();
+  addLog("info", "READY", null, "外部疑似装置 Next を初期化しました");
+}
+
+initialize().catch((error) => logError(error, "初期化"));

@@ -1,45 +1,64 @@
-// 非接触キー 電文ビルダーの検証（仕様書 Q48-006F Ver1.15）
-const T = require("../protocol/noncontact-key.js");
+"use strict";
 
-let pass = 0, fail = 0;
-function check(name, actual, expected) {
-  const a = Array.isArray(actual) ? T.toHex(actual) : String(actual);
-  const e = Array.isArray(expected) ? T.toHex(expected) : String(expected);
-  if (a === e) { console.log("  OK   " + name); pass++; }
-  else { console.log("  NG   " + name + "\n        期待: " + e + "\n        実際: " + a); fail++; }
+const assert = require("assert");
+const Key = require("../protocol/noncontact-key");
+
+const packet13 = Key.buildTelegram({
+  format: Key.FORMAT.WITH_PERSON,
+  gateNo: 1,
+  buildingNo: 0,
+  roomNo: 101,
+  personNo: 3,
+});
+assert.deepStrictEqual(packet13, [0x02, 0x30, 0x31, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x33, 0x03, 0x01]);
+assert.strictEqual(Key.verifyBCC(packet13), true);
+assert.strictEqual(Key.verifyBCC([]), false);
+assert.deepStrictEqual(Key.parseTelegram(packet13), {
+  format: Key.FORMAT.WITH_PERSON,
+  gateNo: 1,
+  roomNo5: "00101",
+  buildingNo: 0,
+  roomNo: 101,
+  personNo: 3,
+  bcc: 0x01,
+  bytes: packet13,
+});
+
+const packet10 = Key.buildTelegram({ format: Key.FORMAT.ROOM_ONLY, gateNo: 99, roomNo5: "90101" });
+assert.strictEqual(packet10.length, 10);
+assert.strictEqual(Key.parseTelegram(packet10).personNo, null);
+assert.throws(() => Key.buildTelegram({ gateNo: 0, roomNo5: "00101", personNo: 0 }), /gateNo/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "101", personNo: 0 }), /exactly 5/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "00101", personNo: 9, personMax: 8 }), /personNo/);
+assert.throws(() => Key.parseTelegram(Key.corruptBCC(packet13)), /BCC/);
+
+const receiver = new Key.NoncontactReceiver();
+assert.deepStrictEqual(receiver.push(packet13.slice(0, 4)), []);
+const events = receiver.push(packet13.slice(4));
+assert.strictEqual(events.length, 1);
+assert.strictEqual(events[0].response, Key.CODE.ACK);
+assert.strictEqual(events[0].accepted, true);
+
+const restarted = new Key.NoncontactReceiver();
+restarted.push([0x02, 0x30, 0x31, 0x02]);
+assert.strictEqual(restarted.push(packet10.slice(1))[0].accepted, true, "mid-frame STX must restart framing");
+
+const invalidLengthFrame = [0x02, 0x31, 0x03];
+invalidLengthFrame.push(Key.calcBCC(invalidLengthFrame));
+const invalidLengthEvent = new Key.NoncontactReceiver().push(invalidLengthFrame)[0];
+assert.strictEqual(invalidLengthEvent.response, Key.CODE.ACK, "valid BCC with invalid length is ACKed");
+assert.strictEqual(invalidLengthEvent.accepted, false);
+
+const sender = new Key.NoncontactSender({ maxRetries: 5 });
+assert.strictEqual(sender.start(packet10).attempt, 1);
+for (let attempt = 2; attempt <= 6; attempt += 1) {
+  assert.strictEqual(sender.onControl(Key.CODE.NAK).attempt, attempt);
 }
+assert.strictEqual(sender.onControl(Key.CODE.NAK).reason, "nak-limit");
 
-console.log("=== ASCII 数字ヘルパ ===");
-check("ゲート1 → '01'", T.asciiDigits(1, 2), [0x30, 0x31]);
-check("個人8 → '008'", T.asciiDigits(8, 3), [0x30, 0x30, 0x38]);
-check("ルーム 棟0・101号室 → '00101'", T.room5({ buildingNo: 0, roomNo: 101 }), [0x30, 0x30, 0x31, 0x30, 0x31]);
-check("ルーム文字列 1108 → '01108'", T.room5({ roomNo5: "1108" }), [0x30, 0x31, 0x31, 0x30, 0x38]);
+const timeoutSender = new Key.NoncontactSender();
+timeoutSender.start(packet10);
+assert.strictEqual(timeoutSender.onTimeout().reason, "timeout");
+assert.strictEqual(timeoutSender.attempts, 1, "no response must not be retried");
 
-console.log("\n=== 13バイト形式: ゲート+ルーム+個人番号 ===");
-const withPerson = T.buildTelegram({ gateNo: 1, buildingNo: 0, roomNo: 101, personNo: 3 });
-console.log("  生成電文: " + T.toHex(withPerson));
-check("13バイト固定", [withPerson.length], [13]);
-check("BCC除く電文", withPerson.slice(0, -1), [0x02, 0x30, 0x31, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x33, 0x03]);
-check("BCC検証OK", T.verifyBCC(withPerson), true);
-check("BCC = calcBCC", [withPerson[withPerson.length - 1]], [T.calcBCC(withPerson.slice(0, -1))]);
-
-console.log("\n=== 10バイト形式: ゲート+ルーム ===");
-const roomOnly = T.buildTelegram({ gateNo: 99, roomNo5: "90101", format: T.FORMAT.ROOM_ONLY });
-console.log("  生成電文: " + T.toHex(roomOnly));
-check("10バイト固定", [roomOnly.length], [10]);
-check("BCC除く電文", roomOnly.slice(0, -1), [0x02, 0x39, 0x39, 0x39, 0x30, 0x31, 0x30, 0x31, 0x03]);
-check("BCC検証OK", T.verifyBCC(roomOnly), true);
-
-console.log("\n=== BCC異常系 ===");
-check("BCC誤り注入で検証NG", T.verifyBCC(T.corruptBCC(withPerson)), false);
-
-console.log("\n=== 制御コード ===");
-check("STX=02H", [T.CODE.STX], [0x02]);
-check("ETX=03H", [T.CODE.ETX], [0x03]);
-check("ACK=06H", [T.CODE.ACK], [0x06]);
-check("NAK=15H", [T.CODE.NAK], [0x15]);
-
-console.log("\n========================================");
-console.log(`  結果: ${pass} 件成功 / ${fail} 件失敗`);
-console.log("========================================");
-process.exit(fail ? 1 : 0);
+console.log("noncontact-key: OK");
