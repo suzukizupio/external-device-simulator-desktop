@@ -64,6 +64,24 @@ npm run dist:win
 
 配布ファイルは `dist/external-device-simulator-next-1.0.0-x64.exe` に生成されます。
 
+### アプリアイコン
+
+アイコンの原本は `build/icon.svg`（16/24px用の簡略版は `build/icon-small.svg`）です。
+`build/icon.ico` と `build/icon.png` は次のコマンドで再生成します。
+
+```bash
+npm run icons   # 要: librsvg2-bin, imagemagick
+```
+
+**ImageMagick(`convert`)でSVGを直接ラスタライズしてはいけません。** 内蔵SVGレンダラは
+`stroke="url(#gradient)"` を解釈できず、グラデーション指定のストローク（枠線・コーナー
+飾り・シェブロン）を黙って捨てるため、ほぼ真っ黒な角丸四角形だけのICOが生成されます。
+ファイル自体は正常に見えるため気付きにくく、実際に一度この不具合を踏んでいます。
+ラスタライズは必ず `rsvg-convert` で行ってください（`npm run icons` はこれを保証します）。
+
+`npm test` の `icon-asset` テストがICOを画素単位で検証し、アクセント色が欠落した
+アイコンがコミットされることを防ぎます。
+
 ## 仕様上の注意
 
 - Q49-023G p.20の「警戒設定」例はBCCが`3E`と印字されていますが、同仕様p.13の規定式では`41`です。本実装は規定式を正として`41`を生成し、`3E`は不正BCCとして扱います。

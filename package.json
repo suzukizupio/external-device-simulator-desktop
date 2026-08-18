@@ -8,6 +8,7 @@
     "start": "electron .",
     "test": "node test/run-all.js",
     "test:smoke": "node test/electron-smoke.js",
+    "icons": "node tools/build-icons.js",
     "pack": "electron-builder --dir",
     "dist:win": "electron-builder --win portable --x64"
   },

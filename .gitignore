@@ -8,6 +8,7 @@ out/
 # Electronビルド素材（アイコンのみ追跡）
 build/*
 !build/icon.svg
+!build/icon-small.svg
 !build/icon.png
 !build/icon.ico
 
