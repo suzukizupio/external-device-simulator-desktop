@@ -143,22 +143,29 @@
             <label>表示選択<select id="locker2Filter"><option value="all">すべて表示</option><option value="selected">送信登録のみ</option></select></label>
           </div>
 
+          <p class="callout">住戸アドレスは「住戸番号の登録数の連番」（Q55-001D 2.基本機能）のため入力欄はありません。ロッカー番号がそのまま住戸アドレスとして送信されます。棟Noは0～8で入力し、0のときは送信データの棟Noへ「棟番号なし」(3FH)がセットされます。</p>
+
           <div class="locker-tools">
-            <label>登録行数<input id="locker2Count" type="number" min="1" max="100" value="100"></label>
+            <label>登録行数<input id="locker2Count" type="number" min="1" max="800" value="100"></label>
             <span class="tool-sep"></span>
             <label>状態<select id="locker2Command"><option value="17">11H 着荷</option><option value="18">12H 滞留</option><option value="19">13H 取出</option></select></label>
             <label>棟No<input id="locker2Building" type="number" min="0" max="8" value="1"></label>
-            <label>開始住戸番号<input id="locker2Room" type="number" min="1" max="9999" value="101"></label>
-            <label>開始住戸アドレス<input id="locker2Address" type="number" min="1" max="800" value="1"></label>
-            <label>開始行<input id="locker2BulkFrom" type="number" min="1" max="100" value="1"></label>
-            <label>終了行<input id="locker2BulkTo" type="number" min="1" max="100" value="10"></label>
+            <label>初期居室番号<input id="locker2Room" type="number" min="1" max="9999" value="101"></label>
+            <label>採番方法<select id="locker2Increment"><option value="room">部屋番号インクリメント</option><option value="floor">階番号インクリメント</option></select></label>
+            <label>開始ロッカー番号<input id="locker2BulkFrom" type="number" min="1" max="800" value="1"></label>
+            <label>終了ロッカー番号<input id="locker2BulkTo" type="number" min="1" max="800" value="10"></label>
             <button class="secondary" id="locker2BulkApply">番号をセット</button>
             <button class="danger" id="locker2BulkReset">全番号リセット</button>
           </div>
 
+          <div class="locker-tools">
+            <label>登録行の状態を切替<select id="locker2SwitchCommand"><option value="17">11H 着荷</option><option value="18">12H 滞留</option><option value="19">13H 取出</option></select></label>
+            <button class="secondary" id="locker2SwitchApply">登録行へ反映</button>
+          </div>
+
           <div class="locker-table-wrap">
             <table class="locker-table">
-              <thead><tr><th>送信</th><th>No</th><th>状態</th><th>棟No</th><th>住戸番号</th><th>住戸アドレス</th></tr></thead>
+              <thead><tr><th>送信</th><th>ロッカー番号<br>(住戸アドレス)</th><th>状態</th><th>棟No</th><th>居室番号</th></tr></thead>
               <tbody id="locker2Body"></tbody>
             </table>
           </div>
@@ -166,6 +173,7 @@
           <div class="locker-status">
             <span>表示 <strong id="locker2Visible">0</strong> 件</span>
             <span>送信登録 <strong id="locker2Selected">0</strong> 件</span>
+            <span>着荷・滞留 <strong id="locker2Boxes">0</strong> 件</span>
             <span id="locker2Limit">上限 100 件</span>
             <button class="secondary" id="locker2SelectVisible">表示中を全て登録</button>
             <button class="secondary" id="locker2ClearSelection">登録を解除</button>

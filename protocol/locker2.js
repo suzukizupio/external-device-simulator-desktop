@@ -117,10 +117,13 @@
   }
 
   // 登録住戸は「棟No+住戸番号」と住戸アドレスがそれぞれ一意でなければならない。
+  // 仕様2.基本機能：住戸アドレスはMAX800（＝登録数の上限）。
+  // 仕様5.⑪：「荷物お届け」「滞留」動作の住戸番号の総数（ボックス数）は100以下
+  //（PATMOαは40以下）。登録数そのものとは別の制限であることに注意。
   function validateRegistrationList(list, options) {
     options = options || {};
     if (!Array.isArray(list)) throw new TypeError("登録リストは配列で指定してください");
-    const maxEntries = options.maxEntries == null ? 100 : integer(options.maxEntries, "最大登録数", 1, 100);
+    const maxEntries = options.maxEntries == null ? 800 : integer(options.maxEntries, "最大登録数", 1, 800);
     if (list.length > maxEntries) fail(`登録数は${maxEntries}件以下でなければなりません`);
 
     let allowedBuildings = null;
@@ -133,7 +136,7 @@
 
     const addresses = new Set();
     const residences = new Set();
-    return list.map((entry, index) => {
+    const result = list.map((entry, index) => {
       if (!entry || typeof entry !== "object") throw new TypeError(`登録リストの${index + 1}件目が不正です`);
       const buildingNo = integer(entry.buildingNo, `登録${index + 1}の棟No`, 0, 8);
       const roomNo = integer(entry.roomNo, `登録${index + 1}の住戸番号`, 1, 9999);
@@ -148,6 +151,15 @@
       if (entry.command != null) normalized.command = validateCommand(entry.command);
       return normalized;
     });
+
+    if (options.maxBoxes != null) {
+      const maxBoxes = integer(options.maxBoxes, "最大ボックス数", 1, 800);
+      const boxes = result.filter(entry => entry.command === CMD.ARRIVE || entry.command === CMD.STAY).length;
+      if (boxes > maxBoxes) {
+        fail(`着荷・滞留の住戸数（ボックス数）は${maxBoxes}件以下でなければなりません`);
+      }
+    }
+    return result;
   }
 
   function toHex(arr) { return Array.from(arr).map(b => b.toString(16).toUpperCase().padStart(2, "0")).join(" "); }

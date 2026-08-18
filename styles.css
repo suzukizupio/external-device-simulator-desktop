@@ -97,6 +97,7 @@ td { color: #c9d2e1; }
 .locker-tools label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; }
 .locker-tools input { width: 108px; }
 .locker-tools .tool-sep { width: 1px; align-self: stretch; background: #222e46; }
+.locker-tools + .locker-tools { margin-top: 8px; }
 .locker-table-wrap { margin-top: 12px; max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
 .locker-table { width: 100%; border-collapse: collapse; font: 11px/1.4 Consolas, "Cascadia Mono", monospace; }
 .locker-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 8px; background: var(--panel-2); border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }

@@ -42,17 +42,30 @@ const LOCKER_UI_SCRIPT = `
     const registered = document.getElementById("locker4Selected").textContent;
     document.getElementById("locker4PreviewButton").click();
 
+    // 階番号インクリメントで101→201→301になることを確かめる。
     document.getElementById("locker2Building").value = "1";
     document.getElementById("locker2Room").value = "101";
-    document.getElementById("locker2Address").value = "1";
+    document.getElementById("locker2Increment").value = "floor";
     document.getElementById("locker2BulkFrom").value = "1";
     document.getElementById("locker2BulkTo").value = "3";
+    document.getElementById("locker2BulkApply").click();
+    const assignedFloor = rowsOf("locker2Body").slice(0, 3).map(numbersOf);
+
+    document.getElementById("locker2Increment").value = "room";
     document.getElementById("locker2BulkApply").click();
     const assigned2 = rowsOf("locker2Body").slice(0, 3).map(numbersOf);
 
     rowsOf("locker2Body")[0].querySelector("input[type=checkbox]").click();
     rowsOf("locker2Body")[1].querySelector("input[type=checkbox]").click();
     const registered2 = document.getElementById("locker2Selected").textContent;
+
+    // 「切替」で登録済みの行だけ取出しへ変えると、ボックス数が0になる。
+    document.getElementById("locker2SwitchCommand").value = "19";
+    document.getElementById("locker2SwitchApply").click();
+    const boxesAfterSwitch = document.getElementById("locker2Boxes").textContent;
+    document.getElementById("locker2SwitchCommand").value = "17";
+    document.getElementById("locker2SwitchApply").click();
+    const boxes2 = document.getElementById("locker2Boxes").textContent;
     document.getElementById("locker2PreviewButton").click();
 
     setTimeout(() => {
@@ -73,7 +86,10 @@ const LOCKER_UI_SCRIPT = `
         preview: document.getElementById("locker4Preview").textContent,
         initialRows2,
         assigned2,
+        assignedFloor,
         registered2,
+        boxes2,
+        boxesAfterSwitch,
         visible2: document.getElementById("locker2Visible").textContent,
         limit2: document.getElementById("locker2Limit").textContent,
         preview2: document.getElementById("locker2Preview").textContent,
@@ -153,11 +169,15 @@ async function run({ window, app, sendToRenderer }) {
     if (locker.initialRows2 !== 100 || locker.visible2 !== "100" || locker.limit2 !== "上限 100 件") {
       throw new Error(`locker2 table was not rendered: ${JSON.stringify(locker)}`);
     }
-    if (locker.assigned2.join(",") !== "1-101-1,1-102-2,1-103-3") {
+    if (locker.assigned2.join(",") !== "1-101,1-102,1-103" || locker.assignedFloor.join(",") !== "1-101,1-201,1-301") {
       throw new Error(`locker2 bulk assignment failed: ${JSON.stringify(locker)}`);
     }
     if (locker.registered2 !== "2" || !locker.preview2.startsWith("#1 02 ") || !locker.preview2.includes("#2 02 ")) {
       throw new Error(`locker2 registration failed: ${JSON.stringify(locker)}`);
+    }
+    // 取り出しはボックス数に数えず、着荷へ戻すと登録2件がそのまま数えられる。
+    if (locker.boxesAfterSwitch !== "0" || locker.boxes2 !== "2") {
+      throw new Error(`locker2 box count failed: ${JSON.stringify(locker)}`);
     }
 
     // 分割受信したMCフレームが復元されること、およびログが描画時刻ではなく

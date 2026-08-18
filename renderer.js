@@ -37,11 +37,14 @@ const state = {
   locker2Rows: [],
 };
 
-// Q55-001D 4.3.3：ON=着荷／フリッカ=滞留／OFF=取り出し。
+// Q55-001D 2.基本機能：住戸アドレスはMAX800（登録数の上限）。
+// ボックス数（着荷・滞留の住戸数）は標準100、PATMOα40。
 const LOCKER2_LIMITS = Object.freeze({
-  standard: { maxEntries: 100, maxBuilding: 8 },
-  patmo: { maxEntries: 40, maxBuilding: 1 },
+  standard: { maxBoxes: 100, maxBuilding: 8 },
+  patmo: { maxBoxes: 40, maxBuilding: 1 },
 });
+const LOCKER2_STORED_COMMANDS = Object.freeze([0x11, 0x12]);
+const MAX_LOCKER2_ROWS = 800;
 const DEFAULT_LOCKER2_COUNT = 100;
 
 // Q48-005F 4.3.4-5②：状態32H～35H・40H～42Hはdearis向け。
@@ -638,8 +641,9 @@ function locker2Limits() {
   return LOCKER2_LIMITS[$("locker2Profile").value] || LOCKER2_LIMITS.standard;
 }
 
+// 住戸アドレスは登録順の連番そのものなので、行の no をそのまま使う。
 function createLocker2Row(no) {
-  return { no, command: 0x11, buildingNo: 0, roomNo: 0, address: 0, selected: false };
+  return { no, command: 0x11, buildingNo: 0, roomNo: 0, selected: false };
 }
 
 function createLocker2Rows(count) {
@@ -654,11 +658,13 @@ function locker2SelectedRows() {
 
 function updateLocker2Counts(visible) {
   if (visible != null) $("locker2Visible").textContent = String(visible);
-  const selected = state.locker2Rows.filter((row) => row.selected).length;
-  const limit = locker2Limits().maxEntries;
-  $("locker2Selected").textContent = String(selected);
-  $("locker2Limit").textContent = selected > limit ? `上限 ${limit} 件を超えています` : `上限 ${limit} 件`;
-  $("locker2Limit").className = selected > limit ? "limit-over" : "";
+  const selected = state.locker2Rows.filter((row) => row.selected);
+  const boxes = selected.filter((row) => LOCKER2_STORED_COMMANDS.includes(row.command)).length;
+  const limit = locker2Limits().maxBoxes;
+  $("locker2Selected").textContent = String(selected.length);
+  $("locker2Boxes").textContent = String(boxes);
+  $("locker2Limit").textContent = boxes > limit ? `上限 ${limit} 件を超えています` : `上限 ${limit} 件`;
+  $("locker2Limit").className = boxes > limit ? "limit-over" : "";
 }
 
 function locker2RowElement(row, api, maxBuilding) {
@@ -688,7 +694,10 @@ function locker2RowElement(row, api, maxBuilding) {
     command.append(option);
   }
   command.value = String(row.command);
-  command.addEventListener("change", () => { row.command = Number(command.value); });
+  command.addEventListener("change", () => {
+    row.command = Number(command.value);
+    updateLocker2Counts();
+  });
   commandCell.append(command);
 
   const buildingCell = document.createElement("td");
@@ -709,16 +718,7 @@ function locker2RowElement(row, api, maxBuilding) {
   room.addEventListener("input", () => { row.roomNo = Number(room.value); });
   roomCell.append(room);
 
-  const addressCell = document.createElement("td");
-  const address = document.createElement("input");
-  address.type = "number";
-  address.min = "0";
-  address.max = "800";
-  address.value = String(row.address);
-  address.addEventListener("input", () => { row.address = Number(address.value); });
-  addressCell.append(address);
-
-  tr.append(selectCell, noCell, commandCell, buildingCell, roomCell, addressCell);
+  tr.append(selectCell, noCell, commandCell, buildingCell, roomCell);
   return tr;
 }
 
@@ -738,45 +738,52 @@ function renderLocker2Table() {
 }
 
 function applyLocker2Count() {
-  const count = integerValue("locker2Count", "登録行数", 1, 100);
+  const count = integerValue("locker2Count", "登録行数", 1, MAX_LOCKER2_ROWS);
   const rows = state.locker2Rows;
   if (count < rows.length) rows.length = count;
   else while (rows.length < count) rows.push(createLocker2Row(rows.length + 1));
   renderLocker2Table();
 }
 
-// 住戸番号と住戸アドレスはそれぞれ一意である必要があるため、範囲へ連番で割り当てる。
+// 旧VB6版の「居室番号デフォルト」と同じく、ロッカー番号の範囲へ居室番号を割り当てる。
+// 部屋番号インクリメントは+1、階番号インクリメントは+100（101→201→301）。
 function applyLocker2Bulk() {
   const total = state.locker2Rows.length;
-  const from = integerValue("locker2BulkFrom", "開始行", 1, total);
-  const to = integerValue("locker2BulkTo", "終了行", from, total);
+  const from = integerValue("locker2BulkFrom", "開始ロッカー番号", 1, total);
+  const to = integerValue("locker2BulkTo", "終了ロッカー番号", from, total);
   const command = Number($("locker2Command").value);
   const buildingNo = integerValue("locker2Building", "棟No", 0, locker2Limits().maxBuilding);
-  const startRoom = integerValue("locker2Room", "開始住戸番号", 1, 9999);
-  const startAddress = integerValue("locker2Address", "開始住戸アドレス", 1, 800);
+  const startRoom = integerValue("locker2Room", "初期居室番号", 1, 9999);
+  const step = $("locker2Increment").value === "floor" ? 100 : 1;
   let roomNo = startRoom;
-  let address = startAddress;
-  for (let index = from; index <= to; index += 1) {
-    const row = state.locker2Rows[index - 1];
+  for (let lockerNo = from; lockerNo <= to; lockerNo += 1) {
+    const row = state.locker2Rows[lockerNo - 1];
     row.command = command;
     row.buildingNo = buildingNo;
     row.roomNo = roomNo;
-    row.address = address;
-    if (roomNo < 9999) roomNo += 1;
-    if (address < 800) address += 1;
+    if (roomNo + step <= 9999) roomNo += step;
   }
   renderLocker2Table();
-  toast(`${from}～${to}行目へ住戸番号${startRoom}・アドレス${startAddress}からの連番を設定しました`);
+  toast(`ロッカー${from}～${to}へ居室番号${startRoom}からの番号を設定しました`);
+}
+
+// 旧VB6版の「切替」。登録済みの行だけ状態をまとめて変える。
+function applyLocker2Switch() {
+  const rows = state.locker2Rows.filter((row) => row.selected);
+  if (rows.length === 0) throw new RangeError("状態を変更する行を「送信」列で登録してください");
+  const command = Number($("locker2SwitchCommand").value);
+  for (const row of rows) row.command = command;
+  renderLocker2Table();
+  toast(`登録済み${rows.length}件の状態を変更しました`);
 }
 
 function resetLocker2Rows() {
   for (const row of state.locker2Rows) {
     row.buildingNo = 0;
     row.roomNo = 0;
-    row.address = 0;
   }
   renderLocker2Table();
-  toast("全行の棟No・住戸番号・住戸アドレスを消去しました");
+  toast("全行の棟No・居室番号を消去しました");
 }
 
 function setLocker2Selection(selected) {
@@ -791,10 +798,14 @@ function buildLocker2Frames() {
     command: row.command,
     buildingNo: row.buildingNo,
     roomNo: row.roomNo,
-    address: row.address,
+    address: row.no,
   }));
   const allowedBuildingNos = Array.from({ length: limits.maxBuilding + 1 }, (_unused, index) => index);
-  const normalized = api.validateRegistrationList(entries, { maxEntries: limits.maxEntries, allowedBuildingNos });
+  const normalized = api.validateRegistrationList(entries, {
+    maxEntries: MAX_LOCKER2_ROWS,
+    maxBoxes: limits.maxBoxes,
+    allowedBuildingNos,
+  });
   return normalized.map((entry) => api.buildTelegram(entry));
 }
 
@@ -1570,7 +1581,6 @@ function applyProfile(profile) {
       command: [0x11, 0x12, 0x13].includes(Number(row.command)) ? Number(row.command) : 0x11,
       buildingNo: Number(row.buildingNo) || 0,
       roomNo: Number(row.roomNo) || 0,
-      address: Number(row.address) || 0,
       selected: Boolean(row.selected),
     }));
     $("locker2Count").value = String(state.locker2Rows.length);
@@ -1656,6 +1666,7 @@ function bindEvents() {
   $("locker2Filter").addEventListener("change", renderLocker2Table);
   $("locker2Profile").addEventListener("change", renderLocker2Table);
   $("locker2BulkApply").addEventListener("click", () => { try { applyLocker2Bulk(); } catch (error) { logError(error, "番号設定"); } });
+  $("locker2SwitchApply").addEventListener("click", () => { try { applyLocker2Switch(); } catch (error) { logError(error, "状態の一括変更"); } });
   $("locker2BulkReset").addEventListener("click", resetLocker2Rows);
   $("locker2SelectVisible").addEventListener("click", () => setLocker2Selection(true));
   $("locker2ClearSelection").addEventListener("click", () => setLocker2Selection(false));

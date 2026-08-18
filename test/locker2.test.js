@@ -84,6 +84,21 @@ checkThrows("最大登録数を超えるリストを拒否", () => T.validateReg
   { buildingNo: 1, roomNo: 101, address: 1 }, { buildingNo: 1, roomNo: 102, address: 2 },
 ], { maxEntries: 1 }), /1件以下/);
 
+// 仕様5.⑪：ボックス数は「荷物お届け」「滞留」動作の住戸数であり、登録数とは別の制限。
+checkThrows("ボックス数を超える着荷・滞留を拒否", () => T.validateRegistrationList([
+  { command: 0x11, buildingNo: 1, roomNo: 101, address: 1 },
+  { command: 0x12, buildingNo: 1, roomNo: 102, address: 2 },
+], { maxBoxes: 1 }), /ボックス数/);
+check("取り出しはボックス数に数えない", T.validateRegistrationList([
+  { command: 0x11, buildingNo: 1, roomNo: 101, address: 1 },
+  { command: 0x13, buildingNo: 1, roomNo: 102, address: 2 },
+  { command: 0x13, buildingNo: 1, roomNo: 103, address: 3 },
+], { maxBoxes: 1 }).length, 3);
+check("住戸アドレスは800件まで登録できる", T.validateRegistrationList(
+  Array.from({ length: 800 }, (_unused, index) => ({
+    command: 0x13, buildingNo: 1, roomNo: index + 1, address: index + 1,
+  })), { maxEntries: 800, maxBoxes: 100 }).length, 800);
+
 console.log("\n========================================");
 console.log(`  結果: ${pass} 件成功 / ${fail} 件失敗`);
 console.log("========================================");
