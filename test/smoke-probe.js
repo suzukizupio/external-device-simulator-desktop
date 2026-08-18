@@ -199,6 +199,64 @@ function formatTime(at) {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 }
 
+// 通信ログが伸びても3列レイアウトの行高が固定されたままで、
+// 画面下部までスクロールできることを確認する回帰テスト。
+// .layout に grid-template-rows / min-height:0 が無いと行が max-content になり、
+// ログ件数の分だけ各列が縦に膨らんで .content のスクロールが失われる。
+const LAYOUT_SCROLL_SCRIPT = `(() => {
+  const layout = document.querySelector(".layout");
+  const content = document.querySelector(".content");
+  const logList = document.querySelector(".log-list");
+  content.scrollTop = content.scrollHeight;
+  const cards = Array.from(document.querySelector(".view.active").querySelectorAll(".card"));
+  const last = cards[cards.length - 1];
+  const lastBottom = last ? last.getBoundingClientRect().bottom : 0;
+  return {
+    narrowMode: window.matchMedia("(max-width: 1050px)").matches,
+    viewportHeight: window.innerHeight,
+    layoutHeight: Math.round(layout.getBoundingClientRect().height),
+    contentHeight: Math.round(content.getBoundingClientRect().height),
+    logListHeight: Math.round(logList.getBoundingClientRect().height),
+    logListScrollable: logList.scrollHeight - logList.clientHeight,
+    logEntries: document.querySelectorAll(".log-list > *").length,
+    bottomReachable: !last || lastBottom <= window.innerHeight + 2,
+  };
+})()`;
+
+async function verifyLayoutScroll({ window, sendToRenderer }) {
+  await window.webContents.executeJavaScript(`document.querySelector('[data-view="locker4"]').click()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  // ログを大量に積み、ログ枠が列高を押し広げないことを確かめる。
+  const frame = [0x02, 0x30, 0x31, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x30, 0x03, 0x02];
+  for (let index = 0; index < 40; index += 1) {
+    sendToRenderer("serial:data", { sessionId: 998, sequence: 2000 + index, timestamp: Date.now(), bytes: frame });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const result = await window.webContents.executeJavaScript(LAYOUT_SCROLL_SCRIPT);
+  if (result.logEntries < 40) {
+    throw new Error(`log entries were not accumulated: ${JSON.stringify(result)}`);
+  }
+  if (result.narrowMode) {
+    // 狭幅時はページ全体スクロールなので、ログ枠が無制限に伸びないことだけを見る。
+    if (result.logListScrollable <= 0) throw new Error(`log list did not scroll internally: ${JSON.stringify(result)}`);
+    return result;
+  }
+  // 3列レイアウトではレイアウト高がビューポートを超えてはならない。
+  if (result.layoutHeight > result.viewportHeight) {
+    throw new Error(`layout row grew past the viewport: ${JSON.stringify(result)}`);
+  }
+  if (result.contentHeight > result.viewportHeight) {
+    throw new Error(`content column grew past the viewport: ${JSON.stringify(result)}`);
+  }
+  if (result.logListScrollable <= 0) {
+    throw new Error(`log list did not scroll internally: ${JSON.stringify(result)}`);
+  }
+  if (!result.bottomReachable) {
+    throw new Error(`view bottom is unreachable after traffic: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
 // 受信モニタは「受信 → 解析 → 描画 → 反映」まで実DOMで確認する。
 // 実際のシリアル受信と同じ serial:data 経路へ電文を流し込む。
 async function verifyReceiveMonitors({ window, sendToRenderer }) {
@@ -428,8 +486,9 @@ async function run({ window, app, sendToRenderer }) {
     }
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
+    const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, receiveMonitor })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, receiveMonitor, layoutScroll })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);
