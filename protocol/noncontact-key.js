@@ -33,10 +33,16 @@
   function room5(options) {
     const opts = options || {};
     if (opts.roomNo5 != null && String(opts.roomNo5) !== "") {
-      return asciiDigitString(opts.roomNo5, 5, "roomNo5");
+      const value = String(opts.roomNo5);
+      const bytes = asciiDigitString(value, 5, "roomNo5");
+      const buildingMax = opts.buildingMax == null ? 9 : integerInRange(opts.buildingMax, "buildingMax", 0, 9);
+      integerInRange(Number(value[0]), "buildingNo", 0, buildingMax);
+      integerInRange(Number(value.slice(1)), "roomNo", 1, 9999);
+      return bytes;
     }
-    const buildingNo = integerInRange(opts.buildingNo == null ? 0 : opts.buildingNo, "buildingNo", 0, 9);
-    const roomNo = integerInRange(opts.roomNo, "roomNo", 0, 9999);
+    const buildingMax = opts.buildingMax == null ? 9 : integerInRange(opts.buildingMax, "buildingMax", 0, 9);
+    const buildingNo = integerInRange(opts.buildingNo == null ? 0 : opts.buildingNo, "buildingNo", 0, buildingMax);
+    const roomNo = integerInRange(opts.roomNo, "roomNo", 1, 9999);
     return [0x30 + buildingNo, ...asciiDigits(roomNo, 4, "roomNo")];
   }
 
@@ -95,6 +101,9 @@
       bytes,
     };
     integerInRange(parsed.gateNo, "gateNo", 1, 99);
+    integerInRange(parsed.roomNo, "roomNo", 1, 9999);
+    const buildingMax = options && options.buildingMax != null ? options.buildingMax : 9;
+    integerInRange(parsed.buildingNo, "buildingNo", 0, buildingMax);
     const personMax = options && options.personMax != null ? options.personMax : 999;
     if (parsed.personNo != null) integerInRange(parsed.personNo, "personNo", 0, personMax);
     return parsed;

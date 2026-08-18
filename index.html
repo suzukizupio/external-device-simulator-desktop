@@ -189,11 +189,13 @@
         <article class="card form-card">
           <div class="form-grid cols-3">
             <label>形式<select id="keyFormat"><option value="withPerson">13byte（個人番号あり）</option><option value="roomOnly">10byte（個人番号なし）</option></select></label>
-            <label>ゲートNo<input id="keyGate" type="number" min="1" max="99" value="1"></label>
-            <label>ルーム5桁<input id="keyRoom" inputmode="numeric" value="00101" maxlength="5"></label>
-            <label>個人番号<input id="keyPerson" type="number" min="0" max="999" value="1"></label>
-            <label>対象システム<select id="keyProfile"><option value="general">一般（000–999）</option><option value="limited8">V-fine等（000–008）</option></select></label>
+            <label>ゲートNo（01–99）<input id="keyGate" type="number" min="1" max="99" value="1"></label>
+            <label>対象システム<select id="keyProfile"><option value="other">その他のシステム</option><option value="vFine">V-fine</option><option value="dashVhx">Dash-VHX</option><option value="dashWism">DASHWISM</option><option value="fagus">FAGUS</option><option value="vixusAdvance">VIXUSAdvance</option><option value="patmoAlpha">PATMOα</option></select></label>
+            <label>棟番号<input id="keyBuilding" type="number" min="0" max="9" value="0"></label>
+            <label>部屋番号（0001–9999）<input id="keyRoom" inputmode="numeric" pattern="[0-9]{4}" value="0101" maxlength="4"></label>
+            <label>個人番号（000–999）<input id="keyPerson" type="number" min="0" max="999" value="1"></label>
             <label>送信<select id="keyWaitAck"><option value="ack">ACK/NAKを待つ</option><option value="direct">電文のみ</option></select></label>
+            <div class="field-note span-2" id="keyConstraintHint" aria-live="polite"></div>
           </div>
           <div class="inline-options"><label><input id="keyBadBcc" type="checkbox"> BCC異常</label><label><input id="keyAutoResponse" type="checkbox"> 受信電文へ自動ACK/NAK</label></div>
           <div class="preview"><span>プレビュー</span><code id="keyPreview">—</code></div>
