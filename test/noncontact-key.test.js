@@ -27,9 +27,14 @@ assert.deepStrictEqual(Key.parseTelegram(packet13), {
 const packet10 = Key.buildTelegram({ format: Key.FORMAT.ROOM_ONLY, gateNo: 99, roomNo5: "90101" });
 assert.strictEqual(packet10.length, 10);
 assert.strictEqual(Key.parseTelegram(packet10).personNo, null);
+assert.throws(() => Key.parseTelegram(packet10, { buildingMax: 8 }), /buildingNo/);
 assert.throws(() => Key.buildTelegram({ gateNo: 0, roomNo5: "00101", personNo: 0 }), /gateNo/);
 assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "101", personNo: 0 }), /exactly 5/);
 assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "00101", personNo: 9, personMax: 8 }), /personNo/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, buildingNo: 0, roomNo: 0, personNo: 0 }), /roomNo/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "00000", personNo: 0 }), /roomNo/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, buildingNo: 7, buildingMax: 6, roomNo: 101, personNo: 0 }), /buildingNo/);
+assert.throws(() => Key.buildTelegram({ gateNo: 1, roomNo5: "90101", buildingMax: 8, personNo: 0 }), /buildingNo/);
 assert.throws(() => Key.parseTelegram(Key.corruptBCC(packet13)), /BCC/);
 
 const receiver = new Key.NoncontactReceiver();

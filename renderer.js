@@ -53,6 +53,17 @@ const LOCKER4_DEARIS_STATES = Object.freeze([0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
 const LOCKER4_ROBOT_STATES = Object.freeze([0x40, 0x41, 0x42]);
 const DEFAULT_LOCKER_COUNT = 100;
 
+// Q48-006F 4.5：システム別の棟番号・個人番号制約。
+const KEY_PROFILES = Object.freeze({
+  other: { label: "その他のシステム", buildingMax: 9, personMax: 999 },
+  vFine: { label: "V-fine", buildingMax: 6, personMax: 8 },
+  dashVhx: { label: "Dash-VHX", buildingMax: 9, personMax: 8 },
+  dashWism: { label: "DASHWISM", buildingMax: 9, personMax: 8 },
+  fagus: { label: "FAGUS", buildingMax: 9, personMax: 8 },
+  vixusAdvance: { label: "VIXUSAdvance", buildingMax: 8, personMax: 999 },
+  patmoAlpha: { label: "PATMOα", buildingMax: 0, personMax: 999 },
+});
+
 function requireApi(name) {
   const api = window[name];
   if (!api) throw new Error(`${name} のプロトコルモジュールを読み込めません`);
@@ -1018,16 +1029,41 @@ function buildLocker4Packets() {
   });
 }
 
+function keyProfile() {
+  return KEY_PROFILES[$("keyProfile").value] || KEY_PROFILES.other;
+}
+
+function syncKeyForm() {
+  const api = requireApi("NoncontactKey");
+  const profile = keyProfile();
+  const building = $("keyBuilding");
+  const person = $("keyPerson");
+  const withPerson = $("keyFormat").value === api.FORMAT.WITH_PERSON;
+  building.max = String(profile.buildingMax);
+  person.max = String(profile.personMax);
+  person.disabled = !withPerson;
+  if (Number(building.value) > profile.buildingMax) building.value = String(profile.buildingMax);
+  if (Number(person.value) > profile.personMax) person.value = String(profile.personMax);
+  const buildingRange = profile.buildingMax === 0 ? "棟番号 0（標準）のみ" : `棟番号 0–${profile.buildingMax}（0は標準）`;
+  const personRange = withPerson ? `個人番号 000–${String(profile.personMax).padStart(3, "0")}` : "個人番号なし";
+  $("keyConstraintHint").textContent = `${profile.label}：${buildingRange}／部屋番号 0001–9999／${personRange}`;
+}
+
 function buildKeyFrame() {
   const api = requireApi("NoncontactKey");
-  const personMax = $("keyProfile").value === "limited8" ? 8 : 999;
+  const profile = keyProfile();
+  const roomText = $("keyRoom").value.trim();
+  if (!/^\d{4}$/.test(roomText)) throw new Error("部屋番号は4桁の数字で入力してください（例：0101）");
   const options = {
     format: $("keyFormat").value,
     gateNo: integerValue("keyGate", "ゲートNo", 1, 99),
-    roomNo5: $("keyRoom").value.trim(),
-    personMax,
+    buildingNo: integerValue("keyBuilding", "棟番号", 0, profile.buildingMax),
+    buildingMax: profile.buildingMax,
+    roomNo: Number(roomText),
+    personMax: profile.personMax,
   };
-  if (options.format === api.FORMAT.WITH_PERSON) options.personNo = integerValue("keyPerson", "個人番号", 0, personMax);
+  if (options.roomNo < 1) throw new Error("部屋番号は0001～9999で入力してください");
+  if (options.format === api.FORMAT.WITH_PERSON) options.personNo = integerValue("keyPerson", "個人番号", 0, profile.personMax);
   let frame = api.buildTelegram(options);
   if ($("keyBadBcc").checked) frame = api.corruptBCC(frame);
   return frame;
@@ -1563,6 +1599,16 @@ function applyProfile(profile) {
       element.value = setting.value;
     }
   }
+  // v1.0で保存した「ルーム5桁」は、棟番号と部屋番号へ分離して引き継ぐ。
+  const legacyRoom = profile.values.keyRoom && profile.values.keyRoom.value;
+  if (!profile.values.keyBuilding && typeof legacyRoom === "string" && /^\d{5}$/.test(legacyRoom)) {
+    $("keyBuilding").value = legacyRoom[0];
+    $("keyRoom").value = legacyRoom.slice(1);
+  }
+  const legacyKeyProfile = profile.values.keyProfile && profile.values.keyProfile.value;
+  if (legacyKeyProfile === "general") $("keyProfile").value = "other";
+  if (legacyKeyProfile === "limited8") $("keyProfile").value = "vFine";
+  syncKeyForm();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -1635,6 +1681,7 @@ function bindEvents() {
   $("disconnectButton").addEventListener("click", disconnect);
   $("serialPreset").addEventListener("change", (event) => applySerialPreset(event.target.value));
   ["mcVersion", "mcRole", "mcKind"].forEach((id) => $(id).addEventListener("change", refreshMcCommands));
+  ["keyFormat", "keyProfile"].forEach((id) => $(id).addEventListener("change", syncKeyForm));
   $("elevatorCommand").addEventListener("change", () => {
     const api = requireApi("ElevatorProtocol");
     const directions = api.COMMAND_META[$("elevatorCommand").value].directions;
@@ -1751,6 +1798,7 @@ async function initialize() {
   state.locker2Rows = createLocker2Rows(DEFAULT_LOCKER2_COUNT);
   bindEvents();
   const profileLoaded = loadSavedProfile();
+  if (!profileLoaded) syncKeyForm();
   applyLogLimit();
   renderLocker4Table();
   renderLocker2Table();
