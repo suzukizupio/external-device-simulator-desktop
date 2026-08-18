@@ -102,6 +102,7 @@
             <label>送信方式<select id="locker4Transport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
             <label class="span-3">ロッカーデータ（状態,ロッカーNo,棟No,住戸No／1行1件）<textarea id="locker4Rows" rows="8">31,001,0,0101</textarea></label>
           </div>
+          <div class="inline-options"><label><input id="locker4AutoResponse" type="checkbox"> 宅配側動作時、情報要求を受信したら上のデータで自動応答</label></div>
           <div class="preview"><span>生成結果</span><code id="locker4Preview">—</code></div>
           <div class="actions"><button class="secondary" id="locker4PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker4SendButton" disabled>送信開始</button></div>
         </article>
@@ -154,8 +155,10 @@
             <label>ADDRヘルパ<select id="mcAddressType"><option value="none">使用しない</option><option value="room">住戸</option><option value="manager">管理室</option><option value="entrance">集合玄関</option><option value="group">グループ</option><option value="floor">階層</option><option value="common">共用部</option></select></label>
             <label>棟<input id="mcBuilding" value="BB" maxlength="2"></label>
             <label>番号<input id="mcAddressNumber" value="101"></label>
+            <label>自動応答MESG（受信ADDRの後ろに付加）<input id="mcResponseMessage" value=""></label>
             <label class="span-3">MESG（ASCII。ADDRヘルパ使用時は先頭へ自動付加）<textarea id="mcMessage" rows="6"></textarea></label>
           </div>
+          <div class="inline-options"><label><input id="mcAutoResponse" type="checkbox"> 要求電文を受信したら台帳の応答コマンドで自動応答</label></div>
           <div class="preview"><span>プレビュー</span><code id="mcPreview">—</code></div>
           <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button></div>
         </article>
@@ -174,7 +177,9 @@
             <label>個人番号（3桁）<input id="elevatorPerson" value="000" maxlength="3"></label>
             <label>住戸棟（2桁）<input id="elevatorRoomBuilding" value="00" maxlength="2"></label>
             <label>住戸番号<input id="elevatorRoom" value="101"></label>
+            <label>かご状態<select id="elevatorCarState"><option value="moving">動作中（ESTATで応答）</option><option value="stopped">停止中（ESTOPで応答）</option></select></label>
           </div>
+          <div class="inline-options"><label><input id="elevatorAutoResponse" type="checkbox"> EV側動作時、ECALLを受信したらかご状態で自動応答</label></div>
           <div class="preview"><span>プレビュー</span><code id="elevatorPreview">—</code></div>
           <div class="actions"><button class="secondary" id="elevatorPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="elevatorSendButton" disabled>送信</button></div>
         </article>
@@ -262,6 +267,7 @@
   <script src="protocol/alarm.js"></script>
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
+  <script src="protocol/auto-responder.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

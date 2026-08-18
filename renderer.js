@@ -652,14 +652,15 @@ function locker4State(value, index) {
   return stateByte;
 }
 
-function buildLocker4Packets() {
-  const api = requireApi("Telegram4");
-  const modelText = $("locker4Model").value.trim();
-  const modelNo = modelText === "" ? undefined : Number(modelText);
-  if ($("locker4Action").value === "request") return [api.buildRequestTelegram({ modelNo })];
+function locker4ModelNo() {
+  const text = $("locker4Model").value.trim();
+  return text === "" ? undefined : Number(text);
+}
+
+function locker4Lockers() {
   const lines = $("locker4Rows").value.split(/\r?\n/).filter((line) => line.trim());
   if (lines.length === 0) throw new RangeError("ロッカーデータを1件以上入力してください");
-  const lockers = lines.map((line, index) => {
+  return lines.map((line, index) => {
     const fields = line.split(",").map((field) => field.trim());
     if (fields.length !== 4) throw new RangeError(`${index + 1}行目は4項目で入力してください`);
     const stateByte = locker4State(fields[0], index);
@@ -667,7 +668,17 @@ function buildLocker4Packets() {
     if ([0x40, 0x41, 0x42].includes(stateByte) && lockerNo !== 0) throw new RangeError("宅配ロボ状態のロッカーNoは000固定です");
     return { state: stateByte, lockerNo, buildingNo: Number(fields[2]), roomNo: Number(fields[3]) };
   });
-  return api.buildResponsePackets({ modelNo, packetSize: Number($("locker4PacketSize").value), lockers });
+}
+
+function buildLocker4Packets() {
+  const api = requireApi("Telegram4");
+  const modelNo = locker4ModelNo();
+  if ($("locker4Action").value === "request") return [api.buildRequestTelegram({ modelNo })];
+  return api.buildResponsePackets({
+    modelNo,
+    packetSize: Number($("locker4PacketSize").value),
+    lockers: locker4Lockers(),
+  });
 }
 
 function buildKeyFrame() {
@@ -754,24 +765,110 @@ async function sendNextAlarmHistory(forceHandshake = false) {
   updateAlarmHistoryStatus("履歴応答を送信");
 }
 
+// 自動応答は受信処理の途中で呼ばれるため、送信は次のタスクへ逃がして
+// 受信バイトの処理と送信手順が同じスタックで絡まないようにする。
+function scheduleAutoResponse(name, run) {
+  setTimeout(() => {
+    withTransaction(name, run).catch((error) => logError(error, name));
+  }, 0);
+}
+
+// 仕様だけでは応答内容が決まらない要求は、黙って無視せず理由を残す。
+function logUnsupportedAutoResponse(result) {
+  if (!result || result.type !== "unsupported") return false;
+  addLog("warn", "AUTO", null, `自動応答なし: ${result.reason}`);
+  return true;
+}
+
 function handleApplicationFrame(view, frame, transportResponse) {
-  if (transportResponse !== 0x06 || view !== "alarm" || !$("alarmAutoHistoryResponse").checked) return;
+  if (transportResponse !== 0x06) return;
+  try {
+    if (view === "alarm") handleAlarmRequest(frame);
+    else if (view === "locker4") handleLocker4Request(frame);
+    else if (view === "mansion") handleMansionRequest(frame);
+    else if (view === "elevator") handleElevatorRequest(frame);
+  } catch (error) {
+    logError(error, "自動応答の準備");
+  }
+}
+
+function handleAlarmRequest(frame) {
+  if (!$("alarmAutoHistoryResponse").checked) return;
   const api = requireApi("AlarmProtocol");
   const parsed = api.parseFrame(frame);
   if (parsed.type !== api.TYPE.HISTORY_REQUEST || $("alarmRole").value !== "intercom") return;
-  setTimeout(() => {
-    withTransaction("警報履歴自動応答", () => sendNextAlarmHistory(true))
-      .catch((error) => logError(error, "履歴自動応答"));
-  }, 0);
+  scheduleAutoResponse("警報履歴自動応答", () => sendNextAlarmHistory(true));
+}
+
+// Q48-005F：宅配側として動作しているときだけ、情報要求へ現在のロッカーデータで応答する。
+function handleLocker4Request(frame) {
+  if (!$("locker4AutoResponse").checked || $("locker4Action").value !== "response") return;
+  const result = requireApi("AutoResponder").locker4Response(frame, {
+    lockers: locker4Lockers(),
+    modelNo: locker4ModelNo(),
+    packetSize: Number($("locker4PacketSize").value),
+  });
+  if (!result || logUnsupportedAutoResponse(result)) return;
+  scheduleAutoResponse("4線式自動応答", async () => {
+    addLog("info", "AUTO", null, `情報要求へ${result.frames.length}パケットで応答`);
+    if ($("locker4Transport").value === "direct") {
+      for (const packet of result.frames) await transmit(packet, "frame");
+    } else {
+      await runHandshake(result.frames, {
+        sendEot: true,
+        textRetryMode: "restart",
+        linkTimeoutMs: 5000,
+        textTimeoutMs: 5000,
+      });
+    }
+  });
+}
+
+// Q48-008I：KIND/CMD台帳で応答コマンドが確定する要求にだけ応答する。
+function handleMansionRequest(frame) {
+  if (!$("mcAutoResponse").checked) return;
+  const api = requireApi("MansionController");
+  const result = requireApi("AutoResponder").mansionResponse(frame, {
+    version: Number($("mcVersion").value),
+    topology: mcTopology(api),
+    role: $("mcRole").value,
+    message: $("mcResponseMessage").value,
+  });
+  if (!result || logUnsupportedAutoResponse(result)) return;
+  scheduleAutoResponse("MC自動応答", async () => {
+    addLog("info", "AUTO", result.frame, `${result.request.name}へ${result.definition.name}を送信`);
+    if ($("mcTransport").value === "direct") await transmit(result.frame, "frame");
+    else await runHandshake([result.frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC" });
+  });
+}
+
+// Q46-005J 4.5.1：EV側として動作しているとき、ECALLへ動作中／停止中情報を返す。
+function handleElevatorRequest(frame) {
+  const api = requireApi("ElevatorProtocol");
+  if (!$("elevatorAutoResponse").checked || $("elevatorDirection").value !== api.DIRECTION.FROM_ELEVATOR) return;
+  const result = requireApi("AutoResponder").elevatorResponse(frame, {
+    profile: $("elevatorProfile").value,
+    moving: $("elevatorCarState").value === "moving",
+  });
+  if (!result || logUnsupportedAutoResponse(result)) return;
+  scheduleAutoResponse("EV自動応答", async () => {
+    addLog("info", "AUTO", result.frame, `ECALLへ${result.command}を送信`);
+    if ($("elevatorTransport").value === "direct") await transmit(result.frame, "frame");
+    else await runHandshake([result.frame], { sendEot: false, textRetryMode: "sameText", priority: false });
+  });
+}
+
+function mcTopology(api) {
+  const value = $("mcTopology").value;
+  return value === "standard" ? api.TOPOLOGY.STANDARD
+    : value === "multiStation" ? api.TOPOLOGY.SINGLE_BUILDING_MULTI_CONTROLLER
+      : api.TOPOLOGY.MULTI_BUILDING;
 }
 
 function mcAddressHelper(api) {
   const type = $("mcAddressType").value;
   if (type === "none") return "";
-  const topologyValue = $("mcTopology").value;
-  const topology = topologyValue === "standard" ? api.TOPOLOGY.STANDARD
-    : topologyValue === "multiStation" ? api.TOPOLOGY.SINGLE_BUILDING_MULTI_CONTROLLER
-      : api.TOPOLOGY.MULTI_BUILDING;
+  const topology = mcTopology(api);
   const number = Number($("mcAddressNumber").value);
   const options = {
     version: Number($("mcVersion").value),
@@ -798,10 +895,7 @@ function buildMcFrame() {
   const messageText = `${address}${$("mcMessage").value}`;
   const kind = parseHexByte($("mcKind").value, "KIND");
   const command = parseHexByte($("mcCommand").value, "CMD");
-  const topologyValue = $("mcTopology").value;
-  const topology = topologyValue === "standard" ? api.TOPOLOGY.STANDARD
-    : topologyValue === "multiStation" ? api.TOPOLOGY.SINGLE_BUILDING_MULTI_CONTROLLER
-      : api.TOPOLOGY.MULTI_BUILDING;
+  const topology = mcTopology(api);
   const options = {
     kind,
     command,
