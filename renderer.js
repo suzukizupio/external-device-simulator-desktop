@@ -34,7 +34,15 @@ const state = {
   locker4Inbound: null,
   locker4Series: null,
   locker4Rows: [],
+  locker2Rows: [],
 };
+
+// Q55-001D 4.3.3：ON=着荷／フリッカ=滞留／OFF=取り出し。
+const LOCKER2_LIMITS = Object.freeze({
+  standard: { maxEntries: 100, maxBuilding: 8 },
+  patmo: { maxEntries: 40, maxBuilding: 1 },
+});
+const DEFAULT_LOCKER2_COUNT = 100;
 
 // Q48-005F 4.3.4-5②：状態32H～35H・40H～42Hはdearis向け。
 const LOCKER4_BASIC_STATES = Object.freeze([0x30, 0x31]);
@@ -626,26 +634,167 @@ function terminalFrame() {
   return bytes;
 }
 
+function locker2Limits() {
+  return LOCKER2_LIMITS[$("locker2Profile").value] || LOCKER2_LIMITS.standard;
+}
+
+function createLocker2Row(no) {
+  return { no, command: 0x11, buildingNo: 0, roomNo: 0, address: 0, selected: false };
+}
+
+function createLocker2Rows(count) {
+  return Array.from({ length: count }, (_unused, index) => createLocker2Row(index + 1));
+}
+
+function locker2SelectedRows() {
+  const rows = state.locker2Rows.filter((row) => row.selected);
+  if (rows.length === 0) throw new RangeError("送信する住戸を1件以上「送信」列で登録してください");
+  return rows;
+}
+
+function updateLocker2Counts(visible) {
+  if (visible != null) $("locker2Visible").textContent = String(visible);
+  const selected = state.locker2Rows.filter((row) => row.selected).length;
+  const limit = locker2Limits().maxEntries;
+  $("locker2Selected").textContent = String(selected);
+  $("locker2Limit").textContent = selected > limit ? `上限 ${limit} 件を超えています` : `上限 ${limit} 件`;
+  $("locker2Limit").className = selected > limit ? "limit-over" : "";
+}
+
+function locker2RowElement(row, api, maxBuilding) {
+  const tr = document.createElement("tr");
+
+  const selectCell = document.createElement("td");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = row.selected;
+  checkbox.setAttribute("aria-label", `${row.no}行目を送信登録`);
+  checkbox.addEventListener("change", () => {
+    row.selected = checkbox.checked;
+    updateLocker2Counts();
+  });
+  selectCell.append(checkbox);
+
+  const noCell = document.createElement("td");
+  noCell.className = "locker-no";
+  noCell.textContent = String(row.no).padStart(3, "0");
+
+  const commandCell = document.createElement("td");
+  const command = document.createElement("select");
+  for (const value of [0x11, 0x12, 0x13]) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = `${value.toString(16).toUpperCase()}H ${api.CMD_LABEL[value]}`;
+    command.append(option);
+  }
+  command.value = String(row.command);
+  command.addEventListener("change", () => { row.command = Number(command.value); });
+  commandCell.append(command);
+
+  const buildingCell = document.createElement("td");
+  const building = document.createElement("input");
+  building.type = "number";
+  building.min = "0";
+  building.max = String(maxBuilding);
+  building.value = String(row.buildingNo);
+  building.addEventListener("input", () => { row.buildingNo = Number(building.value); });
+  buildingCell.append(building);
+
+  const roomCell = document.createElement("td");
+  const room = document.createElement("input");
+  room.type = "number";
+  room.min = "0";
+  room.max = "9999";
+  room.value = String(row.roomNo);
+  room.addEventListener("input", () => { row.roomNo = Number(room.value); });
+  roomCell.append(room);
+
+  const addressCell = document.createElement("td");
+  const address = document.createElement("input");
+  address.type = "number";
+  address.min = "0";
+  address.max = "800";
+  address.value = String(row.address);
+  address.addEventListener("input", () => { row.address = Number(address.value); });
+  addressCell.append(address);
+
+  tr.append(selectCell, noCell, commandCell, buildingCell, roomCell, addressCell);
+  return tr;
+}
+
+function renderLocker2Table() {
+  const api = requireApi("Telegram2");
+  const filter = $("locker2Filter").value;
+  const maxBuilding = locker2Limits().maxBuilding;
+  const fragment = document.createDocumentFragment();
+  let visible = 0;
+  for (const row of state.locker2Rows) {
+    if (filter === "selected" && !row.selected) continue;
+    visible += 1;
+    fragment.append(locker2RowElement(row, api, maxBuilding));
+  }
+  $("locker2Body").replaceChildren(fragment);
+  updateLocker2Counts(visible);
+}
+
+function applyLocker2Count() {
+  const count = integerValue("locker2Count", "登録行数", 1, 100);
+  const rows = state.locker2Rows;
+  if (count < rows.length) rows.length = count;
+  else while (rows.length < count) rows.push(createLocker2Row(rows.length + 1));
+  renderLocker2Table();
+}
+
+// 住戸番号と住戸アドレスはそれぞれ一意である必要があるため、範囲へ連番で割り当てる。
+function applyLocker2Bulk() {
+  const total = state.locker2Rows.length;
+  const from = integerValue("locker2BulkFrom", "開始行", 1, total);
+  const to = integerValue("locker2BulkTo", "終了行", from, total);
+  const command = Number($("locker2Command").value);
+  const buildingNo = integerValue("locker2Building", "棟No", 0, locker2Limits().maxBuilding);
+  const startRoom = integerValue("locker2Room", "開始住戸番号", 1, 9999);
+  const startAddress = integerValue("locker2Address", "開始住戸アドレス", 1, 800);
+  let roomNo = startRoom;
+  let address = startAddress;
+  for (let index = from; index <= to; index += 1) {
+    const row = state.locker2Rows[index - 1];
+    row.command = command;
+    row.buildingNo = buildingNo;
+    row.roomNo = roomNo;
+    row.address = address;
+    if (roomNo < 9999) roomNo += 1;
+    if (address < 800) address += 1;
+  }
+  renderLocker2Table();
+  toast(`${from}～${to}行目へ住戸番号${startRoom}・アドレス${startAddress}からの連番を設定しました`);
+}
+
+function resetLocker2Rows() {
+  for (const row of state.locker2Rows) {
+    row.buildingNo = 0;
+    row.roomNo = 0;
+    row.address = 0;
+  }
+  renderLocker2Table();
+  toast("全行の棟No・住戸番号・住戸アドレスを消去しました");
+}
+
+function setLocker2Selection(selected) {
+  for (const row of state.locker2Rows) row.selected = selected;
+  renderLocker2Table();
+}
+
 function buildLocker2Frames() {
   const api = requireApi("Telegram2");
-  const text = $("locker2Rows").value.trim();
-  let entries;
-  if (text) {
-    entries = text.split(/\r?\n/).filter((line) => line.trim()).map((line, index) => {
-      const fields = line.split(",").map((field) => field.trim());
-      if (fields.length !== 4) throw new RangeError(`登録一覧${index + 1}行目は4項目で入力してください`);
-      return { command: parseHexByte(fields[0], `状態(${index + 1}行)`), buildingNo: Number(fields[1]), roomNo: Number(fields[2]), address: Number(fields[3]) };
-    });
-  } else {
-    entries = [{
-      command: Number($("locker2Command").value),
-      buildingNo: integerValue("locker2Building", "棟No", 0, 8),
-      roomNo: integerValue("locker2Room", "住戸番号", 1, 9999),
-      address: integerValue("locker2Address", "住戸アドレス", 1, 800),
-    }];
-  }
-  const patmo = $("locker2Profile").value === "patmo";
-  const normalized = api.validateRegistrationList(entries, { maxEntries: patmo ? 40 : 100, allowedBuildingNos: patmo ? [0, 1] : [0, 1, 2, 3, 4, 5, 6, 7, 8] });
+  const limits = locker2Limits();
+  const entries = locker2SelectedRows().map((row) => ({
+    command: row.command,
+    buildingNo: row.buildingNo,
+    roomNo: row.roomNo,
+    address: row.address,
+  }));
+  const allowedBuildingNos = Array.from({ length: limits.maxBuilding + 1 }, (_unused, index) => index);
+  const normalized = api.validateRegistrationList(entries, { maxEntries: limits.maxEntries, allowedBuildingNos });
   return normalized.map((entry) => api.buildTelegram(entry));
 }
 
@@ -1380,6 +1529,7 @@ function collectProfile() {
     savedAt: new Date().toISOString(),
     values,
     locker4Rows: state.locker4Rows.map((row) => ({ ...row })),
+    locker2Rows: state.locker2Rows.map((row) => ({ ...row })),
   };
 }
 
@@ -1414,7 +1564,19 @@ function applyProfile(profile) {
     }));
     $("locker4Count").value = String(state.locker4Rows.length);
   }
+  if (Array.isArray(profile.locker2Rows) && profile.locker2Rows.length) {
+    state.locker2Rows = profile.locker2Rows.map((row, index) => ({
+      no: Number.isInteger(row.no) ? row.no : index + 1,
+      command: [0x11, 0x12, 0x13].includes(Number(row.command)) ? Number(row.command) : 0x11,
+      buildingNo: Number(row.buildingNo) || 0,
+      roomNo: Number(row.roomNo) || 0,
+      address: Number(row.address) || 0,
+      selected: Boolean(row.selected),
+    }));
+    $("locker2Count").value = String(state.locker2Rows.length);
+  }
   renderLocker4Table();
+  renderLocker2Table();
 }
 
 function saveProfile() {
@@ -1490,6 +1652,13 @@ function bindEvents() {
 
   $("terminalSendButton").addEventListener("click", () => withTransaction("汎用送信", async () => transmit(await preview("terminalPreview", terminalFrame), "frame")).catch((error) => logError(error, "送信")));
   document.querySelectorAll(".control-byte").forEach((button) => button.addEventListener("click", () => sendControlByte(Number(button.dataset.byte)).catch((error) => logError(error, "制御コード送信"))));
+  $("locker2Count").addEventListener("change", () => { try { applyLocker2Count(); } catch (error) { logError(error, "登録行数"); } });
+  $("locker2Filter").addEventListener("change", renderLocker2Table);
+  $("locker2Profile").addEventListener("change", renderLocker2Table);
+  $("locker2BulkApply").addEventListener("click", () => { try { applyLocker2Bulk(); } catch (error) { logError(error, "番号設定"); } });
+  $("locker2BulkReset").addEventListener("click", resetLocker2Rows);
+  $("locker2SelectVisible").addEventListener("click", () => setLocker2Selection(true));
+  $("locker2ClearSelection").addEventListener("click", () => setLocker2Selection(false));
   $("locker2SendButton").addEventListener("click", () => withTransaction("2線式", sendLocker2).catch((error) => logError(error, "2線式送信")));
   $("locker2StopButton").addEventListener("click", () => { if (state.locker2Run) state.locker2Run.cancelled = true; });
   $("locker4Count").addEventListener("change", () => { try { applyLocker4Count(); } catch (error) { logError(error, "ロッカー数"); } });
@@ -1564,10 +1733,12 @@ function bindEvents() {
 
 async function initialize() {
   state.locker4Rows = createLocker4Rows(DEFAULT_LOCKER_COUNT);
+  state.locker2Rows = createLocker2Rows(DEFAULT_LOCKER2_COUNT);
   bindEvents();
   const profileLoaded = loadSavedProfile();
   applyLogLimit();
   renderLocker4Table();
+  renderLocker2Table();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

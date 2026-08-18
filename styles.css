@@ -109,6 +109,7 @@ td { color: #c9d2e1; }
 .locker-table .locker-current { width: 96px; color: var(--muted); }
 .locker-status { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 11px; color: var(--muted); font-size: 11px; }
 .locker-status strong { color: var(--text); font-size: 14px; }
+.locker-status .limit-over { color: var(--red); font-weight: 700; }
 .preview { display: grid; grid-template-columns: 90px 1fr; gap: 12px; align-items: start; margin-top: 15px; padding: 10px 12px; border-radius: 7px; background: #090f1d; border: 1px solid #222e46; }
 .preview span { color: var(--muted); font-size: 10px; }
 .preview code { color: #b9d2ff; word-break: break-all; white-space: pre-wrap; }

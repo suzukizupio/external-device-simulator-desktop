@@ -138,13 +138,37 @@
         <div class="page-heading"><div><h1>宅配ボックス 2線式</h1><p>Q55-001D：棟No→住戸番号の正規11byte、最大5件を1秒ごとに送信</p></div><span class="spec-badge">4800,E,8,1</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
-            <label>状態<select id="locker2Command"><option value="17">11H 着荷</option><option value="18">12H 滞留</option><option value="19">13H 取出</option></select></label>
-            <label>棟No<input id="locker2Building" type="number" min="0" max="8" value="1"></label>
-            <label>住戸番号<input id="locker2Room" type="number" min="1" max="9999" value="101"></label>
-            <label>住戸アドレス<input id="locker2Address" type="number" min="1" max="800" value="1"></label>
             <label>対象システム<select id="locker2Profile"><option value="standard">標準</option><option value="patmo">PATMO α</option></select></label>
             <label>反復<select id="locker2Repeat"><option value="once">1回</option><option value="cycle">登録一覧を循環</option></select></label>
-            <label class="span-3">登録一覧（状態,棟No,住戸番号,住戸アドレス／空欄時は上の1件）<textarea id="locker2Rows" rows="7" placeholder="11,1,101,001&#10;12,1,102,002"></textarea></label>
+            <label>表示選択<select id="locker2Filter"><option value="all">すべて表示</option><option value="selected">送信登録のみ</option></select></label>
+          </div>
+
+          <div class="locker-tools">
+            <label>登録行数<input id="locker2Count" type="number" min="1" max="100" value="100"></label>
+            <span class="tool-sep"></span>
+            <label>状態<select id="locker2Command"><option value="17">11H 着荷</option><option value="18">12H 滞留</option><option value="19">13H 取出</option></select></label>
+            <label>棟No<input id="locker2Building" type="number" min="0" max="8" value="1"></label>
+            <label>開始住戸番号<input id="locker2Room" type="number" min="1" max="9999" value="101"></label>
+            <label>開始住戸アドレス<input id="locker2Address" type="number" min="1" max="800" value="1"></label>
+            <label>開始行<input id="locker2BulkFrom" type="number" min="1" max="100" value="1"></label>
+            <label>終了行<input id="locker2BulkTo" type="number" min="1" max="100" value="10"></label>
+            <button class="secondary" id="locker2BulkApply">番号をセット</button>
+            <button class="danger" id="locker2BulkReset">全番号リセット</button>
+          </div>
+
+          <div class="locker-table-wrap">
+            <table class="locker-table">
+              <thead><tr><th>送信</th><th>No</th><th>状態</th><th>棟No</th><th>住戸番号</th><th>住戸アドレス</th></tr></thead>
+              <tbody id="locker2Body"></tbody>
+            </table>
+          </div>
+
+          <div class="locker-status">
+            <span>表示 <strong id="locker2Visible">0</strong> 件</span>
+            <span>送信登録 <strong id="locker2Selected">0</strong> 件</span>
+            <span id="locker2Limit">上限 100 件</span>
+            <button class="secondary" id="locker2SelectVisible">表示中を全て登録</button>
+            <button class="secondary" id="locker2ClearSelection">登録を解除</button>
           </div>
           <div class="preview"><span>プレビュー</span><code id="locker2Preview">—</code></div>
           <div class="actions"><button class="secondary" id="locker2PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker2SendButton" disabled>送信開始</button><button class="danger" id="locker2StopButton" disabled>反復停止</button></div>

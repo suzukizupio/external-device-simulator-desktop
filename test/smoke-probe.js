@@ -4,18 +4,18 @@
 
 const MansionController = require("../protocol/mansion-controller");
 
-// 宅配4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
+// 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
 // LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
 const PROBE_SCRIPT = `
   new Promise((resolve) => setTimeout(() => {
-    const buttons = ["locker2PreviewButton", "keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
+    const buttons = ["keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
     buttons.forEach((id) => document.getElementById(id).click());
     setTimeout(() => resolve({
       title: document.title,
       views: document.querySelectorAll(".view").length,
       scripts: Array.from(document.scripts).length,
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
-      previewErrors: ["locker2Preview", "keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
+      previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
       modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine", "AutoResponder"]
         .filter((name) => !window[name])
@@ -26,30 +26,41 @@ const PROBE_SCRIPT = `
 // ロッカー表は動的生成のため、実DOM上で一括設定と送信登録を往復させる。
 const LOCKER_UI_SCRIPT = `
   new Promise((resolve) => {
-    const body = document.getElementById("locker4Body");
-    const rows = () => Array.from(body.querySelectorAll("tr"));
-    const initialRows = rows().length;
+    const rowsOf = (id) => Array.from(document.getElementById(id).querySelectorAll("tr"));
+    const numbersOf = (tr) => Array.from(tr.querySelectorAll("input[type=number]")).map((input) => input.value).join("-");
+    const initialRows = rowsOf("locker4Body").length;
+    const initialRows2 = rowsOf("locker2Body").length;
 
     document.getElementById("locker4BulkBuilding").value = "1";
     document.getElementById("locker4BulkRoom").value = "101";
     document.getElementById("locker4BulkFrom").value = "1";
     document.getElementById("locker4BulkTo").value = "3";
     document.getElementById("locker4BulkApply").click();
-    const assigned = rows().slice(0, 3).map((tr) => {
-      const inputs = tr.querySelectorAll("input[type=number]");
-      return inputs[0].value + "-" + inputs[1].value;
-    });
+    const assigned = rowsOf("locker4Body").slice(0, 3).map(numbersOf);
 
-    rows()[0].querySelector("input[type=checkbox]").click();
+    rowsOf("locker4Body")[0].querySelector("input[type=checkbox]").click();
     const registered = document.getElementById("locker4Selected").textContent;
     document.getElementById("locker4PreviewButton").click();
 
+    document.getElementById("locker2Building").value = "1";
+    document.getElementById("locker2Room").value = "101";
+    document.getElementById("locker2Address").value = "1";
+    document.getElementById("locker2BulkFrom").value = "1";
+    document.getElementById("locker2BulkTo").value = "3";
+    document.getElementById("locker2BulkApply").click();
+    const assigned2 = rowsOf("locker2Body").slice(0, 3).map(numbersOf);
+
+    rowsOf("locker2Body")[0].querySelector("input[type=checkbox]").click();
+    rowsOf("locker2Body")[1].querySelector("input[type=checkbox]").click();
+    const registered2 = document.getElementById("locker2Selected").textContent;
+    document.getElementById("locker2PreviewButton").click();
+
     setTimeout(() => {
-      // 表示選択を「送信登録のみ」に切り替えると、登録した1件だけが残る。
+      // 表示選択を「送信登録のみ」に切り替えると、登録した行だけが残る。
       const filter = document.getElementById("locker4Filter");
       filter.value = "selected";
       filter.dispatchEvent(new Event("change"));
-      const filteredRows = rows().length;
+      const filteredRows = rowsOf("locker4Body").length;
       filter.value = "all";
       filter.dispatchEvent(new Event("change"));
       resolve({
@@ -57,9 +68,15 @@ const LOCKER_UI_SCRIPT = `
         assigned,
         registered,
         filteredRows,
-        restoredRows: rows().length,
+        restoredRows: rowsOf("locker4Body").length,
         visible: document.getElementById("locker4Visible").textContent,
         preview: document.getElementById("locker4Preview").textContent,
+        initialRows2,
+        assigned2,
+        registered2,
+        visible2: document.getElementById("locker2Visible").textContent,
+        limit2: document.getElementById("locker2Limit").textContent,
+        preview2: document.getElementById("locker2Preview").textContent,
       });
     }, 60);
   })
@@ -132,6 +149,15 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (!locker.preview.startsWith("#1 02 ")) {
       throw new Error(`locker preview failed: ${JSON.stringify(locker)}`);
+    }
+    if (locker.initialRows2 !== 100 || locker.visible2 !== "100" || locker.limit2 !== "上限 100 件") {
+      throw new Error(`locker2 table was not rendered: ${JSON.stringify(locker)}`);
+    }
+    if (locker.assigned2.join(",") !== "1-101-1,1-102-2,1-103-3") {
+      throw new Error(`locker2 bulk assignment failed: ${JSON.stringify(locker)}`);
+    }
+    if (locker.registered2 !== "2" || !locker.preview2.startsWith("#1 02 ") || !locker.preview2.includes("#2 02 ")) {
+      throw new Error(`locker2 registration failed: ${JSON.stringify(locker)}`);
     }
 
     // 分割受信したMCフレームが復元されること、およびログが描画時刻ではなく
