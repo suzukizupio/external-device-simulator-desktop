@@ -21,7 +21,8 @@ const state = {
   locker2Run: null,
   faultPlan: null,
   faultSignature: "",
-  receiveBuffer: [],
+  frameReader: null,
+  frameReaderView: null,
   inboundLink: false,
   receiveTimer: null,
   alarmHistory: null,
@@ -300,7 +301,7 @@ function applyConnectionState(snapshot) {
   $("metricPort").textContent = snapshot && snapshot.options ? `${snapshot.options.path} / ${snapshot.options.baudRate}` : "—";
   if (!state.connected) {
     rejectControlWaiters(new Error("シリアル接続が切断されました"));
-    state.receiveBuffer = [];
+    resetFrameReader();
     state.inboundLink = false;
     state.manualReceiveStage = null;
     state.pendingFrameValid = null;
@@ -447,8 +448,10 @@ function armReceiveTimer(view, stage = "frame") {
   if (state.receiveTimer && !shouldRestart) return;
   clearReceiveTimer();
   state.receiveTimer = setTimeout(() => {
-    const partial = state.receiveBuffer.slice();
-    state.receiveBuffer = [];
+    const partial = [];
+    if (state.frameReader) {
+      for (const event of state.frameReader.flush()) partial.push(...event.bytes);
+    }
     state.inboundLink = false;
     state.receiveTimer = null;
     resetLocker4Inbound();
@@ -925,23 +928,21 @@ async function sendLocker2() {
   }
 }
 
-function expectedFrameLength(view, buffer) {
-  if (view === "locker2") return 11;
-  if (view === "elevator") return 21;
-  if (view === "alarm") return 11;
-  if (view === "key") {
-    const etx = buffer.indexOf(0x03, 1);
-    return etx === -1 ? null : etx + 2;
+// フレーム境界の検出は protocol/frame-reader.js に集約している。
+// マンションコントローラはStreamDecoderへ委譲され、LEN範囲・早すぎるETX・
+// 再同期の記録まで実通信経路で効く。
+function currentFrameReader() {
+  if (!state.frameReader || state.frameReaderView !== state.currentView) {
+    const Reader = requireApi("FrameReader");
+    // KIND/CMDの方向・Version検証は describeFrame 側で行うため、ここでは長さとBCCだけを見る。
+    state.frameReader = new Reader(state.currentView, { validateCommand: false });
+    state.frameReaderView = state.currentView;
   }
-  if (view === "locker4" && buffer.length >= 6) {
-    const text = String.fromCharCode(...buffer.slice(3, 6));
-    return /^\d{3}$/.test(text) ? Number(text) + 8 : -1;
-  }
-  if (view === "mansion" && buffer.length >= 3) {
-    const text = String.fromCharCode(buffer[1], buffer[2]);
-    return /^\d{2}$/.test(text) ? Number(text) + 2 : -1;
-  }
-  return null;
+  return state.frameReader;
+}
+
+function resetFrameReader() {
+  if (state.frameReader) state.frameReader.reset();
 }
 
 function trackLocker4Packet(value) {
@@ -1008,48 +1009,31 @@ function describeFrame(view, frame) {
 }
 
 function inspectReceive(bytes) {
+  const reader = currentFrameReader();
   const controls = [];
-  if (!["locker2", "locker4", "key", "mansion", "elevator", "alarm"].includes(state.currentView)) {
-    return Array.from(bytes).filter((byte) => [0x04, 0x05, 0x06, 0x15].includes(byte));
-  }
-  for (const byte of bytes) {
-    if (state.receiveBuffer.length === 0) {
-      if (byte === 0x02) {
-        state.receiveBuffer.push(byte);
-        armReceiveTimer(state.currentView, "frame");
-      } else if ([0x04, 0x05, 0x06, 0x15].includes(byte)) controls.push(byte);
+  for (const event of reader.push(bytes)) {
+    if (event.type === "control") {
+      controls.push(event.code);
       continue;
     }
-    const expectedBeforeAppend = expectedFrameLength(state.currentView, state.receiveBuffer);
-    // Once the declared/fixed length is known, every byte is payload or BCC.
-    // In particular a valid BCC may itself equal STX (02); restarting here would
-    // discard a specification-compliant frame at exactly its final byte.
-    const asciiFramed = ["locker2", "locker4", "key", "mansion", "elevator"].includes(state.currentView);
-    const isFinalBcc = expectedBeforeAppend && state.receiveBuffer.length === expectedBeforeAppend - 1;
-    if (byte === 0x02 && (expectedBeforeAppend == null || (asciiFramed && !isFinalBcc))) {
-      state.receiveBuffer = [byte];
-      armReceiveTimer(state.currentView, "frame");
-    } else state.receiveBuffer.push(byte);
-    const expected = expectedFrameLength(state.currentView, state.receiveBuffer);
-    if (expected === -1 || state.receiveBuffer.length > 1100) {
-      addLog("warn", "PARSE", state.receiveBuffer, "不正なフレーム長／ヘッダのため破棄");
-      state.receiveBuffer = [];
+    if (event.type === "error") {
+      addLog("warn", "PARSE", event.bytes.length ? event.bytes : null, event.message);
       handleCompletedInboundFrame(false);
-    } else if (expected && state.receiveBuffer.length === expected) {
-      const frame = state.receiveBuffer.slice();
-      state.receiveBuffer = [];
-      state.rxFrames += 1;
-      updateMetrics();
-      try {
-        const view = state.currentView;
-        addLog("info", "PARSE", null, describeFrame(view, frame));
-        handleCompletedInboundFrame(true).then((control) => handleApplicationFrame(view, frame, control));
-      } catch (error) {
-        logError(error, "受信電文検証");
-        handleCompletedInboundFrame(false);
-      }
+      continue;
+    }
+    state.rxFrames += 1;
+    updateMetrics();
+    const view = state.currentView;
+    try {
+      addLog("info", "PARSE", null, describeFrame(view, event.bytes));
+      handleCompletedInboundFrame(true).then((control) => handleApplicationFrame(view, event.bytes, control));
+    } catch (error) {
+      logError(error, "受信電文検証");
+      handleCompletedInboundFrame(false);
     }
   }
+  // 未完のフレームが残っている間だけ受信完了タイマーを走らせる。
+  if (reader.bufferedLength > 0) armReceiveTimer(state.currentView, "frame");
   return controls;
 }
 
@@ -1070,7 +1054,7 @@ function navigate(view) {
     return;
   }
   state.currentView = view;
-  state.receiveBuffer = [];
+  resetFrameReader();
   state.inboundLink = false;
   resetLocker4Inbound();
   state.manualReceiveStage = null;

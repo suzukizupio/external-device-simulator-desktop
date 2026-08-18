@@ -15,7 +15,7 @@ const PROBE_SCRIPT = `
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
       previewErrors: ["locker2Preview", "locker4Preview", "keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
