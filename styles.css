@@ -93,6 +93,22 @@ td { color: #c9d2e1; }
 .form-grid .span-3 { grid-column: span 3; }
 .inline-options, .button-row, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
 .inline-options label { color: #b3bfd1; }
+.locker-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; padding: 11px 12px; border: 1px solid #222e46; border-radius: 7px; background: #0c1424; }
+.locker-tools label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; }
+.locker-tools input { width: 108px; }
+.locker-tools .tool-sep { width: 1px; align-self: stretch; background: #222e46; }
+.locker-table-wrap { margin-top: 12px; max-height: 330px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
+.locker-table { width: 100%; border-collapse: collapse; font: 11px/1.4 Consolas, "Cascadia Mono", monospace; }
+.locker-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 8px; background: var(--panel-2); border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }
+.locker-table td { padding: 3px 8px; border-bottom: 1px solid rgba(47,61,88,.4); }
+.locker-table tbody tr:hover { background: #14203a; }
+.locker-table input, .locker-table select { width: 100%; padding: 3px 5px; font: 11px Consolas, "Cascadia Mono", monospace; }
+.locker-table td:first-child { width: 44px; text-align: center; }
+.locker-table td:first-child input { width: auto; }
+.locker-table .locker-no { width: 84px; color: #61a4ff; font-weight: 700; }
+.locker-table .locker-current { width: 96px; color: var(--muted); }
+.locker-status { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 11px; color: var(--muted); font-size: 11px; }
+.locker-status strong { color: var(--text); font-size: 14px; }
 .preview { display: grid; grid-template-columns: 90px 1fr; gap: 12px; align-items: start; margin-top: 15px; padding: 10px 12px; border-radius: 7px; background: #090f1d; border: 1px solid #222e46; }
 .preview span { color: var(--muted); font-size: 10px; }
 .preview code { color: #b9d2ff; word-break: break-all; white-space: pre-wrap; }

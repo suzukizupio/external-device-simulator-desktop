@@ -100,9 +100,35 @@
             <label>1パケット件数<select id="locker4PacketSize"><option value="3">3件</option><option value="10" selected>10件</option></select></label>
             <label>対象プロファイル<select id="locker4Profile"><option value="standard">標準</option><option value="vixus">VIXUS</option><option value="dearis">dearis</option><option value="adapter2">2方向アダプター</option></select></label>
             <label>送信方式<select id="locker4Transport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
-            <label class="span-3">ロッカーデータ（状態,ロッカーNo,棟No,住戸No／1行1件）<textarea id="locker4Rows" rows="8">31,001,0,0101</textarea></label>
+            <label>表示選択<select id="locker4Filter"><option value="all">すべて表示</option><option value="selected">送信登録のみ</option><option value="stored">荷物ありのみ</option></select></label>
           </div>
-          <div class="inline-options"><label><input id="locker4AutoResponse" type="checkbox"> 宅配側動作時、情報要求を受信したら上のデータで自動応答</label></div>
+
+          <div class="locker-tools">
+            <label>ロッカー数<input id="locker4Count" type="number" min="1" max="999" value="100"></label>
+            <span class="tool-sep"></span>
+            <label>棟番号<input id="locker4BulkBuilding" type="number" min="0" max="9" value="0"></label>
+            <label>開始居室番号<input id="locker4BulkRoom" type="number" min="0" max="9999" value="101"></label>
+            <label>開始ロッカーNo<input id="locker4BulkFrom" type="number" min="1" max="999" value="1"></label>
+            <label>終了ロッカーNo<input id="locker4BulkTo" type="number" min="1" max="999" value="10"></label>
+            <button class="secondary" id="locker4BulkApply">部屋番号をセット</button>
+            <button class="danger" id="locker4BulkReset">全部屋番号リセット</button>
+          </div>
+
+          <div class="locker-table-wrap">
+            <table class="locker-table">
+              <thead><tr><th>送信</th><th>ロッカーNo</th><th>棟番号</th><th>居室番号</th><th>現在状態</th><th>送信する状態</th></tr></thead>
+              <tbody id="locker4Body"></tbody>
+            </table>
+          </div>
+
+          <div class="locker-status">
+            <span>表示 <strong id="locker4Visible">0</strong> 件</span>
+            <span>送信登録 <strong id="locker4Selected">0</strong> 件</span>
+            <button class="secondary" id="locker4SelectVisible">表示中を全て登録</button>
+            <button class="secondary" id="locker4ClearSelection">登録を解除</button>
+          </div>
+
+          <div class="inline-options"><label><input id="locker4AutoResponse" type="checkbox"> 宅配側動作時、情報要求を受信したら登録ロッカーの現在状態で自動応答</label></div>
           <div class="preview"><span>生成結果</span><code id="locker4Preview">—</code></div>
           <div class="actions"><button class="secondary" id="locker4PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker4SendButton" disabled>送信開始</button></div>
         </article>

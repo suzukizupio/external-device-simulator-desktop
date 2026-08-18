@@ -33,7 +33,14 @@ const state = {
   pendingFrameValid: null,
   locker4Inbound: null,
   locker4Series: null,
+  locker4Rows: [],
 };
+
+// Q48-005F 4.3.4-5②：状態32H～35H・40H～42Hはdearis向け。
+const LOCKER4_BASIC_STATES = Object.freeze([0x30, 0x31]);
+const LOCKER4_DEARIS_STATES = Object.freeze([0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x40, 0x41, 0x42]);
+const LOCKER4_ROBOT_STATES = Object.freeze([0x40, 0x41, 0x42]);
+const DEFAULT_LOCKER_COUNT = 100;
 
 function requireApi(name) {
   const api = window[name];
@@ -657,17 +664,184 @@ function locker4ModelNo() {
   return text === "" ? undefined : Number(text);
 }
 
+function locker4AllowedStates() {
+  return $("locker4Profile").value === "dearis" ? LOCKER4_DEARIS_STATES : LOCKER4_BASIC_STATES;
+}
+
+function createLocker4Row(lockerNo) {
+  return { lockerNo, buildingNo: 0, roomNo: 0, currentState: 0x30, sendState: 0x30, selected: false };
+}
+
+function createLocker4Rows(count) {
+  return Array.from({ length: count }, (_unused, index) => createLocker4Row(index + 1));
+}
+
+// 宅配ロボ状態のロッカーNoは000固定（Q48-005F）。
+function locker4EffectiveLockerNo(row, stateByte) {
+  return LOCKER4_ROBOT_STATES.includes(stateByte) ? 0 : row.lockerNo;
+}
+
+function locker4SelectedRows() {
+  const rows = state.locker4Rows.filter((row) => row.selected);
+  if (rows.length === 0) throw new RangeError("送信するロッカーを1件以上「送信」列で登録してください");
+  return rows;
+}
+
 function locker4Lockers() {
-  const lines = $("locker4Rows").value.split(/\r?\n/).filter((line) => line.trim());
-  if (lines.length === 0) throw new RangeError("ロッカーデータを1件以上入力してください");
-  return lines.map((line, index) => {
-    const fields = line.split(",").map((field) => field.trim());
-    if (fields.length !== 4) throw new RangeError(`${index + 1}行目は4項目で入力してください`);
-    const stateByte = locker4State(fields[0], index);
-    const lockerNo = Number(fields[1]);
-    if ([0x40, 0x41, 0x42].includes(stateByte) && lockerNo !== 0) throw new RangeError("宅配ロボ状態のロッカーNoは000固定です");
-    return { state: stateByte, lockerNo, buildingNo: Number(fields[2]), roomNo: Number(fields[3]) };
+  return locker4SelectedRows().map((row) => ({
+    state: row.sendState,
+    lockerNo: locker4EffectiveLockerNo(row, row.sendState),
+    buildingNo: row.buildingNo,
+    roomNo: row.roomNo,
+  }));
+}
+
+// 情報要求への応答は、これから送る状態ではなく装置が保持している現在状態を報告する。
+function locker4CurrentLockers() {
+  return state.locker4Rows.filter((row) => row.selected).map((row) => ({
+    state: row.currentState,
+    lockerNo: locker4EffectiveLockerNo(row, row.currentState),
+    buildingNo: row.buildingNo,
+    roomNo: row.roomNo,
+  }));
+}
+
+function updateLocker4Counts(visible) {
+  if (visible != null) $("locker4Visible").textContent = String(visible);
+  $("locker4Selected").textContent = String(state.locker4Rows.filter((row) => row.selected).length);
+}
+
+function locker4RowElement(row, allowed, api) {
+  const tr = document.createElement("tr");
+
+  const selectCell = document.createElement("td");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = row.selected;
+  checkbox.setAttribute("aria-label", `ロッカー${row.lockerNo}を送信登録`);
+  checkbox.addEventListener("change", () => {
+    row.selected = checkbox.checked;
+    updateLocker4Counts();
   });
+  selectCell.append(checkbox);
+
+  const noCell = document.createElement("td");
+  noCell.className = "locker-no";
+  const renderNo = () => {
+    noCell.textContent = String(locker4EffectiveLockerNo(row, row.sendState)).padStart(3, "0");
+  };
+  renderNo();
+
+  const buildingCell = document.createElement("td");
+  const building = document.createElement("input");
+  building.type = "number";
+  building.min = "0";
+  building.max = "9";
+  building.value = String(row.buildingNo);
+  building.addEventListener("input", () => { row.buildingNo = Number(building.value); });
+  buildingCell.append(building);
+
+  const roomCell = document.createElement("td");
+  const room = document.createElement("input");
+  room.type = "number";
+  room.min = "0";
+  room.max = "9999";
+  room.value = String(row.roomNo);
+  room.addEventListener("input", () => { row.roomNo = Number(room.value); });
+  roomCell.append(room);
+
+  const currentCell = document.createElement("td");
+  currentCell.className = "locker-current";
+  currentCell.textContent = api.STATE_LABEL[row.currentState] || "—";
+
+  const sendCell = document.createElement("td");
+  const select = document.createElement("select");
+  for (const value of allowed) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = `${value.toString(16).toUpperCase()}H ${api.STATE_LABEL[value]}`;
+    select.append(option);
+  }
+  select.value = String(row.sendState);
+  select.addEventListener("change", () => {
+    row.sendState = Number(select.value);
+    renderNo();
+  });
+  sendCell.append(select);
+
+  tr.append(selectCell, noCell, buildingCell, roomCell, currentCell, sendCell);
+  return tr;
+}
+
+function renderLocker4Table() {
+  const api = requireApi("Telegram4");
+  const allowed = locker4AllowedStates();
+  const filter = $("locker4Filter").value;
+  const fragment = document.createDocumentFragment();
+  let visible = 0;
+  for (const row of state.locker4Rows) {
+    if (!allowed.includes(row.sendState)) row.sendState = allowed[0];
+    if (filter === "selected" && !row.selected) continue;
+    if (filter === "stored" && row.currentState === 0x30) continue;
+    visible += 1;
+    fragment.append(locker4RowElement(row, allowed, api));
+  }
+  $("locker4Body").replaceChildren(fragment);
+  updateLocker4Counts(visible);
+}
+
+function applyLocker4Count() {
+  const count = integerValue("locker4Count", "ロッカー数", 1, 999);
+  const rows = state.locker4Rows;
+  if (count < rows.length) rows.length = count;
+  else while (rows.length < count) rows.push(createLocker4Row(rows.length + 1));
+  renderLocker4Table();
+}
+
+// VB6版の「部屋番号設定」と同じく、ロッカーNoの範囲へ居室番号を連番で割り当てる。
+function applyLocker4Bulk() {
+  const total = state.locker4Rows.length;
+  const from = integerValue("locker4BulkFrom", "開始ロッカーNo", 1, total);
+  const to = integerValue("locker4BulkTo", "終了ロッカーNo", from, total);
+  const buildingNo = integerValue("locker4BulkBuilding", "棟番号", 0, 9);
+  const startRoom = integerValue("locker4BulkRoom", "開始居室番号", 0, 9999);
+  let roomNo = startRoom;
+  for (let lockerNo = from; lockerNo <= to; lockerNo += 1) {
+    const row = state.locker4Rows[lockerNo - 1];
+    row.buildingNo = buildingNo;
+    row.roomNo = roomNo;
+    if (roomNo < 9999) roomNo += 1;
+  }
+  renderLocker4Table();
+  toast(`ロッカー${from}～${to}へ棟${buildingNo}・居室${startRoom}からの連番を設定しました`);
+}
+
+function resetLocker4Rooms() {
+  for (const row of state.locker4Rows) {
+    row.buildingNo = 0;
+    row.roomNo = 0;
+  }
+  renderLocker4Table();
+  toast("全ロッカーの棟番号・居室番号を消去しました");
+}
+
+function setLocker4Selection(selected) {
+  const filter = $("locker4Filter").value;
+  for (const row of state.locker4Rows) {
+    if (!selected) {
+      row.selected = false;
+      continue;
+    }
+    if (filter === "stored" && row.currentState === 0x30) continue;
+    row.selected = true;
+  }
+  renderLocker4Table();
+}
+
+// 送信できた分だけ現在状態へ反映する。実機の状態遷移と同じ扱いにする。
+function commitLocker4Send(rows) {
+  for (const row of rows) row.currentState = row.sendState;
+  renderLocker4Table();
 }
 
 function buildLocker4Packets() {
@@ -804,7 +978,7 @@ function handleAlarmRequest(frame) {
 function handleLocker4Request(frame) {
   if (!$("locker4AutoResponse").checked || $("locker4Action").value !== "response") return;
   const result = requireApi("AutoResponder").locker4Response(frame, {
-    lockers: locker4Lockers(),
+    lockers: locker4CurrentLockers(),
     modelNo: locker4ModelNo(),
     packetSize: Number($("locker4PacketSize").value),
   });
@@ -1200,7 +1374,13 @@ function collectProfile() {
     if (["serialPort", "profileImportFile", "logSearch"].includes(element.id) || element.type === "file") return;
     values[element.id] = element.type === "checkbox" ? { checked: element.checked } : { value: element.value };
   });
-  return { format: "external-device-simulator-next-profile", version: 1, savedAt: new Date().toISOString(), values };
+  return {
+    format: "external-device-simulator-next-profile",
+    version: 1,
+    savedAt: new Date().toISOString(),
+    values,
+    locker4Rows: state.locker4Rows.map((row) => ({ ...row })),
+  };
 }
 
 function applyProfile(profile) {
@@ -1222,6 +1402,19 @@ function applyProfile(profile) {
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
   }
+  // ロッカー表は動的行のため、入力要素とは別に保存・復元する。
+  if (Array.isArray(profile.locker4Rows) && profile.locker4Rows.length) {
+    state.locker4Rows = profile.locker4Rows.map((row, index) => ({
+      lockerNo: Number.isInteger(row.lockerNo) ? row.lockerNo : index + 1,
+      buildingNo: Number(row.buildingNo) || 0,
+      roomNo: Number(row.roomNo) || 0,
+      currentState: Number(row.currentState) || 0x30,
+      sendState: Number(row.sendState) || 0x30,
+      selected: Boolean(row.selected),
+    }));
+    $("locker4Count").value = String(state.locker4Rows.length);
+  }
+  renderLocker4Table();
 }
 
 function saveProfile() {
@@ -1299,11 +1492,24 @@ function bindEvents() {
   document.querySelectorAll(".control-byte").forEach((button) => button.addEventListener("click", () => sendControlByte(Number(button.dataset.byte)).catch((error) => logError(error, "制御コード送信"))));
   $("locker2SendButton").addEventListener("click", () => withTransaction("2線式", sendLocker2).catch((error) => logError(error, "2線式送信")));
   $("locker2StopButton").addEventListener("click", () => { if (state.locker2Run) state.locker2Run.cancelled = true; });
+  $("locker4Count").addEventListener("change", () => { try { applyLocker4Count(); } catch (error) { logError(error, "ロッカー数"); } });
+  $("locker4Filter").addEventListener("change", renderLocker4Table);
+  $("locker4Profile").addEventListener("change", renderLocker4Table);
+  $("locker4BulkApply").addEventListener("click", () => { try { applyLocker4Bulk(); } catch (error) { logError(error, "部屋番号設定"); } });
+  $("locker4BulkReset").addEventListener("click", resetLocker4Rooms);
+  $("locker4SelectVisible").addEventListener("click", () => setLocker4Selection(true));
+  $("locker4ClearSelection").addEventListener("click", () => setLocker4Selection(false));
   $("locker4SendButton").addEventListener("click", async () => {
     try { await withTransaction("4線式", async () => {
+      const sending = $("locker4Action").value === "response" ? locker4SelectedRows() : [];
       const packets = await preview("locker4Preview", buildLocker4Packets, true);
+      let delivered = true;
       if ($("locker4Transport").value === "direct") { for (const frame of packets) await transmit(frame, "frame"); }
-      else await runHandshake(packets, { sendEot: true, textRetryMode: "restart", linkTimeoutMs: $("locker4Action").value === "request" ? 3000 : 5000, textTimeoutMs: 5000, priority: $("locker4Action").value === "request" });
+      else {
+        const outcome = await runHandshake(packets, { sendEot: true, textRetryMode: "restart", linkTimeoutMs: $("locker4Action").value === "request" ? 3000 : 5000, textTimeoutMs: 5000, priority: $("locker4Action").value === "request" });
+        delivered = outcome.type === "complete";
+      }
+      if (delivered && sending.length) commitLocker4Send(sending);
     }); } catch (error) { logError(error, "4線式送信"); }
   });
   $("keySendButton").addEventListener("click", () => withTransaction("非接触キー", sendKey).catch((error) => logError(error, "非接触キー送信")));
@@ -1357,9 +1563,11 @@ function bindEvents() {
 }
 
 async function initialize() {
+  state.locker4Rows = createLocker4Rows(DEFAULT_LOCKER_COUNT);
   bindEvents();
   const profileLoaded = loadSavedProfile();
   applyLogLimit();
+  renderLocker4Table();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

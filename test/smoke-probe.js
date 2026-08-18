@@ -4,21 +4,65 @@
 
 const MansionController = require("../protocol/mansion-controller");
 
+// 宅配4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
+// LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
 const PROBE_SCRIPT = `
   new Promise((resolve) => setTimeout(() => {
-    const buttons = ["locker2PreviewButton", "locker4PreviewButton", "keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
+    const buttons = ["locker2PreviewButton", "keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
     buttons.forEach((id) => document.getElementById(id).click());
     setTimeout(() => resolve({
       title: document.title,
       views: document.querySelectorAll(".view").length,
       scripts: Array.from(document.scripts).length,
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
-      previewErrors: ["locker2Preview", "locker4Preview", "keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
+      previewErrors: ["locker2Preview", "keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
       modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine", "AutoResponder"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
+`;
+
+// ロッカー表は動的生成のため、実DOM上で一括設定と送信登録を往復させる。
+const LOCKER_UI_SCRIPT = `
+  new Promise((resolve) => {
+    const body = document.getElementById("locker4Body");
+    const rows = () => Array.from(body.querySelectorAll("tr"));
+    const initialRows = rows().length;
+
+    document.getElementById("locker4BulkBuilding").value = "1";
+    document.getElementById("locker4BulkRoom").value = "101";
+    document.getElementById("locker4BulkFrom").value = "1";
+    document.getElementById("locker4BulkTo").value = "3";
+    document.getElementById("locker4BulkApply").click();
+    const assigned = rows().slice(0, 3).map((tr) => {
+      const inputs = tr.querySelectorAll("input[type=number]");
+      return inputs[0].value + "-" + inputs[1].value;
+    });
+
+    rows()[0].querySelector("input[type=checkbox]").click();
+    const registered = document.getElementById("locker4Selected").textContent;
+    document.getElementById("locker4PreviewButton").click();
+
+    setTimeout(() => {
+      // 表示選択を「送信登録のみ」に切り替えると、登録した1件だけが残る。
+      const filter = document.getElementById("locker4Filter");
+      filter.value = "selected";
+      filter.dispatchEvent(new Event("change"));
+      const filteredRows = rows().length;
+      filter.value = "all";
+      filter.dispatchEvent(new Event("change"));
+      resolve({
+        initialRows,
+        assigned,
+        registered,
+        filteredRows,
+        restoredRows: rows().length,
+        visible: document.getElementById("locker4Visible").textContent,
+        preview: document.getElementById("locker4Preview").textContent,
+      });
+    }, 60);
+  })
 `;
 
 const RECEIVER_SCRIPT = `
@@ -35,7 +79,6 @@ const RECEIVER_SCRIPT = `
   }, 100))
 `;
 
-// ログの絞り込みはUIの操作結果でしか壊れ方が見えないため、実DOM上で往復させる。
 const LOG_UI_SCRIPT = `
   new Promise((resolve) => {
     const log = document.getElementById("communicationLog");
@@ -77,6 +120,20 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 
+    const locker = await window.webContents.executeJavaScript(LOCKER_UI_SCRIPT);
+    if (locker.initialRows !== 100 || locker.visible !== "100" || locker.restoredRows !== 100) {
+      throw new Error(`locker table was not rendered: ${JSON.stringify(locker)}`);
+    }
+    if (locker.assigned.join(",") !== "1-101,1-102,1-103") {
+      throw new Error(`bulk room assignment failed: ${JSON.stringify(locker)}`);
+    }
+    if (locker.registered !== "1" || locker.filteredRows !== 1) {
+      throw new Error(`locker registration failed: ${JSON.stringify(locker)}`);
+    }
+    if (!locker.preview.startsWith("#1 02 ")) {
+      throw new Error(`locker preview failed: ${JSON.stringify(locker)}`);
+    }
+
     // 分割受信したMCフレームが復元されること、およびログが描画時刻ではなく
     // シリアルイベントの発生時刻を記録することを、過去の時刻を渡して確認する。
     await window.webContents.executeJavaScript(`document.querySelector('[data-view="mansion"]').click()`);
@@ -97,7 +154,7 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`log filter contract failed: ${JSON.stringify(logUi)}`);
     }
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);
