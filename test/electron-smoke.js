@@ -18,11 +18,12 @@ let output = "";
 child.stdout.on("data", (chunk) => { output += chunk.toString(); });
 child.stderr.on("data", (chunk) => { output += chunk.toString(); });
 
+// 受信モニタの検査は serial:data の往復を多数行うため、余裕を持たせる。
 const timer = setTimeout(() => {
   child.kill();
-  console.error(`electron-smoke: 30秒以内に完了しませんでした\n${output}`);
+  console.error(`electron-smoke: 60秒以内に完了しませんでした\n${output}`);
   process.exitCode = 1;
-}, 30_000);
+}, 60_000);
 
 child.on("error", (error) => {
   clearTimeout(timer);

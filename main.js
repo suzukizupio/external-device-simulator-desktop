@@ -9,6 +9,7 @@ const { SerialSession } = require("./lib/serial-session");
 let mainWindow = null;
 const smokeMode = process.env.EXTERNAL_SIMULATOR_SMOKE_TEST === "1";
 const rendererUrl = pathToFileURL(path.join(__dirname, "index.html")).href;
+const appIcon = path.join(__dirname, "build", "icon.png");
 let quitAfterSerialClose = false;
 
 const serialSession = new SerialSession({
@@ -54,6 +55,7 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     backgroundColor: "#0b1020",
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -114,6 +116,7 @@ registerTrustedHandler("serial:flush", () => serialSession.flush());
 
 // 既定メニューを外すと Ctrl+R / Ctrl+Shift+R のアクセラレータも無効になる。
 Menu.setApplicationMenu(null);
+app.setAppUserModelId("jp.aiphone.external-device-simulator.next");
 
 app.whenReady().then(createWindow);
 app.on("window-all-closed", () => {

@@ -32,6 +32,7 @@
       "renderer.js",
       "index.html",
       "styles.css",
+      "build/icon.png",
       "protocol/**/*",
       "lib/**/*",
       "package.json"
@@ -40,6 +41,7 @@
       "node_modules/@serialport/**/*"
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "portable",

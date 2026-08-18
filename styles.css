@@ -120,6 +120,55 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .button-row button { background: #19263d; border-color: #30415e; font-family: Consolas, monospace; }
 .callout { border-left: 3px solid var(--blue); background: #14233e; color: #b8c7df; padding: 10px 12px; }
 
+/* 受信モニタ：受信電文をフィールド単位で読ませるための表示 */
+.receive-card { border-color: #2c4160; }
+.receive-verdict { align-self: flex-start; border: 1px solid var(--line); background: #16203a; color: var(--muted); border-radius: 14px; padding: 4px 12px; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.receive-verdict.ok { border-color: #2f7a5f; background: #12291f; color: #86e8c0; }
+.receive-verdict.warn { border-color: #85682a; background: #2a2213; color: #f3d489; }
+.receive-verdict.error { border-color: #8a3f4b; background: #2b151b; color: #ffb1ba; }
+.receive-summary { padding: 10px 12px; border: 1px solid #253352; border-radius: 7px; background: #0c1424; color: #cdd8ea; font: 11px/1.6 Consolas, "Cascadia Mono", monospace; word-break: break-word; }
+.receive-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.receive-badges:empty { display: none; }
+.receive-badge { border: 1px solid var(--line); background: #16203a; color: #b3c0d6; border-radius: 12px; padding: 3px 10px; font-size: 10px; }
+.receive-badge.ok { border-color: #2f7a5f; color: #86e8c0; }
+.receive-badge.warn { border-color: #85682a; color: #f3d489; }
+.receive-badge.error { border-color: #8a3f4b; color: #ffb1ba; }
+.receive-notes { margin-top: 10px; display: grid; gap: 5px; }
+.receive-notes:empty { display: none; }
+.receive-note { margin: 0; padding: 7px 10px; border-left: 3px solid var(--line); border-radius: 0 5px 5px 0; background: #101a2c; color: #bcc8dc; font-size: 11px; }
+.receive-note.error { border-left-color: var(--red); background: #241520; color: #ffc3c9; }
+.receive-note.warn { border-left-color: var(--yellow); background: #241f12; color: #f5dda0; }
+.receive-note.info { border-left-color: var(--blue); background: #12203a; color: #b9cdf0; }
+.receive-bytes code { white-space: pre-wrap; }
+.receive-subtitle { margin: 16px 0 0; font-size: 12px; color: #c3cddc; }
+.receive-subtitle small { margin-left: 7px; color: var(--muted); font-size: 10px; font-weight: 400; }
+.receive-table-wrap { margin-top: 10px; max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
+.receive-table { width: 100%; border-collapse: collapse; font: 11px/1.5 Consolas, "Cascadia Mono", monospace; }
+.receive-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 9px; background: var(--panel-2); border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }
+.receive-table td { padding: 5px 9px; border-bottom: 1px solid rgba(47,61,88,.4); color: #c9d2e1; vertical-align: top; }
+.receive-table tbody tr:hover { background: #14203a; }
+.receive-table .receive-pos { width: 58px; color: var(--muted); white-space: nowrap; }
+.receive-table .receive-label { width: 118px; color: #9fb6dc; white-space: nowrap; }
+.receive-table .receive-raw { width: 132px; color: #b9d2ff; word-break: break-all; }
+.receive-value { color: #e2e9f6; }
+.receive-hint { margin-top: 2px; color: #6f7e97; font-size: 10px; }
+.receive-row.warn { background: rgba(233,185,73,.07); }
+.receive-row.warn .receive-value { color: #f3d489; }
+.receive-row.error { background: rgba(240,111,122,.09); }
+.receive-row.error .receive-value { color: #ffb1ba; }
+.receive-row.info .receive-value { color: #b9cdf0; }
+.receive-empty td, .receive-empty-text { padding: 14px 10px; color: var(--muted); text-align: center; font-size: 11px; }
+.receive-empty-text { margin: 0; }
+.receive-history { margin-top: 10px; max-height: 190px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; background: #0a1120; }
+.receive-history-item { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 6px 10px; border: 0; border-bottom: 1px solid rgba(47,61,88,.4); border-radius: 0; background: transparent; text-align: left; font: 11px/1.5 Consolas, "Cascadia Mono", monospace; }
+.receive-history-item:hover { background: #14203a; }
+.receive-history-item.active { background: #182a49; box-shadow: inset 3px 0 var(--blue); }
+.receive-history-time { flex: 0 0 auto; color: #63718b; font-size: 10px; }
+.receive-history-summary { flex: 1; min-width: 0; color: #c5d0e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.receive-history-item.ok .receive-history-summary { color: #9fdfc4; }
+.receive-history-item.warn .receive-history-summary { color: #f0d59a; }
+.receive-history-item.error .receive-history-summary { color: #ffb1ba; }
+
 .log-pane { min-width: 0; display: flex; flex-direction: column; background: #0b1220; border-left: 1px solid var(--line); }
 .log-header { height: 54px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--line); }
 .log-header strong, .log-header small { display: block; }
