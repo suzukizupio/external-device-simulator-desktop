@@ -132,6 +132,34 @@
           <div class="preview"><span>生成結果</span><code id="locker4Preview">—</code></div>
           <div class="actions"><button class="secondary" id="locker4PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker4SendButton" disabled>送信開始</button></div>
         </article>
+
+        <article class="card receive-card">
+          <div class="card-title">
+            <div><h2>受信モニタ</h2><p>相手装置から受信した電文を仕様のフィールドへ分解して表示</p></div>
+            <span class="receive-verdict" id="locker4RxVerdict">未受信</span>
+          </div>
+          <div class="receive-summary" id="locker4RxSummary">まだ電文を受信していません。接続して相手装置からの送信を待ってください。</div>
+          <div class="receive-badges" id="locker4RxBadges"></div>
+          <div class="receive-notes" id="locker4RxNotes"></div>
+          <div class="preview receive-bytes"><span>受信HEX</span><code id="locker4RxHex">—</code></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>位置</th><th>項目</th><th>HEX</th><th>意味</th></tr></thead>
+              <tbody id="locker4RxFields"><tr class="receive-empty"><td colspan="4">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <h3 class="receive-subtitle">ロッカーデータ内訳 <small id="locker4RxLockerCount">0件</small></h3>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>#</th><th>位置</th><th>状態</th><th>ロッカーNO</th><th>棟NO</th><th>住戸NO</th><th>DATA2</th><th>備考</th></tr></thead>
+              <tbody id="locker4RxLockers"><tr class="receive-empty"><td colspan="8">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <div class="inline-options"><label><input id="locker4RxFollow" type="checkbox" checked> 受信するたび最新の電文へ表示を切り替える</label></div>
+          <h3 class="receive-subtitle">受信履歴 <small id="locker4RxHistoryCount">0件</small></h3>
+          <div class="receive-history" id="locker4RxHistory"><p class="receive-empty-text">受信履歴はありません</p></div>
+          <div class="actions"><button class="secondary" id="locker4RxApply">受信状態をロッカー一覧へ反映</button><button class="danger" id="locker4RxClear">受信履歴を消去</button></div>
+        </article>
       </section>
 
       <section class="view" id="view-locker2">
@@ -182,6 +210,28 @@
           <div class="preview"><span>プレビュー</span><code id="locker2Preview">—</code></div>
           <div class="actions"><button class="secondary" id="locker2PreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="locker2SendButton" disabled>送信開始</button><button class="danger" id="locker2StopButton" disabled>反復停止</button></div>
         </article>
+
+        <article class="card receive-card">
+          <div class="card-title">
+            <div><h2>受信モニタ</h2><p>宅配ボックスから受信した11byte電文を桁ごとに分解して表示</p></div>
+            <span class="receive-verdict" id="locker2RxVerdict">未受信</span>
+          </div>
+          <p class="callout">2線式は単方向通信のため、受信電文へACK／NAKは返しません。受信内容の確認だけを行います。</p>
+          <div class="receive-summary" id="locker2RxSummary">まだ電文を受信していません。接続して宅配ボックスからの送信を待ってください。</div>
+          <div class="receive-badges" id="locker2RxBadges"></div>
+          <div class="receive-notes" id="locker2RxNotes"></div>
+          <div class="preview receive-bytes"><span>受信HEX</span><code id="locker2RxHex">—</code></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>位置</th><th>項目</th><th>HEX</th><th>意味</th></tr></thead>
+              <tbody id="locker2RxFields"><tr class="receive-empty"><td colspan="4">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <div class="inline-options"><label><input id="locker2RxFollow" type="checkbox" checked> 受信するたび最新の電文へ表示を切り替える</label></div>
+          <h3 class="receive-subtitle">受信履歴 <small id="locker2RxHistoryCount">0件</small></h3>
+          <div class="receive-history" id="locker2RxHistory"><p class="receive-empty-text">受信履歴はありません</p></div>
+          <div class="actions"><button class="secondary" id="locker2RxApply">受信内容を登録一覧へ反映</button><button class="danger" id="locker2RxClear">受信履歴を消去</button></div>
+        </article>
       </section>
 
       <section class="view" id="view-key">
@@ -200,6 +250,27 @@
           <div class="inline-options"><label><input id="keyBadBcc" type="checkbox"> BCC異常</label><label><input id="keyAutoResponse" type="checkbox"> 受信電文へ自動ACK/NAK</label></div>
           <div class="preview"><span>プレビュー</span><code id="keyPreview">—</code></div>
           <div class="actions"><button class="secondary" id="keyPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="keySendButton" disabled>送信</button></div>
+        </article>
+
+        <article class="card receive-card">
+          <div class="card-title">
+            <div><h2>受信モニタ</h2><p>非接触キー装置から受信した10／13byte電文を桁ごとに分解して表示</p></div>
+            <span class="receive-verdict" id="keyRxVerdict">未受信</span>
+          </div>
+          <div class="receive-summary" id="keyRxSummary">まだ電文を受信していません。接続して非接触キー装置からの送信を待ってください。</div>
+          <div class="receive-badges" id="keyRxBadges"></div>
+          <div class="receive-notes" id="keyRxNotes"></div>
+          <div class="preview receive-bytes"><span>受信HEX</span><code id="keyRxHex">—</code></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>位置</th><th>項目</th><th>HEX</th><th>意味</th></tr></thead>
+              <tbody id="keyRxFields"><tr class="receive-empty"><td colspan="4">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <div class="inline-options"><label><input id="keyRxFollow" type="checkbox" checked> 受信するたび最新の電文へ表示を切り替える</label></div>
+          <h3 class="receive-subtitle">受信履歴 <small id="keyRxHistoryCount">0件</small></h3>
+          <div class="receive-history" id="keyRxHistory"><p class="receive-empty-text">受信履歴はありません</p></div>
+          <div class="actions"><button class="secondary" id="keyRxApply">受信内容を送信フォームへ取り込む</button><button class="danger" id="keyRxClear">受信履歴を消去</button></div>
         </article>
       </section>
 
@@ -329,6 +400,7 @@
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
   <script src="protocol/auto-responder.js"></script>
+  <script src="protocol/receive-inspector.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

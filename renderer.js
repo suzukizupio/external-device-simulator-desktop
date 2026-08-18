@@ -35,7 +35,17 @@ const state = {
   locker4Series: null,
   locker4Rows: [],
   locker2Rows: [],
+  // 受信モニタ：機種ごとに履歴と表示中の1件を保持する。
+  receiveMonitors: {},
 };
+
+// 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
+// 履歴は試験中に見返す範囲だけを保持し、全件は通信ログ側で担保する。
+const RECEIVE_MONITORS = Object.freeze({
+  locker4: { prefix: "locker4Rx", historyLimit: 50 },
+  locker2: { prefix: "locker2Rx", historyLimit: 100 },
+  key: { prefix: "keyRx", historyLimit: 100 },
+});
 
 // Q55-001D 2.基本機能：住戸アドレスはMAX800（登録数の上限）。
 // ボックス数（着荷・滞留の住戸数）は標準100、PATMOα40。
@@ -1416,6 +1426,361 @@ function trackLocker4Packet(value) {
   state.locker4Inbound = state.locker4Series.accept(value);
 }
 
+// ---------------------------------------------------------------- 受信モニタ
+// 受信電文の解析は protocol/receive-inspector.js に集約し、ここでは
+// 「現在の画面設定を解析条件へ渡す」「結果を描画する」だけを行う。
+// 検証NGでも読み取れた範囲は必ず表示し、何が仕様と違うのかを画面に残す。
+
+function receiveMonitorState(view) {
+  if (!RECEIVE_MONITORS[view]) return null;
+  if (!state.receiveMonitors[view]) {
+    const summary = $(`${RECEIVE_MONITORS[view].prefix}Summary`);
+    state.receiveMonitors[view] = {
+      history: [],
+      shownId: null,
+      nextId: 1,
+      // 機種ごとの初期メッセージはindex.html側に書いてあるので、それを保持する。
+      placeholder: summary ? summary.textContent : "",
+    };
+  }
+  return state.receiveMonitors[view];
+}
+
+// 解析条件は送信フォームと同じ設定から作る。方向・機種制約の食い違いを
+// 「異常」ではなく「注意」として示すため、インスペクタへ渡して判定させる。
+function receiveInspectOptions(view) {
+  if (view === "locker4") {
+    return { expectedType: $("locker4Action").value === "request" ? "response" : "request" };
+  }
+  if (view === "locker2") {
+    return { maxBuilding: locker2Limits().maxBuilding };
+  }
+  if (view === "key") {
+    const profile = keyProfile();
+    return { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label };
+  }
+  return {};
+}
+
+function receiveElement(view, suffix) {
+  const config = RECEIVE_MONITORS[view];
+  return config ? $(`${config.prefix}${suffix}`) : null;
+}
+
+// 履歴には受信バイト列だけを残し、解析は描画時に行う。こうすると
+// 対象システムや動作側を切り替えたときに、過去の受信電文もその条件で
+// 読み直せる（受信データ自体は書き換えない）。
+function recordReceiveEntry(view, bytes, at, frameError) {
+  const monitor = receiveMonitorState(view);
+  if (!monitor || !window.ReceiveInspector) return null;
+  const config = RECEIVE_MONITORS[view];
+  const entry = {
+    id: monitor.nextId,
+    at: Number.isFinite(at) ? at : Date.now(),
+    bytes: Array.from(bytes || []),
+    frameError: frameError || null,
+  };
+  monitor.nextId += 1;
+  monitor.history.push(entry);
+  while (monitor.history.length > config.historyLimit) monitor.history.shift();
+  const follow = receiveElement(view, "Follow");
+  if (!follow || follow.checked || monitor.shownId == null) monitor.shownId = entry.id;
+  renderReceiveMonitor(view);
+  return entry;
+}
+
+// フレームとして成立した受信電文。
+function recordReceivedFrame(view, bytes, at) {
+  return recordReceiveEntry(view, bytes, at, null);
+}
+
+// フレーム境界の検出段階で失敗した受信データも同じ枠組みで残す。
+function recordReceiveError(view, bytes, message, at) {
+  return recordReceiveEntry(view, bytes, at, message || "受信データを解釈できません");
+}
+
+function inspectReceiveEntry(view, entry) {
+  const api = window.ReceiveInspector;
+  if (!entry || !api) return null;
+  return entry.frameError
+    ? api.errorResult(view, entry.bytes, entry.frameError)
+    : api.inspect(view, entry.bytes, receiveInspectOptions(view));
+}
+
+function shownReceiveEntry(view) {
+  const monitor = receiveMonitorState(view);
+  if (!monitor || monitor.history.length === 0) return null;
+  return monitor.history.find((entry) => entry.id === monitor.shownId) || monitor.history[monitor.history.length - 1];
+}
+
+function receiveVerdictOf(result) {
+  if (!result) return { text: "未受信", tone: "" };
+  if (!result.valid) return { text: "検証NG", tone: "error" };
+  if (result.warnings.length) return { text: "検証OK（注意あり）", tone: "warn" };
+  return { text: "検証OK", tone: "ok" };
+}
+
+function renderReceiveNotes(view, result) {
+  const container = receiveElement(view, "Notes");
+  if (!container) return;
+  const fragment = document.createDocumentFragment();
+  for (const problem of result ? result.problems : []) {
+    const item = document.createElement("p");
+    item.className = "receive-note error";
+    item.textContent = `仕様違反: ${problem}`;
+    fragment.append(item);
+  }
+  for (const warning of result ? result.warnings : []) {
+    const item = document.createElement("p");
+    item.className = "receive-note warn";
+    item.textContent = `注意: ${warning}`;
+    fragment.append(item);
+  }
+  if (result && result.expectedResponse) {
+    const item = document.createElement("p");
+    item.className = "receive-note info";
+    item.textContent = `仕様上この電文へ返す応答: ${result.expectedResponse}`;
+    fragment.append(item);
+  }
+  container.replaceChildren(fragment);
+}
+
+function renderReceiveBadges(view, result) {
+  const container = receiveElement(view, "Badges");
+  if (!container) return;
+  const fragment = document.createDocumentFragment();
+  for (const item of result ? result.badges : []) {
+    const chip = document.createElement("span");
+    chip.className = `receive-badge ${item.tone}`;
+    chip.textContent = item.label;
+    fragment.append(chip);
+  }
+  container.replaceChildren(fragment);
+}
+
+function emptyReceiveRow(columns, text) {
+  const row = document.createElement("tr");
+  row.className = "receive-empty";
+  const cell = document.createElement("td");
+  cell.colSpan = columns;
+  cell.textContent = text;
+  row.append(cell);
+  return row;
+}
+
+function renderReceiveFields(view, result) {
+  const body = receiveElement(view, "Fields");
+  if (!body) return;
+  if (!result || result.fields.length === 0) {
+    body.replaceChildren(emptyReceiveRow(4, "受信待ち"));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const field of result.fields) {
+    const row = document.createElement("tr");
+    row.className = `receive-row ${field.status}`;
+    const position = document.createElement("td");
+    position.className = "receive-pos";
+    position.textContent = field.range;
+    const label = document.createElement("td");
+    label.className = "receive-label";
+    label.textContent = field.label;
+    const raw = document.createElement("td");
+    raw.className = "receive-raw";
+    raw.textContent = field.raw || "—";
+    const meaning = document.createElement("td");
+    const value = document.createElement("div");
+    value.className = "receive-value";
+    value.textContent = field.value;
+    meaning.append(value);
+    if (field.note) {
+      const note = document.createElement("div");
+      note.className = "receive-hint";
+      note.textContent = field.note;
+      meaning.append(note);
+    }
+    row.append(position, label, raw, meaning);
+    fragment.append(row);
+  }
+  body.replaceChildren(fragment);
+}
+
+// ロッカーデータ内訳は4線式だけが持つ。
+function renderReceiveLockers(view, result) {
+  const body = receiveElement(view, "Lockers");
+  if (!body) return;
+  const count = receiveElement(view, "LockerCount");
+  const lockers = result ? result.lockers : [];
+  if (count) count.textContent = `${lockers.length}件`;
+  if (lockers.length === 0) {
+    body.replaceChildren(emptyReceiveRow(8, result ? "この電文にロッカーデータはありません" : "受信待ち"));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const locker of lockers) {
+    const row = document.createElement("tr");
+    row.className = `receive-row ${locker.status}`;
+    const cells = [
+      String(locker.index),
+      locker.range,
+      `${locker.stateHex} ${locker.stateLabel}`,
+      locker.lockerText,
+      locker.buildingText,
+      locker.roomText,
+      locker.data2Text,
+      locker.note || "—",
+    ];
+    for (const text of cells) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    fragment.append(row);
+  }
+  body.replaceChildren(fragment);
+}
+
+function renderReceiveHistory(view) {
+  const container = receiveElement(view, "History");
+  if (!container) return;
+  const monitor = receiveMonitorState(view);
+  const count = receiveElement(view, "HistoryCount");
+  if (count) count.textContent = `${monitor.history.length}件`;
+  if (monitor.history.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "receive-empty-text";
+    empty.textContent = "受信履歴はありません";
+    container.replaceChildren(empty);
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  // 直近の受信を上に置き、試験中に最新の電文をすぐ確認できるようにする。
+  for (const entry of monitor.history.slice().reverse()) {
+    const result = inspectReceiveEntry(view, entry);
+    const button = document.createElement("button");
+    const verdict = receiveVerdictOf(result);
+    button.className = `receive-history-item ${verdict.tone}`;
+    button.classList.toggle("active", entry.id === monitor.shownId);
+    const time = document.createElement("span");
+    time.className = "receive-history-time";
+    time.textContent = formatTime(entry.at);
+    const summary = document.createElement("span");
+    summary.className = "receive-history-summary";
+    summary.textContent = result ? result.summary : `${entry.bytes.length}バイト受信`;
+    button.append(time, summary);
+    button.addEventListener("click", () => {
+      monitor.shownId = entry.id;
+      renderReceiveMonitor(view);
+    });
+    fragment.append(button);
+  }
+  container.replaceChildren(fragment);
+}
+
+function renderReceiveMonitor(view) {
+  if (!RECEIVE_MONITORS[view]) return;
+  const entry = shownReceiveEntry(view);
+  const result = inspectReceiveEntry(view, entry);
+  const verdict = receiveVerdictOf(result);
+  const verdictElement = receiveElement(view, "Verdict");
+  if (verdictElement) {
+    verdictElement.textContent = verdict.text;
+    verdictElement.className = `receive-verdict ${verdict.tone}`;
+  }
+  const summary = receiveElement(view, "Summary");
+  if (summary) {
+    summary.textContent = result
+      ? `${formatTime(entry.at)} 受信 — ${result.summary}`
+      : receiveMonitorState(view).placeholder;
+  }
+  const hex = receiveElement(view, "Hex");
+  if (hex) hex.textContent = result && result.bytes.length ? `${toHex(result.bytes)}\n${toAscii(result.bytes)}` : "—";
+  renderReceiveBadges(view, result);
+  renderReceiveNotes(view, result);
+  renderReceiveFields(view, result);
+  renderReceiveLockers(view, result);
+  renderReceiveHistory(view);
+}
+
+function clearReceiveMonitor(view) {
+  const monitor = receiveMonitorState(view);
+  if (!monitor) return;
+  monitor.history.length = 0;
+  monitor.shownId = null;
+  renderReceiveMonitor(view);
+  toast("受信履歴を消去しました");
+}
+
+// 受信した内容を送信側の設定へ取り込む。実機の状態をそのまま引き継いで
+// 折り返し試験を行えるようにするための操作で、通信そのものは行わない。
+function applyReceivedLocker4(result) {
+  if (!result.lockers.length) throw new Error("反映できるロッカーデータが受信電文にありません");
+  let applied = 0;
+  const missing = [];
+  for (const locker of result.lockers) {
+    if (locker.lockerNo == null || locker.state == null) continue;
+    // 宅配ロボ状態はロッカーNO 000固定のため、対応する行を特定できない。
+    if (locker.lockerNo === 0) {
+      missing.push("000（宅配ロボ状態）");
+      continue;
+    }
+    const row = state.locker4Rows.find((item) => item.lockerNo === locker.lockerNo);
+    if (!row) {
+      missing.push(String(locker.lockerNo).padStart(3, "0"));
+      continue;
+    }
+    row.currentState = locker.state;
+    if (locker.buildingNo != null) row.buildingNo = locker.buildingNo;
+    if (locker.roomNo != null) row.roomNo = locker.roomNo;
+    applied += 1;
+  }
+  if (applied === 0) throw new Error("受信したロッカーNOに一致する行がロッカー一覧にありません");
+  renderLocker4Table();
+  const detail = missing.length ? `（一覧にないロッカーNO: ${missing.join(", ")}）` : "";
+  addLog("info", "RX-APPLY", null, `受信した${applied}件のロッカー状態を一覧へ反映${detail}`);
+  toast(`${applied}件のロッカー状態を一覧へ反映しました${detail}`);
+}
+
+function applyReceivedLocker2(result) {
+  const parsed = result.parsed;
+  if (!parsed || parsed.address == null) throw new Error("住戸アドレスを読み取れないため反映できません");
+  if (parsed.vacant) throw new Error("未登録ロッカーの電文は反映できません");
+  if (parsed.command == null || parsed.roomNo == null) throw new Error("コマンドまたは住戸番号を読み取れないため反映できません");
+  const row = state.locker2Rows.find((item) => item.no === parsed.address);
+  if (!row) throw new Error(`住戸アドレス${parsed.address}に対応する登録行がありません。登録行数を増やしてください`);
+  row.command = parsed.command;
+  row.buildingNo = parsed.buildingNo == null ? row.buildingNo : parsed.buildingNo;
+  row.roomNo = parsed.roomNo;
+  renderLocker2Table();
+  addLog("info", "RX-APPLY", null, `受信内容を住戸アドレス${parsed.address}の登録行へ反映`);
+  toast(`住戸アドレス${parsed.address}の登録行へ反映しました`);
+}
+
+function applyReceivedKey(result) {
+  const parsed = result.parsed;
+  if (!parsed || parsed.gateNo == null || parsed.roomNo == null) throw new Error("ゲートNoまたは部屋番号を読み取れないため反映できません");
+  const api = requireApi("NoncontactKey");
+  $("keyFormat").value = parsed.format === api.FORMAT.WITH_PERSON ? api.FORMAT.WITH_PERSON : api.FORMAT.ROOM_ONLY;
+  $("keyGate").value = String(parsed.gateNo);
+  if (parsed.buildingNo != null) $("keyBuilding").value = String(parsed.buildingNo);
+  $("keyRoom").value = String(parsed.roomNo).padStart(4, "0");
+  if (parsed.personNo != null) $("keyPerson").value = String(parsed.personNo);
+  // 対象システム制約は変更しないため、上限超過はここで丸められる。
+  syncKeyForm();
+  preview("keyPreview", buildKeyFrame).catch(() => undefined);
+  addLog("info", "RX-APPLY", null, `受信内容を送信フォームへ取り込み（ゲート${parsed.gateNo} / ${String(parsed.roomNo).padStart(4, "0")}）`);
+  toast("受信内容を送信フォームへ取り込みました");
+}
+
+function applyReceiveMonitor(view) {
+  const result = inspectReceiveEntry(view, shownReceiveEntry(view));
+  if (!result) throw new Error("反映できる受信電文がありません");
+  if (view === "locker4") return applyReceivedLocker4(result);
+  if (view === "locker2") return applyReceivedLocker2(result);
+  if (view === "key") return applyReceivedKey(result);
+  throw new Error("この画面には反映機能がありません");
+}
+
 function describeFrame(view, frame) {
   if (view === "locker2") {
     const api = requireApi("Telegram2");
@@ -1476,7 +1841,7 @@ function describeFrame(view, frame) {
   return "";
 }
 
-function inspectReceive(bytes) {
+function inspectReceive(bytes, at) {
   const reader = currentFrameReader();
   const controls = [];
   for (const event of reader.push(bytes)) {
@@ -1486,12 +1851,18 @@ function inspectReceive(bytes) {
     }
     if (event.type === "error") {
       addLog("warn", "PARSE", event.bytes.length ? event.bytes : null, event.message);
+      // フレームとして成立しなかった受信データも受信モニタへ残し、
+      // 何バイト受けて何が足りなかったのかを画面で追えるようにする。
+      recordReceiveError(state.currentView, event.bytes, event.message, at);
       handleCompletedInboundFrame(false);
       continue;
     }
     state.rxFrames += 1;
     updateMetrics();
     const view = state.currentView;
+    // 受信モニタの記録は検証結果に依存させない。仕様違反の電文ほど
+    // どの桁が想定と違うのかを確認したいので、必ず先に記録する。
+    recordReceivedFrame(view, event.bytes, at);
     try {
       addLog("info", "PARSE", null, describeFrame(view, event.bytes));
       handleCompletedInboundFrame(true).then((control) => handleApplicationFrame(view, event.bytes, control));
@@ -1528,6 +1899,8 @@ function navigate(view) {
   state.manualReceiveStage = null;
   clearReceiveTimer();
   if (keyReceiver) keyReceiver.reset();
+  // 解析条件は画面の設定に依存するため、表示中の1件を現在の設定で描き直す。
+  if (RECEIVE_MONITORS[view]) renderReceiveMonitor(view);
   document.querySelectorAll(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   const preset = ["locker2", "locker4", "mansion"].includes(view) ? "locker" : view === "key" ? "key" : view === "elevator" ? "elevator" : view === "alarm" ? "alarm" : null;
@@ -1776,6 +2149,18 @@ function bindEvents() {
     updateAlarmHistoryStatus("消去しました");
   });
 
+  // 受信モニタ：反映・消去は機種ごとに同じ操作体系でそろえる。
+  for (const [view, config] of Object.entries(RECEIVE_MONITORS)) {
+    $(`${config.prefix}Apply`).addEventListener("click", () => {
+      try { applyReceiveMonitor(view); } catch (error) { logError(error, "受信内容の反映"); }
+    });
+    $(`${config.prefix}Clear`).addEventListener("click", () => clearReceiveMonitor(view));
+  }
+  // 解析条件を変える設定は、表示中の受信電文にも即座に反映する。
+  $("locker4Action").addEventListener("change", () => renderReceiveMonitor("locker4"));
+  $("locker2Profile").addEventListener("change", () => renderReceiveMonitor("locker2"));
+  ["keyFormat", "keyProfile"].forEach((id) => $(id).addEventListener("change", () => renderReceiveMonitor("key")));
+
   $("faultReset").addEventListener("click", () => { state.faultPlan = null; state.faultSignature = ""; toast("異常注入の適用回数をリセットしました"); });
   $("applySignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.setSignals({ dtr: $("signalDtr").checked, rts: $("signalRts").checked })); } catch (error) { logError(error, "信号線設定"); } });
   $("readSignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.getSignals()); } catch (error) { logError(error, "信号線取得"); } });
@@ -1802,6 +2187,7 @@ async function initialize() {
   applyLogLimit();
   renderLocker4Table();
   renderLocker2Table();
+  for (const view of Object.keys(RECEIVE_MONITORS)) renderReceiveMonitor(view);
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();
@@ -1821,7 +2207,7 @@ async function initialize() {
     state.rxCount += 1;
     updateMetrics();
     addLog("rx", "RX", bytes, `session=${event.sessionId} seq=${event.sequence}`, event.timestamp);
-    const controls = inspectReceive(bytes);
+    const controls = inspectReceive(bytes, event.timestamp);
     for (const control of controls) {
       const packet = [control];
       const consumed = dispatchControl(packet);

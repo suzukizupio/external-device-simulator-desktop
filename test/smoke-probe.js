@@ -3,6 +3,9 @@
 // 配布物には含めない（package.json の files に test/ を入れていない）。
 
 const MansionController = require("../protocol/mansion-controller");
+const Telegram2 = require("../protocol/locker2");
+const Telegram4 = require("../protocol/locker4");
+const NoncontactKey = require("../protocol/noncontact-key");
 
 // 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
 // LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
@@ -17,7 +20,7 @@ const PROBE_SCRIPT = `
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine", "AutoResponder"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -155,10 +158,214 @@ const LOG_UI_SCRIPT = `
   })
 `;
 
+// 受信モニタが実DOMへ描画された内容を読み出す。フィールド名→表示値の対で返し、
+// 「どの桁が何と解釈されたか」を実描画から検証する。
+const RECEIVE_MONITOR_SCRIPT = (prefix) => `
+  (() => {
+    const text = (id) => {
+      const element = document.getElementById(id);
+      return element ? element.textContent.trim() : null;
+    };
+    const rows = (id) => Array.from(document.querySelectorAll("#" + id + " tr"))
+      .filter((tr) => !tr.classList.contains("receive-empty"));
+    const fields = {};
+    const fieldStatus = {};
+    for (const tr of rows("${prefix}Fields")) {
+      const cells = tr.querySelectorAll("td");
+      if (cells.length < 4) continue;
+      const label = cells[1].textContent.trim();
+      fields[label] = (cells[3].querySelector(".receive-value") || cells[3]).textContent.trim();
+      fieldStatus[label] = tr.className.replace("receive-row", "").trim();
+    }
+    return {
+      verdict: text("${prefix}Verdict"),
+      verdictClass: (document.getElementById("${prefix}Verdict") || {}).className || "",
+      summary: text("${prefix}Summary"),
+      hex: text("${prefix}Hex"),
+      badges: Array.from(document.querySelectorAll("#${prefix}Badges .receive-badge")).map((node) => node.textContent.trim()),
+      notes: Array.from(document.querySelectorAll("#${prefix}Notes .receive-note")).map((node) => node.textContent.trim()),
+      fields,
+      fieldStatus,
+      lockers: rows("${prefix}Lockers").map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent.trim())),
+      historyCount: text("${prefix}HistoryCount"),
+      historyItems: Array.from(document.querySelectorAll("#${prefix}History .receive-history-item")).map((node) => node.textContent.trim()),
+    };
+  })()
+`;
+
 function formatTime(at) {
   const date = new Date(at);
   const pad = (value, width = 2) => String(value).padStart(width, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+// 受信モニタは「受信 → 解析 → 描画 → 反映」まで実DOMで確認する。
+// 実際のシリアル受信と同じ serial:data 経路へ電文を流し込む。
+async function verifyReceiveMonitors({ window, sendToRenderer }) {
+  const $ = (id) => `document.getElementById("${id}")`;
+  const click = (id) => window.webContents.executeJavaScript(`${$(id)}.click()`);
+  const navigate = (view) => window.webContents.executeJavaScript(`document.querySelector('[data-view="${view}"]').click()`);
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  let sequence = 1000;
+  const send = async (bytes) => {
+    sequence += 1;
+    sendToRenderer("serial:data", { sessionId: 999, sequence, timestamp: Date.now(), bytes: Array.from(bytes) });
+    await wait(90);
+  };
+  const monitorOf = (prefix) => window.webContents.executeJavaScript(RECEIVE_MONITOR_SCRIPT(prefix));
+
+  // ---------------------------------------------- 非接触キー：13byte + BCC異常
+  await navigate("key");
+  // 自動ACK/NAKは受信モニタとは独立の機能なので、ここでは切っておく。
+  await window.webContents.executeJavaScript(`${$("keyAutoResponse")}.checked = false`);
+  const keyFrame = NoncontactKey.buildTelegram({
+    format: NoncontactKey.FORMAT.WITH_PERSON, gateNo: 2, buildingNo: 1, roomNo: 101, personNo: 3,
+  });
+  // 分割受信でも1件として解析されることを確かめる。
+  await send(keyFrame.slice(0, 5));
+  await send(keyFrame.slice(5));
+  const key = await monitorOf("keyRx");
+  if (key.verdict !== "検証OK" || !key.verdictClass.includes("ok")) {
+    throw new Error(`key receive verdict failed: ${JSON.stringify(key)}`);
+  }
+  if (key.fields["ゲートNo"] !== "02番ゲート" || key.fields["棟番号"] !== "1棟"
+      || key.fields["部屋番号"] !== "0101（101号室）" || key.fields["個人番号"] !== "003（3番）") {
+    throw new Error(`key field decode failed: ${JSON.stringify(key.fields)}`);
+  }
+  if (!key.fields["BCC"].includes("一致") || !key.notes.some((note) => note.includes("応答: ACK"))) {
+    throw new Error(`key BCC/response hint failed: ${JSON.stringify(key)}`);
+  }
+  if (key.historyCount !== "1件") throw new Error(`key history failed: ${JSON.stringify(key)}`);
+
+  await send(NoncontactKey.corruptBCC(keyFrame));
+  const keyBad = await monitorOf("keyRx");
+  if (keyBad.verdict !== "検証NG" || keyBad.fieldStatus["BCC"] !== "error") {
+    throw new Error(`key bad BCC not reported: ${JSON.stringify(keyBad)}`);
+  }
+  // BCCが壊れていても各桁は読めていること。
+  if (keyBad.fields["部屋番号"] !== "0101（101号室）") {
+    throw new Error(`key bad BCC lost field decode: ${JSON.stringify(keyBad.fields)}`);
+  }
+  if (!keyBad.notes.some((note) => note.includes("応答: NAK")) || keyBad.historyCount !== "2件") {
+    throw new Error(`key bad BCC hints failed: ${JSON.stringify(keyBad)}`);
+  }
+
+  // 受信内容の送信フォームへの取り込み。
+  await window.webContents.executeJavaScript(`${$("keyRxFollow")}.checked = false`);
+  await window.webContents.executeJavaScript(
+    `Array.from(document.querySelectorAll("#keyRxHistory .receive-history-item")).pop().click()`
+  );
+  await click("keyRxApply");
+  await wait(60);
+  const keyForm = await window.webContents.executeJavaScript(`({
+    gate: ${$("keyGate")}.value, building: ${$("keyBuilding")}.value,
+    room: ${$("keyRoom")}.value, person: ${$("keyPerson")}.value,
+  })`);
+  if (keyForm.gate !== "2" || keyForm.building !== "1" || keyForm.room !== "0101" || keyForm.person !== "3") {
+    throw new Error(`key apply-to-form failed: ${JSON.stringify(keyForm)}`);
+  }
+
+  // ------------------------------------------------------ 4線式：情報応答
+  await navigate("locker4");
+  await window.webContents.executeJavaScript(`${$("locker4Action")}.value = "request"`);
+  const locker4Frame = Telegram4.buildResponseTelegram({
+    packageNo: 0,
+    modelNo: 1,
+    lockers: [
+      { state: Telegram4.STATE.PARCEL, lockerNo: 1, buildingNo: 1, roomNo: 101 },
+      { state: Telegram4.STATE.EMPTY, lockerNo: 2, buildingNo: 1, roomNo: 102 },
+    ],
+  });
+  await send(locker4Frame);
+  const l4 = await monitorOf("locker4Rx");
+  if (l4.verdict !== "検証OK" || l4.lockers.length !== 2) {
+    throw new Error(`locker4 receive failed: ${JSON.stringify(l4)}`);
+  }
+  if (l4.fields["発信ID"] !== "37H 宅配ボックス" || l4.fields["着信ID"] !== "38H 集合住宅システム") {
+    throw new Error(`locker4 ID decode failed: ${JSON.stringify(l4.fields)}`);
+  }
+  if (l4.fields["パッケージNO"] !== "00（最終パケット）") {
+    throw new Error(`locker4 package decode failed: ${JSON.stringify(l4.fields)}`);
+  }
+  // 状態・ロッカーNO・住戸NOが内訳表に出ていること。
+  if (!l4.lockers[0][2].includes("荷物あり") || l4.lockers[0][3] !== "001" || l4.lockers[0][5] !== "0101") {
+    throw new Error(`locker4 locker breakdown failed: ${JSON.stringify(l4.lockers)}`);
+  }
+  if (!l4.lockers[1][2].includes("荷物なし")) {
+    throw new Error(`locker4 second locker failed: ${JSON.stringify(l4.lockers)}`);
+  }
+
+  // 受信状態をロッカー一覧の現在状態へ反映する。
+  await click("locker4RxApply");
+  await wait(80);
+  const l4Rows = await window.webContents.executeJavaScript(`
+    Array.from(document.querySelectorAll("#locker4Body tr")).slice(0, 2)
+      .map((tr) => tr.querySelector(".locker-current").textContent.trim())
+  `);
+  if (l4Rows[0] !== "荷物あり" || l4Rows[1] !== "荷物なし") {
+    throw new Error(`locker4 apply-to-table failed: ${JSON.stringify(l4Rows)}`);
+  }
+
+  // ------------------------------------------------------ 2線式：着荷電文
+  await navigate("locker2");
+  const locker2Frame = Telegram2.buildTelegram({
+    command: Telegram2.CMD.STAY, buildingNo: 2, roomNo: 305, address: 4,
+  });
+  await send(locker2Frame);
+  const l2 = await monitorOf("locker2Rx");
+  if (l2.verdict !== "検証OK") throw new Error(`locker2 receive failed: ${JSON.stringify(l2)}`);
+  if (l2.fields["コマンド"] !== "12H 滞留" || l2.fields["住戸番号"] !== "305号室"
+      || l2.fields["棟No"] !== "2棟" || !l2.fields["住戸アドレス"].startsWith("4")) {
+    throw new Error(`locker2 field decode failed: ${JSON.stringify(l2.fields)}`);
+  }
+  // 2線式は単方向なので、応答を促す注記を出さない。
+  if (l2.notes.some((note) => note.includes("応答"))) {
+    throw new Error(`locker2 must not suggest a response: ${JSON.stringify(l2.notes)}`);
+  }
+  await click("locker2RxApply");
+  await wait(80);
+  const l2Row = await window.webContents.executeJavaScript(`
+    (() => {
+      const tr = document.querySelectorAll("#locker2Body tr")[3];
+      return {
+        command: tr.querySelector("select").value,
+        numbers: Array.from(tr.querySelectorAll("input[type=number]")).map((input) => input.value),
+      };
+    })()
+  `);
+  if (l2Row.command !== "18" || l2Row.numbers.join("-") !== "2-305") {
+    throw new Error(`locker2 apply-to-table failed: ${JSON.stringify(l2Row)}`);
+  }
+
+  // ------------------------------------- フレーム不成立でも受信内容を残す
+  await navigate("key");
+  // 先の履歴選択で追従を切っているため、最新表示へ戻してから受信させる。
+  await window.webContents.executeJavaScript(`${$("keyRxFollow")}.checked = true`);
+  await send([0x02, 0x41, 0x42, 0x03, 0x00]);
+  const keyError = await monitorOf("keyRx");
+  if (keyError.verdict !== "検証NG" || !keyError.badges.includes("フレーム不成立")) {
+    throw new Error(`frame error was not surfaced: ${JSON.stringify(keyError)}`);
+  }
+
+  // 履歴消去で初期表示へ戻ること。
+  await click("keyRxClear");
+  await wait(60);
+  const cleared = await monitorOf("keyRx");
+  if (cleared.verdict !== "未受信" || cleared.historyCount !== "0件" || cleared.hex !== "—") {
+    throw new Error(`receive monitor clear failed: ${JSON.stringify(cleared)}`);
+  }
+
+  return {
+    key: key.summary,
+    keyBad: keyBad.verdict,
+    keyForm,
+    locker4: l4.summary,
+    locker4Applied: l4Rows,
+    locker2: l2.summary,
+    locker2Applied: l2Row,
+    frameError: keyError.badges,
+    cleared: cleared.verdict,
+  };
 }
 
 async function run({ window, app, sendToRenderer }) {
@@ -220,7 +427,9 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`log filter contract failed: ${JSON.stringify(logUi)}`);
     }
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi })}`);
+    const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
+
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, receiveMonitor })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);
