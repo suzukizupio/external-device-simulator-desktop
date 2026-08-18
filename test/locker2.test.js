@@ -99,6 +99,28 @@ check("住戸アドレスは800件まで登録できる", T.validateRegistration
     command: 0x13, buildingNo: 1, roomNo: index + 1, address: index + 1,
   })), { maxEntries: 800, maxBoxes: 100 }).length, 800);
 
+console.log("\n=== 旧VB6版 外部疑似装置の実測との照合 (LINEEYE キャプチャ) ===");
+// 棟1・101号室・アドレス001・着荷 → Sx D1 1 ?101 001 Ex
+check("実測1件目 棟1・101号室・アドレス001・着荷",
+  T.buildTelegram({ command: 0x11, buildingNo: 1, roomNo: 101, address: 1 }),
+  [0x02, 0x11, 0x31, 0x3F, 0x31, 0x30, 0x31, 0x30, 0x30, 0x31, 0x03]);
+// 棟1・501号室・アドレス002・着荷 → Sx D1 1 ?501 002 Ex
+check("実測2件目 棟1・501号室・アドレス002・着荷",
+  T.buildTelegram({ command: 0x11, buildingNo: 1, roomNo: 501, address: 2 }),
+  [0x02, 0x11, 0x31, 0x3F, 0x35, 0x30, 0x31, 0x30, 0x30, 0x32, 0x03]);
+// 未登録ロッカー → Sx ?? ???? 003 Ex（仕様書に規定はなく旧版実測に基づく）
+check("実測3件目 未登録ロッカーは3FH埋め",
+  T.buildVacantTelegram(3),
+  [0x02, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x30, 0x30, 0x33, 0x03]);
+check("実測最終 未登録ロッカーのアドレス088",
+  T.buildVacantTelegram(88),
+  [0x02, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x30, 0x38, 0x38, 0x03]);
+check("未登録電文を解析するとvacantになる", T.parseTelegram(T.buildVacantTelegram(3)).vacant, true);
+check("未登録電文のアドレスを取り出せる", T.parseTelegram(T.buildVacantTelegram(25)).address, 25);
+check("通常電文はvacantにならない",
+  T.parseTelegram(T.buildTelegram({ command: 0x11, buildingNo: 1, roomNo: 101, address: 1 })).vacant, false);
+checkThrows("未登録電文の住戸アドレスも範囲検査する", () => T.buildVacantTelegram(0), /住戸アドレス/);
+
 console.log("\n========================================");
 console.log(`  結果: ${pass} 件成功 / ${fail} 件失敗`);
 console.log("========================================");

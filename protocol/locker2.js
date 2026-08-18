@@ -105,15 +105,38 @@
     ];
   }
 
+  // 旧VB6版の外部疑似装置は、未登録ロッカーもコマンド・棟No・住戸番号を
+  // スペースコード(3FH)で埋めて送信する。仕様書に規定はないため、
+  // プロトコルアナライザでの実測に基づく互換動作として用意する。
+  function buildVacantTelegram(address) {
+    return [
+      CODE.STX,
+      CODE.SP,
+      CODE.SP,
+      CODE.SP, CODE.SP, CODE.SP, CODE.SP,
+      ...addr3(address),
+      CODE.ETX,
+    ];
+  }
+
+  function isVacantTelegram(input) {
+    const packet = bytes(input, 11);
+    return packet[0] === CODE.STX && packet[10] === CODE.ETX &&
+      packet.slice(1, 7).every(value => value === CODE.SP);
+  }
+
   function parseTelegram(input) {
     const packet = bytes(input, 11);
     if (packet[0] !== CODE.STX) fail("STXがありません");
     if (packet[10] !== CODE.ETX) fail("ETXがありません");
+    if (isVacantTelegram(packet)) {
+      return { vacant: true, command: null, buildingNo: null, roomNo: null, address: decodeAddress(packet.slice(7, 10)) };
+    }
     const command = validateCommand(packet[1]);
     const buildingNo = parseBuildingByte(packet[2]);
     const roomNo = decodeRoom(packet.slice(3, 7));
     const address = decodeAddress(packet.slice(7, 10));
-    return { command, buildingNo, roomNo, address };
+    return { vacant: false, command, buildingNo, roomNo, address };
   }
 
   // 登録住戸は「棟No+住戸番号」と住戸アドレスがそれぞれ一意でなければならない。
@@ -172,6 +195,8 @@
     room4,
     addr3,
     buildTelegram,
+    buildVacantTelegram,
+    isVacantTelegram,
     parseTelegram,
     validateRegistrationList,
     toHex,

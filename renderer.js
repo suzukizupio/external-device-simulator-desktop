@@ -806,7 +806,10 @@ function buildLocker2Frames() {
     maxBoxes: limits.maxBoxes,
     allowedBuildingNos,
   });
-  return normalized.map((entry) => api.buildTelegram(entry));
+  const registered = new Map(normalized.map((entry) => [entry.address, api.buildTelegram(entry)]));
+  if ($("locker2Scope").value !== "all") return Array.from(registered.values());
+  // 旧VB6版互換：登録の有無にかかわらず全ロッカーを巡回し、未登録は3FHで埋める。
+  return state.locker2Rows.map((row) => registered.get(row.no) || api.buildVacantTelegram(row.no));
 }
 
 function locker4State(value, index) {
@@ -1381,10 +1384,11 @@ function describeFrame(view, frame) {
   if (view === "locker2") {
     const api = requireApi("Telegram2");
     const value = api.parseTelegram(frame);
-    const patmo = $("locker2Profile").value === "patmo";
+    if (value.vacant) return `2線式 未登録ロッカー addr=${value.address}`;
+    const limits = locker2Limits();
     api.validateRegistrationList([value], {
-      maxEntries: patmo ? 40 : 100,
-      allowedBuildingNos: patmo ? [0, 1] : [0, 1, 2, 3, 4, 5, 6, 7, 8],
+      maxEntries: MAX_LOCKER2_ROWS,
+      allowedBuildingNos: Array.from({ length: limits.maxBuilding + 1 }, (_unused, index) => index),
     });
     return `2線式 状態=${value.command.toString(16).toUpperCase()} 棟=${value.buildingNo} 住戸=${value.roomNo} addr=${value.address}`;
   }

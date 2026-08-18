@@ -26,6 +26,7 @@ const PROBE_SCRIPT = `
 // ロッカー表は動的生成のため、実DOM上で一括設定と送信登録を往復させる。
 const LOCKER_UI_SCRIPT = `
   new Promise((resolve) => {
+   try {
     const rowsOf = (id) => Array.from(document.getElementById(id).querySelectorAll("tr"));
     const numbersOf = (tr) => Array.from(tr.querySelectorAll("input[type=number]")).map((input) => input.value).join("-");
     const initialRows = rowsOf("locker4Body").length;
@@ -66,6 +67,15 @@ const LOCKER_UI_SCRIPT = `
     document.getElementById("locker2SwitchCommand").value = "17";
     document.getElementById("locker2SwitchApply").click();
     const boxes2 = document.getElementById("locker2Boxes").textContent;
+
+    // 送信範囲を旧版互換にすると、未登録ロッカーも3FH埋めで巡回送信される。
+    const scope = document.getElementById("locker2Scope");
+    scope.value = "all";
+    document.getElementById("locker2PreviewButton").click();
+    const previewText = document.getElementById("locker2Preview").textContent;
+    const scopeAllLines = (previewText.match(/#[0-9]+ /g) || []).length;
+    const scopeAllThird = (previewText.match(/#3 [0-9A-F ]+/) || [""])[0].trim();
+    scope.value = "registered";
     document.getElementById("locker2PreviewButton").click();
 
     setTimeout(() => {
@@ -90,11 +100,16 @@ const LOCKER_UI_SCRIPT = `
         registered2,
         boxes2,
         boxesAfterSwitch,
+        scopeAllLines,
+        scopeAllThird,
         visible2: document.getElementById("locker2Visible").textContent,
         limit2: document.getElementById("locker2Limit").textContent,
         preview2: document.getElementById("locker2Preview").textContent,
       });
     }, 60);
+   } catch (error) {
+     resolve({ scriptError: String(error && error.stack || error) });
+   }
   })
 `;
 
@@ -154,6 +169,7 @@ async function run({ window, app, sendToRenderer }) {
     }
 
     const locker = await window.webContents.executeJavaScript(LOCKER_UI_SCRIPT);
+    if (locker.scriptError) throw new Error(`locker UI script failed: ${locker.scriptError}`);
     if (locker.initialRows !== 100 || locker.visible !== "100" || locker.restoredRows !== 100) {
       throw new Error(`locker table was not rendered: ${JSON.stringify(locker)}`);
     }
@@ -178,6 +194,10 @@ async function run({ window, app, sendToRenderer }) {
     // 取り出しはボックス数に数えず、着荷へ戻すと登録2件がそのまま数えられる。
     if (locker.boxesAfterSwitch !== "0" || locker.boxes2 !== "2") {
       throw new Error(`locker2 box count failed: ${JSON.stringify(locker)}`);
+    }
+    // 旧版互換の巡回送信は全100件で、未登録の3件目は3FH埋めになる。
+    if (locker.scopeAllLines !== 100 || locker.scopeAllThird !== "#3 02 3F 3F 3F 3F 3F 3F 30 30 33 03") {
+      throw new Error(`locker2 full-scan scope failed: ${JSON.stringify({ lines: locker.scopeAllLines, third: locker.scopeAllThird })}`);
     }
 
     // 分割受信したMCフレームが復元されること、およびログが描画時刻ではなく
