@@ -52,7 +52,7 @@
         <div class="metric-grid">
           <article class="metric"><span>接続</span><strong id="metricConnection">未接続</strong><small id="metricPort">—</small></article>
           <article class="metric"><span>送信</span><strong id="metricTx">0</strong><small>フレーム／制御コード</small></article>
-          <article class="metric"><span>受信</span><strong id="metricRx">0</strong><small>シリアル受信チャンク</small></article>
+          <article class="metric"><span>受信フレーム</span><strong id="metricRx">0</strong><small id="metricRxDetail">0チャンク受信</small></article>
           <article class="metric"><span>異常</span><strong id="metricErrors">0</strong><small>検証・通信エラー</small></article>
         </div>
         <article class="card">
@@ -225,6 +225,7 @@
             <label>パリティ<select id="serialParity"><option value="none">None</option><option value="odd">Odd</option><option value="even" selected>Even</option><option value="mark">Mark</option><option value="space">Space</option></select></label>
             <label>ストップビット<select id="serialStopBits"><option>1</option><option>1.5</option><option>2</option></select></label>
             <label>フロー制御<select id="serialFlow"><option value="none">なし</option><option value="hardware">RTS/CTS</option></select></label>
+            <label>ログ保持件数<select id="logLimit"><option value="2000">2,000件</option><option value="20000" selected>20,000件</option><option value="100000">100,000件</option></select></label>
           </div>
           <div class="inline-options"><label><input id="signalDtr" type="checkbox"> DTR</label><label><input id="signalRts" type="checkbox"> RTS</label></div>
           <div class="actions"><button id="applySignals" class="secondary requires-connection" disabled>信号線へ反映</button><button id="readSignals" class="secondary requires-connection" disabled>CTS/DSR/DCD取得</button><button id="flushSerial" class="danger requires-connection" disabled>入出力バッファ破棄</button></div>
@@ -240,7 +241,8 @@
 
     <aside class="log-pane">
       <div class="log-header"><div><strong>通信ログ</strong><small id="logCount">0件</small></div><div><button id="saveLog" title="保存">↓</button><button id="clearLog" title="消去">×</button></div></div>
-      <div class="log-filters"><button class="active" data-filter="all">全て</button><button data-filter="tx">TX</button><button data-filter="rx">RX</button><button data-filter="info">INFO</button><label><input id="autoScroll" type="checkbox" checked>追従</label></div>
+      <div class="log-filters"><button class="active" data-filter="all">全て</button><button data-filter="tx">TX</button><button data-filter="rx">RX</button><button data-filter="info">INFO</button><button data-filter="fault">異常</button><label><input id="autoScroll" type="checkbox" checked>追従</label></div>
+      <div class="log-search"><input id="logSearch" type="search" placeholder="HEX・ASCII・解析結果を検索" aria-label="ログ検索"></div>
       <div id="communicationLog" class="log-list" aria-live="polite"></div>
       <div class="quick-controls" aria-label="手動制御コード"><button class="control-byte requires-connection" data-byte="5" disabled>ENQ</button><button class="control-byte requires-connection" data-byte="6" disabled>ACK</button><button class="control-byte requires-connection" data-byte="21" disabled>NAK</button><button class="control-byte requires-connection" data-byte="4" disabled>EOT</button></div>
       <div class="sequence-state"><span>シーケンス</span><strong id="sequenceState">待機</strong></div>

@@ -2,7 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const CONTROL_NAMES = Object.freeze({ 0x02: "STX", 0x03: "ETX", 0x04: "EOT", 0x05: "ENQ", 0x06: "ACK", 0x15: "NAK" });
-const MAX_LOGS = 2000;
+const DEFAULT_LOG_LIMIT = 20000;
 const PROFILE_STORAGE_KEY = "external-device-simulator-next.profile.v1";
 
 const state = {
@@ -13,7 +13,10 @@ const state = {
   filter: "all",
   txCount: 0,
   rxCount: 0,
+  rxFrames: 0,
   errorCount: 0,
+  search: "",
+  logLimit: DEFAULT_LOG_LIMIT,
   controlWaiters: [],
   locker2Run: null,
   faultPlan: null,
@@ -48,10 +51,19 @@ function toAscii(bytes) {
   }).join("");
 }
 
-function timestamp() {
-  const date = new Date();
-  const pad = (value, width = 2) => String(value).padStart(width, "0");
+function pad(value, width = 2) {
+  return String(value).padStart(width, "0");
+}
+
+// ログ行には時刻だけを出し、日付は日付セパレータ行と保存ファイルで担保する。
+function formatTime(at) {
+  const date = new Date(at);
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+}
+
+function formatDate(at) {
+  const date = new Date(at);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 let toastTimer = null;
@@ -63,16 +75,28 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => { element.className = ""; }, 2800);
 }
 
-function addLog(kind, label, bytes, detail) {
+// atはシリアルイベントの発生時刻(epoch ms)。描画時刻ではなく実際の送受信時刻を記録する。
+function addLog(kind, label, bytes, detail, at) {
+  const occurredAt = Number.isFinite(at) ? at : Date.now();
+  const previous = state.logs[state.logs.length - 1];
   const entry = {
-    time: timestamp(),
+    at: occurredAt,
+    time: formatTime(occurredAt),
     kind,
     label,
     bytes: bytes == null ? null : Array.from(bytes),
     detail: detail || "",
   };
   state.logs.push(entry);
-  if (state.logs.length > MAX_LOGS) state.logs.shift();
+  while (state.logs.length > state.logLimit) state.logs.shift();
+
+  const list = $("communicationLog");
+  if (!previous || formatDate(previous.at) !== formatDate(occurredAt)) {
+    const separator = document.createElement("div");
+    separator.className = "log-date";
+    separator.textContent = formatDate(occurredAt);
+    list.append(separator);
+  }
 
   const row = document.createElement("div");
   row.className = `log-entry ${kind}`;
@@ -86,13 +110,15 @@ function addLog(kind, label, bytes, detail) {
   direction.textContent = label;
   meta.append(time, direction);
   row.append(meta);
+  const hexText = entry.bytes ? toHex(entry.bytes) : "";
+  const asciiText = entry.bytes ? toAscii(entry.bytes) : "";
   if (entry.bytes) {
     const hex = document.createElement("div");
     hex.className = "log-hex";
-    hex.textContent = toHex(entry.bytes);
+    hex.textContent = hexText;
     const ascii = document.createElement("div");
     ascii.className = "log-ascii";
-    ascii.textContent = toAscii(entry.bytes);
+    ascii.textContent = asciiText;
     row.append(hex, ascii);
   }
   if (entry.detail) {
@@ -101,19 +127,26 @@ function addLog(kind, label, bytes, detail) {
     info.textContent = entry.detail;
     row.append(info);
   }
+  row.dataset.search = `${label} ${hexText} ${asciiText} ${entry.detail}`.toLowerCase();
 
-  const list = $("communicationLog");
   list.append(row);
-  while (list.childElementCount > MAX_LOGS) list.firstElementChild.remove();
+  while (list.childElementCount > state.logLimit) list.firstElementChild.remove();
   applyLogFilter(row);
   $("logCount").textContent = `${state.logs.length}件`;
   if ($("autoScroll").checked) list.scrollTop = list.scrollHeight;
 }
 
 function applyLogFilter(row) {
-  const visible = state.filter === "all" || row.dataset.kind === state.filter ||
-    (state.filter === "info" && ["info", "warn", "error"].includes(row.dataset.kind));
-  row.classList.toggle("hidden", !visible);
+  const kind = row.dataset.kind;
+  const matchesKind = state.filter === "all" || kind === state.filter ||
+    (state.filter === "info" && ["info", "warn", "error"].includes(kind)) ||
+    (state.filter === "fault" && ["warn", "error"].includes(kind));
+  const matchesSearch = !state.search || (row.dataset.search || "").includes(state.search);
+  row.classList.toggle("hidden", !(matchesKind && matchesSearch));
+}
+
+function refreshLogFilter() {
+  document.querySelectorAll(".log-entry").forEach(applyLogFilter);
 }
 
 function logError(error, context) {
@@ -127,7 +160,8 @@ function logError(error, context) {
 function updateMetrics() {
   $("metricConnection").textContent = state.connected ? "接続中" : "未接続";
   $("metricTx").textContent = String(state.txCount);
-  $("metricRx").textContent = String(state.rxCount);
+  $("metricRx").textContent = String(state.rxFrames);
+  $("metricRxDetail").textContent = `${state.rxCount}チャンク受信`;
   $("metricErrors").textContent = String(state.errorCount);
 }
 
@@ -183,11 +217,18 @@ async function withTransaction(name, operation) {
   }
 }
 
-async function waitForBusIdle(milliseconds) {
+// 相手機器が送信し続けると回線が空かないため、待機そのものにも上限を設ける。
+async function waitForBusIdle(milliseconds, timeoutMs = Math.max(milliseconds * 20, 3000)) {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     const remaining = milliseconds - (Date.now() - state.lastIoAt);
-    if (remaining <= 0) return;
-    await sleep(remaining);
+    if (remaining <= 0) return true;
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      addLog("warn", "IDLE", null, `${milliseconds}msの回線空き待ちが${timeoutMs}msで上限に達したため送信を継続します`);
+      return false;
+    }
+    await sleep(Math.min(remaining, left));
   }
 }
 
@@ -997,6 +1038,8 @@ function inspectReceive(bytes) {
     } else if (expected && state.receiveBuffer.length === expected) {
       const frame = state.receiveBuffer.slice();
       state.receiveBuffer = [];
+      state.rxFrames += 1;
+      updateMetrics();
       try {
         const view = state.currentView;
         addLog("info", "PARSE", null, describeFrame(view, frame));
@@ -1048,7 +1091,7 @@ function bindPreview(buttonId, previewId, builder, multiple = false) {
 
 function saveLogs() {
   if (state.logs.length === 0) return toast("保存するログがありません", true);
-  const text = state.logs.map((entry) => `[${entry.time}]\t${entry.label}\t${entry.bytes ? toHex(entry.bytes) : ""}\t${entry.detail}`).join("\r\n");
+  const text = state.logs.map((entry) => `${formatDate(entry.at)} ${entry.time}\t${entry.label}\t${entry.bytes ? toHex(entry.bytes) : ""}\t${entry.detail}`).join("\r\n");
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const anchor = document.createElement("a");
   anchor.href = URL.createObjectURL(blob);
@@ -1063,10 +1106,20 @@ function clearLogs() {
   $("logCount").textContent = "0件";
 }
 
+// 長時間の通信試験では2000件では足りないため、保持件数を切り替えられるようにする。
+function applyLogLimit() {
+  const value = Number($("logLimit").value);
+  state.logLimit = Number.isInteger(value) && value > 0 ? value : DEFAULT_LOG_LIMIT;
+  while (state.logs.length > state.logLimit) state.logs.shift();
+  const list = $("communicationLog");
+  while (list.childElementCount > state.logLimit) list.firstElementChild.remove();
+  $("logCount").textContent = `${state.logs.length}件`;
+}
+
 function collectProfile() {
   const values = {};
   document.querySelectorAll("input[id], select[id], textarea[id]").forEach((element) => {
-    if (["serialPort", "profileImportFile"].includes(element.id) || element.type === "file") return;
+    if (["serialPort", "profileImportFile", "logSearch"].includes(element.id) || element.type === "file") return;
     values[element.id] = element.type === "checkbox" ? { checked: element.checked } : { value: element.value };
   });
   return { format: "external-device-simulator-next-profile", version: 1, savedAt: new Date().toISOString(), values };
@@ -1148,8 +1201,13 @@ function bindEvents() {
   document.querySelectorAll(".log-filters button").forEach((button) => button.addEventListener("click", () => {
     state.filter = button.dataset.filter;
     document.querySelectorAll(".log-filters button").forEach((item) => item.classList.toggle("active", item === button));
-    document.querySelectorAll(".log-entry").forEach(applyLogFilter);
+    refreshLogFilter();
   }));
+  $("logSearch").addEventListener("input", () => {
+    state.search = $("logSearch").value.trim().toLowerCase();
+    refreshLogFilter();
+  });
+  $("logLimit").addEventListener("change", applyLogLimit);
 
   bindPreview("terminalPreviewButton", "terminalPreview", terminalFrame);
   bindPreview("locker2PreviewButton", "locker2Preview", buildLocker2Frames, true);
@@ -1223,6 +1281,7 @@ function bindEvents() {
 async function initialize() {
   bindEvents();
   const profileLoaded = loadSavedProfile();
+  applyLogLimit();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();
@@ -1235,13 +1294,13 @@ async function initialize() {
   window.serialAPI.onWrite((event) => {
     state.txCount += 1;
     updateMetrics();
-    addLog("tx", "TX", event.bytes, `session=${event.sessionId} seq=${event.sequence}`);
+    addLog("tx", "TX", event.bytes, `session=${event.sessionId} seq=${event.sequence}`, event.timestamp);
   });
   window.serialAPI.onData((bytes, event) => {
-    state.lastIoAt = Date.now();
+    state.lastIoAt = Number.isFinite(event.timestamp) ? event.timestamp : Date.now();
     state.rxCount += 1;
     updateMetrics();
-    addLog("rx", "RX", bytes, `session=${event.sessionId} seq=${event.sequence}`);
+    addLog("rx", "RX", bytes, `session=${event.sessionId} seq=${event.sequence}`, event.timestamp);
     const controls = inspectReceive(bytes);
     for (const control of controls) {
       const packet = [control];

@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { SerialPort } = require("serialport");
@@ -20,6 +20,32 @@ function sendToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
 }
 
+// 試験中の誤操作で通信ログを失わないよう、リロード系のキーを無効化する。
+function blockReloadKeys(webContents) {
+  webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const key = String(input.key || "").toLowerCase();
+    if (key === "f5" || ((input.control || input.meta) && key === "r")) event.preventDefault();
+  });
+}
+
+// 接続したままの終了は試験の中断を意味するため、明示的に確認する。
+function confirmCloseWhileConnected(event) {
+  if (smokeMode || quitAfterSerialClose) return;
+  if (serialSession.status !== "open") return;
+  const choice = dialog.showMessageBoxSync(mainWindow, {
+    type: "warning",
+    buttons: ["終了する", "キャンセル"],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: "外部疑似装置 Next",
+    message: "COMポートへ接続したままです。終了してよろしいですか。",
+    detail: "終了すると画面上の通信ログは失われます。保存する場合はキャンセルしてください。",
+  });
+  if (choice !== 0) event.preventDefault();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     show: !smokeMode,
@@ -37,6 +63,7 @@ function createWindow() {
   });
 
   mainWindow.setMenuBarVisibility(false);
+  blockReloadKeys(mainWindow.webContents);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, url) => {
     if (url !== rendererUrl) event.preventDefault();
@@ -47,44 +74,13 @@ function createWindow() {
     console.error(`electron-smoke: load failed (${code}) ${description}`);
     app.exit(1);
   });
-  mainWindow.webContents.on("did-finish-load", async () => {
+  mainWindow.webContents.on("did-finish-load", () => {
     sendToRenderer("serial:status", serialSession.snapshot());
     if (!smokeMode) return;
-    try {
-      const initial = await mainWindow.webContents.executeJavaScript(`
-        new Promise((resolve) => setTimeout(() => {
-          const buttons = ["locker2PreviewButton", "locker4PreviewButton", "keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
-          buttons.forEach((id) => document.getElementById(id).click());
-          setTimeout(() => resolve({
-          title: document.title,
-          views: document.querySelectorAll(".view").length,
-          scripts: Array.from(document.scripts).length,
-          ready: document.getElementById("communicationLog").textContent.includes("READY"),
-          previewErrors: ["locker2Preview", "locker4Preview", "keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
-            .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-          modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine"]
-            .filter((name) => !window[name])
-          }), 50);
-        }, 750))
-      `);
-      if (initial.title !== "外部疑似装置 Next" || initial.views !== 10 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
-        throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
-      }
-      await mainWindow.webContents.executeJavaScript(`document.querySelector('[data-view="mansion"]').click()`);
-      const MansionController = require("./protocol/mansion-controller");
-      const frame = MansionController.buildHealthCheckRequest({ version: 3, from: MansionController.ROLE.IC });
-      sendToRenderer("serial:data", { sessionId: 999, sequence: 1, timestamp: Date.now(), bytes: [0x06, ...frame.slice(0, 3)] });
-      sendToRenderer("serial:data", { sessionId: 999, sequence: 2, timestamp: Date.now(), bytes: [...frame.slice(3), 0x04] });
-      const receiver = await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => setTimeout(() => resolve({ parsed: document.getElementById("communicationLog").textContent.includes("MC KIND=3A CMD=41") }), 100))`);
-      if (!receiver.parsed) throw new Error(`renderer stream path failed: ${JSON.stringify(receiver)}`);
-      const result = { ...initial, streamParsed: receiver.parsed };
-      console.log(`electron-smoke: OK ${JSON.stringify(result)}`);
-      app.quit();
-    } catch (error) {
-      console.error(`electron-smoke: ${error && error.stack || error}`);
-      app.exit(1);
-    }
+    // スモーク検査は配布物に含めない test/ 配下へ分離している。
+    require("./test/smoke-probe").run({ window: mainWindow, app, sendToRenderer });
   });
+  mainWindow.on("close", confirmCloseWhileConnected);
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
@@ -115,6 +111,9 @@ registerTrustedHandler("serial:close", () => serialSession.close());
 registerTrustedHandler("serial:signals:get", () => serialSession.getSignals());
 registerTrustedHandler("serial:signals:set", (signals) => serialSession.setSignals(signals));
 registerTrustedHandler("serial:flush", () => serialSession.flush());
+
+// 既定メニューを外すと Ctrl+R / Ctrl+Shift+R のアクセラレータも無効になる。
+Menu.setApplicationMenu(null);
 
 app.whenReady().then(createWindow);
 app.on("window-all-closed", () => {

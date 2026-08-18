@@ -32,10 +32,6 @@
       "renderer.js",
       "index.html",
       "styles.css",
-      "locker*.html",
-      "locker*-ui.js",
-      "noncontact-key.html",
-      "noncontact-key-ui.js",
       "protocol/**/*",
       "lib/**/*",
       "package.json"
