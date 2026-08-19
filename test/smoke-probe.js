@@ -482,6 +482,14 @@ const ALARM_UI_SCRIPT = `
     const clearedHex = $("alarmInfo").value;
     const clearedHint = $("alarmInfoHint").textContent;
 
+    // チェックボックスが素の大きさで並んでいるか。width:100%が効くとラベルが
+    // 1文字幅へ潰れて縦書きになるため、実測値で崩れを検出する。
+    const firstBox = boxes()[0];
+    const layout = {
+      boxWidth: firstBox.offsetWidth,
+      labelHeight: firstBox.closest("label").offsetHeight,
+    };
+
     return {
       standardLabels,
       fireHex,
@@ -496,6 +504,7 @@ const ALARM_UI_SCRIPT = `
       requestHint,
       clearedHex,
       clearedHint,
+      layout,
     };
   })()
 `;
@@ -583,6 +592,9 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (alarm.clearedHex !== "00" || !alarm.clearedHint.includes("全復旧")) {
       throw new Error(`alarm all-clear button failed: ${JSON.stringify(alarm)}`);
+    }
+    if (alarm.layout.boxWidth > 30 || alarm.layout.labelHeight > 40) {
+      throw new Error(`alarm bit checkbox layout collapsed: ${JSON.stringify(alarm.layout)}`);
     }
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
