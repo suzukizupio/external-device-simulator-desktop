@@ -62,6 +62,174 @@
     return type;
   }
 
+  // 5.2.2／5.2.3／5.2.4 の発信情報ビット割付。bit1がLSB(0x01)、bit8がMSB(0x80)。
+  // 仕様書の表記は次のように写している。
+  //   locked=true                  … ◇（対応付けを変更できない）
+  //   label!==null, locked=false   … 割付あり（受注対応で変更できる）
+  //   label===null, extensible     … ―（未割付。受注対応で追加できる）
+  //   label===null, !extensible    … ×（未使用。追加も変更もできない）
+  const BIT_PATTERN = Object.freeze({
+    STANDARD: "standard",
+    PATTERN_1: "pattern1",
+    PATTERN_2: "pattern2",
+    PATTERN_3: "pattern3",
+  });
+  const BIT_PATTERN_NAMES = Object.freeze(Object.keys(BIT_PATTERN).map(function (key) { return BIT_PATTERN[key]; }));
+
+  function assignedBit(label) { return Object.freeze({ label: label, locked: false, extensible: true }); }
+  function fixedBit(label) { return Object.freeze({ label: label, locked: true, extensible: false }); }
+  const OPEN_BIT = Object.freeze({ label: null, locked: false, extensible: true });    // 仕様書の「―」
+  const UNUSED_BIT = Object.freeze({ label: null, locked: false, extensible: false }); // 仕様書の「×」
+
+  function bitRow(entries) {
+    if (entries.length !== 8) throw new Error("a bit assignment row needs exactly eight entries");
+    return Object.freeze(entries.slice());
+  }
+
+  function repeatBit(entry, count) {
+    return new Array(count).fill(entry);
+  }
+
+  // 5.2.2／5.2.3のいずれのパターンでも警報情報①bit1～4は同じ割付。
+  const ALARM1_HEAD = [
+    assignedBit("火災、遠隔試験"),
+    assignedBit("非常"),
+    assignedBit("ガス漏れ"),
+    assignedBit("ガス障害、火災障害"),
+  ];
+  // 5.2.3パターン２／３の警報情報②は同一の割付。
+  const ALARM2_SECURITY = bitRow([
+    OPEN_BIT, OPEN_BIT, OPEN_BIT,
+    fixedBit("防犯１"), fixedBit("防犯２"), fixedBit("防犯３"),
+    fixedBit("外出警戒"), fixedBit("在宅警戒"),
+  ]);
+  const ALARM_UNASSIGNED = bitRow(repeatBit(OPEN_BIT, 8));
+
+  const BIT_ASSIGNMENTS = Object.freeze({
+    // 警報情報①：標準は5.2.2、パターン１～３は5.2.3。
+    [TYPE.ALARM_1]: Object.freeze({
+      standard: bitRow(ALARM1_HEAD.concat([assignedBit("防犯(侵入)"), OPEN_BIT, OPEN_BIT, OPEN_BIT])),
+      pattern1: bitRow(ALARM1_HEAD.concat([fixedBit("防犯(侵入)"), fixedBit("外出警戒"), fixedBit("在宅警戒"), OPEN_BIT])),
+      pattern2: bitRow(ALARM1_HEAD.concat(repeatBit(OPEN_BIT, 4))),
+      pattern3: bitRow(ALARM1_HEAD.concat([fixedBit("防犯４"), fixedBit("防犯５"), OPEN_BIT, OPEN_BIT])),
+    }),
+    // 警報情報②：初期状態では割付なし（5.2.2）。パターン２／３のみ防犯情報を持つ（5.2.3）。
+    [TYPE.ALARM_2]: Object.freeze({
+      standard: ALARM_UNASSIGNED,
+      pattern1: ALARM_UNASSIGNED,
+      pattern2: ALARM2_SECURITY,
+      pattern3: ALARM2_SECURITY,
+    }),
+    // 警戒設定情報／警戒解除情報は5.2.4の受注対応のみ。標準割付は存在しない。
+    [TYPE.SECURITY_SET]: Object.freeze({
+      pattern1: bitRow([fixedBit("警戒設定")].concat(repeatBit(UNUSED_BIT, 7))),
+      pattern2: bitRow([fixedBit("外出警戒設定"), fixedBit("在宅警戒設定")].concat(repeatBit(UNUSED_BIT, 6))),
+      pattern3: bitRow([
+        fixedBit("外出警戒設定"),
+        fixedBit("在宅警戒１設定"), fixedBit("在宅警戒２設定"), fixedBit("在宅警戒３設定"),
+        fixedBit("在宅警戒４設定"), fixedBit("在宅警戒５設定"),
+        UNUSED_BIT, UNUSED_BIT,
+      ]),
+    }),
+    // 仕様書p.11の警戒解除情報パターン３ bit1は「外出警戒設定」と印字されているが、
+    // 同表パターン１「警戒解除」・パターン２「外出警戒解除」および本節の趣旨から解除側の
+    // 誤記と判断し、「外出警戒解除」として扱う。電文上の値は変わらない。
+    [TYPE.SECURITY_CLEAR]: Object.freeze({
+      pattern1: bitRow([fixedBit("警戒解除")].concat(repeatBit(UNUSED_BIT, 7))),
+      pattern2: bitRow([fixedBit("外出警戒解除"), fixedBit("在宅警戒解除")].concat(repeatBit(UNUSED_BIT, 6))),
+      pattern3: bitRow([
+        fixedBit("外出警戒解除"),
+        fixedBit("在宅警戒１解除"), fixedBit("在宅警戒２解除"), fixedBit("在宅警戒３解除"),
+        fixedBit("在宅警戒４解除"), fixedBit("在宅警戒５解除"),
+        UNUSED_BIT, UNUSED_BIT,
+      ]),
+    }),
+    // ヒストリー要求(5.2.5)は発信情報を持たず、全bitを"OFF"とする。
+  });
+
+  // 発信情報が00Hのときに何を意味するかは発信種別で異なる（5.2.1／5.2.4／5.2.5）。
+  const EMPTY_INFO_TEXT = Object.freeze({
+    [TYPE.ALARM_1]: "全復旧（全bit OFF）",
+    [TYPE.ALARM_2]: "全復旧（全bit OFF）",
+    [TYPE.SECURITY_SET]: "警戒中の項目なし",
+    [TYPE.SECURITY_CLEAR]: "解除ありの項目なし",
+    [TYPE.HISTORY_REQUEST]: "ヒストリー要求（発信情報なし）",
+  });
+
+  function resolveBitPattern(value) {
+    const pattern = value == null ? BIT_PATTERN.STANDARD : String(value);
+    if (BIT_PATTERN_NAMES.indexOf(pattern) === -1) throw new RangeError("unknown alarm bit pattern: " + pattern);
+    return pattern;
+  }
+
+  // 割付表を持たない組み合わせ（ヒストリー要求、警戒設定／解除の標準）はnullを返す。
+  function bitAssignments(type, pattern) {
+    const table = BIT_ASSIGNMENTS[resolveType(type)];
+    if (!table) return null;
+    const row = table[resolveBitPattern(pattern)];
+    return row ? row.slice() : null;
+  }
+
+  function bitMask(bitNumber) {
+    return 1 << (integer(bitNumber, 1, 8, "bit number") - 1);
+  }
+
+  function encodeInfo(bitNumbers) {
+    if (bitNumbers == null) return 0;
+    if (typeof bitNumbers.length !== "number" || typeof bitNumbers === "string") {
+      throw new TypeError("bit numbers must be array-like");
+    }
+    return Array.from(bitNumbers).reduce(function (info, bitNumber) { return info | bitMask(bitNumber); }, 0) & 0xFF;
+  }
+
+  function decodeInfo(info) {
+    const value = byte(info, "alarm information");
+    const result = [];
+    for (let bitNumber = 1; bitNumber <= 8; bitNumber += 1) {
+      if ((value & bitMask(bitNumber)) !== 0) result.push(bitNumber);
+    }
+    return result;
+  }
+
+  // 発信情報1Byteを、選択中の割付で読める形へ展開する。UIのビット選択と受信表示の両方で使う。
+  function describeInfo(info, options) {
+    options = options || {};
+    const value = byte(info, "alarm information");
+    const type = resolveType(options.type == null ? TYPE.ALARM_1 : options.type);
+    const pattern = resolveBitPattern(options.pattern);
+    const row = bitAssignments(type, pattern);
+    const bits = [];
+    const labels = [];
+    const violations = [];
+    for (let bitNumber = 1; bitNumber <= 8; bitNumber += 1) {
+      const mask = bitMask(bitNumber);
+      const entry = row ? row[bitNumber - 1] : UNUSED_BIT;
+      const on = (value & mask) !== 0;
+      bits.push({
+        bit: bitNumber,
+        mask: mask,
+        on: on,
+        label: entry.label,
+        locked: entry.locked,
+        extensible: entry.extensible,
+      });
+      if (!on) continue;
+      labels.push(entry.label == null ? "bit" + bitNumber + (entry.extensible ? "（未割付）" : "（未使用）") : entry.label);
+      if (entry.label == null && !entry.extensible) violations.push(bitNumber);
+    }
+    return {
+      info: value,
+      hex: value.toString(16).toUpperCase().padStart(2, "0"),
+      type: type,
+      pattern: pattern,
+      assigned: row !== null,
+      bits: bits,
+      labels: labels,
+      violations: violations,
+      summary: labels.length === 0 ? (EMPTY_INFO_TEXT[type] || "全bit OFF") : labels.join("＋"),
+    };
+  }
+
   function encodeBCD(value) {
     const number = integer(value, 0, 99, "building number");
     return ((Math.floor(number / 10) << 4) | (number % 10)) & 0xFF;
@@ -198,7 +366,10 @@
   function buildFrame(options) {
     if (options == null || typeof options !== "object") throw new TypeError("options are required");
     const type = resolveType(options.type);
-    const info = byte(options.info == null ? 0 : options.info, "alarm information");
+    if (own(options, "info") && own(options, "infoBits")) throw new Error("specify either info or infoBits, not both");
+    const info = own(options, "infoBits")
+      ? encodeInfo(options.infoBits)
+      : byte(options.info == null ? 0 : options.info, "alarm information");
     const buildingNo = integer(options.buildingNo == null ? 0 : options.buildingNo, 0, 99, "building number");
     const sourceBase = encodeSource(sourceOption(options));
     const historyNumber = integer(options.historyNumber == null ? 0 : options.historyNumber, 0, 15, "history number");
@@ -378,6 +549,13 @@
     TYPE: TYPE,
     TYPE_NAME: TYPE_NAME,
     SOURCE_KIND: SOURCE_KIND,
+    BIT_PATTERN: BIT_PATTERN,
+    BIT_PATTERN_NAMES: BIT_PATTERN_NAMES,
+    bitAssignments: bitAssignments,
+    bitMask: bitMask,
+    encodeInfo: encodeInfo,
+    decodeInfo: decodeInfo,
+    describeInfo: describeInfo,
     encodeBCD: encodeBCD,
     decodeBCD: decodeBCD,
     sourceNone: sourceNone,

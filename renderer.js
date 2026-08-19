@@ -1091,6 +1091,85 @@ function buildElevatorFrame() {
   return api.buildFrame(options);
 }
 
+// Q49-023G 5.2.2／5.2.3／5.2.4：発信情報の各bitが何を指すかは割付パターンで変わる。
+const ALARM_BIT_PATTERN_NOTE = Object.freeze({
+  standard: "5.2.2 初期値警報ビット割付",
+  pattern1: "5.2.3／5.2.4 パターン１",
+  pattern2: "5.2.3／5.2.4 パターン２",
+  pattern3: "5.2.3／5.2.4 パターン３",
+});
+
+function alarmInfoCheckboxes() {
+  return Array.from($("alarmInfoBits").querySelectorAll("input[type=checkbox]"));
+}
+
+// 選択中の割付が対象の発信種別に存在しないとき（警戒設定／解除に標準割付はない）は
+// パターン１として読む。受信電文の桁を読めないまま捨てないための保険。
+function alarmBitPatternFor(type) {
+  const api = requireApi("AlarmProtocol");
+  const pattern = $("alarmBitPattern").value;
+  return api.bitAssignments(type, pattern) ? pattern : api.BIT_PATTERN.PATTERN_1;
+}
+
+function alarmInfoDetail(info, type) {
+  return requireApi("AlarmProtocol").describeInfo(info, { type, pattern: alarmBitPatternFor(type) });
+}
+
+// 発信情報はHEX欄を唯一の値とし、チェックボックスは選択中の割付でそれを読み書きする窓にする。
+function syncAlarmInfoForm(source = "hex") {
+  const api = requireApi("AlarmProtocol");
+  const type = parseHexByte($("alarmType").value, "発信種別");
+  const patternSelect = $("alarmBitPattern");
+  const isRequest = type === api.TYPE.HISTORY_REQUEST;
+  // 警戒設定／解除は受注対応の3パターンだけで、標準割付を持たない。
+  const standardOption = Array.from(patternSelect.options).find((option) => option.value === api.BIT_PATTERN.STANDARD);
+  const hasStandard = !isRequest && api.bitAssignments(type, api.BIT_PATTERN.STANDARD) !== null;
+  standardOption.disabled = !hasStandard;
+  if (!hasStandard && patternSelect.value === api.BIT_PATTERN.STANDARD) patternSelect.value = api.BIT_PATTERN.PATTERN_1;
+  patternSelect.disabled = isRequest;
+
+  const boxes = alarmInfoCheckboxes();
+  if (source === "bits") {
+    const checked = boxes.reduce((list, box, index) => (box.checked ? list.concat(index + 1) : list), []);
+    $("alarmInfo").value = api.encodeInfo(checked).toString(16).toUpperCase().padStart(2, "0");
+  }
+
+  let detail = null;
+  try {
+    detail = alarmInfoDetail(parseHexByte($("alarmInfo").value, "発信情報"), type);
+  } catch (_error) {
+    detail = null;
+  }
+
+  boxes.forEach((box, index) => {
+    const label = box.closest("label");
+    const text = label.querySelector("span");
+    const entry = detail ? detail.bits[index] : null;
+    const bitNo = index + 1;
+    if (!entry) {
+      text.textContent = `bit${bitNo}`;
+      box.disabled = true;
+      label.classList.add("bit-unassigned");
+      return;
+    }
+    text.textContent = entry.label == null
+      ? `bit${bitNo}（${entry.extensible ? "未割付" : "未使用"}）`
+      : `bit${bitNo} ${entry.label}${entry.locked ? "◇" : ""}`;
+    box.checked = entry.on;
+    // ×（追加も変更もできないbit）はチェックさせない。HEX欄からは送れるので注意として残す。
+    box.disabled = isRequest || (entry.label == null && !entry.extensible);
+    label.classList.toggle("bit-unassigned", entry.label == null);
+  });
+
+  const hint = $("alarmInfoHint");
+  if (isRequest) hint.textContent = "ヒストリー要求は発報元の情報を持たないため、発信情報は00H固定で送信します（5.2.5）";
+  else if (!detail) hint.textContent = "発信情報は2桁HEXで入力してください";
+  else {
+    const violation = detail.violations.length ? `／注意: bit${detail.violations.join("・")}は仕様上未使用です` : "";
+    hint.textContent = `${ALARM_BIT_PATTERN_NOTE[detail.pattern] || detail.pattern}：${detail.hex}H = ${detail.summary}${violation}`;
+  }
+}
+
 function buildAlarmFrame() {
   const api = requireApi("AlarmProtocol");
   const type = parseHexByte($("alarmType").value, "発信種別");
@@ -1827,7 +1906,8 @@ function describeFrame(view, frame) {
         (localRole === "alarm" && value.type === api.TYPE.HISTORY_REQUEST)) {
       throw new Error("現在の動作側に対して送信方向が逆です");
     }
-    return `警報 ${value.typeName} info=${value.info.toString(16).padStart(2, "0")} source=${value.source.kind}`;
+    const info = alarmInfoDetail(value.info, value.type);
+    return `警報 ${value.typeName} info=${info.hex}（${info.summary}） source=${value.source.kind}`;
   }
   if (view === "mansion") {
     const api = requireApi("MansionController");
@@ -1982,6 +2062,7 @@ function applyProfile(profile) {
   if (legacyKeyProfile === "general") $("keyProfile").value = "other";
   if (legacyKeyProfile === "limited8") $("keyProfile").value = "vFine";
   syncKeyForm();
+  syncAlarmInfoForm();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -2062,6 +2143,14 @@ function bindEvents() {
   });
   $("alarmRole").addEventListener("change", () => {
     $("alarmType").value = $("alarmRole").value === "intercom" ? "00" : "30";
+    syncAlarmInfoForm();
+  });
+  ["alarmType", "alarmBitPattern"].forEach((id) => $(id).addEventListener("change", () => syncAlarmInfoForm()));
+  $("alarmInfo").addEventListener("input", () => syncAlarmInfoForm());
+  $("alarmInfoBits").addEventListener("change", () => syncAlarmInfoForm("bits"));
+  $("alarmInfoClearButton").addEventListener("click", () => {
+    $("alarmInfo").value = "00";
+    syncAlarmInfoForm();
   });
   $("saveLog").addEventListener("click", saveLogs);
   $("clearLog").addEventListener("click", clearLogs);
@@ -2188,6 +2277,7 @@ async function initialize() {
   renderLocker4Table();
   renderLocker2Table();
   for (const view of Object.keys(RECEIVE_MONITORS)) renderReceiveMonitor(view);
+  syncAlarmInfoForm();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

@@ -226,4 +226,163 @@ test("AlarmHistory refuses non-history command types and capacities above 15", f
   assert.throws(function () { history.add(history503); }, /cannot be recorded/);
 });
 
+// --- 5.2.2／5.2.3／5.2.4 発信情報ビット割付 -------------------------------------
+
+// 割付表からラベルでbit番号を引く。仕様書の表そのものを検証対象にするため、
+// テスト側にbit番号を書き写さない。
+function bitOf(type, pattern, label) {
+  const row = A.bitAssignments(type, pattern);
+  assert.ok(row, "no bit assignment table for type 0x" + type.toString(16) + " / " + pattern);
+  const index = row.findIndex(function (entry) { return entry.label === label; });
+  assert.notEqual(index, -1, "bit for " + label + " is missing from " + pattern);
+  return index + 1;
+}
+
+function labelsOf(type, pattern) {
+  return A.bitAssignments(type, pattern).map(function (entry) { return entry.label; });
+}
+
+test("5.2.2 警報情報①の初期値警報ビット割付が仕様の並びどおり", function () {
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.STANDARD), [
+    "火災、遠隔試験", "非常", "ガス漏れ", "ガス障害、火災障害", "防犯(侵入)", null, null, null,
+  ]);
+  // 初期状態の警報情報②は対応付けが為されていない。
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_2, A.BIT_PATTERN.STANDARD), new Array(8).fill(null));
+  // 標準割付は受注対応で変更できるため、◇（変更不可）は付かない。
+  assert.equal(A.bitAssignments(A.TYPE.ALARM_1, A.BIT_PATTERN.STANDARD).every(function (entry) { return !entry.locked; }), true);
+});
+
+test("5.2.3 警戒情報付き防犯情報の3パターンが仕様の表どおり", function () {
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1), [
+    "火災、遠隔試験", "非常", "ガス漏れ", "ガス障害、火災障害", "防犯(侵入)", "外出警戒", "在宅警戒", null,
+  ]);
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_2, A.BIT_PATTERN.PATTERN_1), new Array(8).fill(null));
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_2), [
+    "火災、遠隔試験", "非常", "ガス漏れ", "ガス障害、火災障害", null, null, null, null,
+  ]);
+  // 防犯１～３と警戒情報は警報情報②のbit4以降。bit1へ詰めない。
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_2, A.BIT_PATTERN.PATTERN_2), [
+    null, null, null, "防犯１", "防犯２", "防犯３", "外出警戒", "在宅警戒",
+  ]);
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_3), [
+    "火災、遠隔試験", "非常", "ガス漏れ", "ガス障害、火災障害", "防犯４", "防犯５", null, null,
+  ]);
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_2, A.BIT_PATTERN.PATTERN_3), labelsOf(A.TYPE.ALARM_2, A.BIT_PATTERN.PATTERN_2));
+  // ◇の付いた防犯・警戒情報は対応付けを変更できない。
+  assert.equal(A.bitAssignments(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1)[bitOf(A.TYPE.ALARM_1, "pattern1", "外出警戒") - 1].locked, true);
+  assert.equal(A.bitAssignments(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1)[0].locked, false);
+});
+
+test("5.2.4 警戒設定情報／警戒解除情報の3パターンが仕様の表どおり", function () {
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_1), ["警戒設定", null, null, null, null, null, null, null]);
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_2), ["外出警戒設定", "在宅警戒設定", null, null, null, null, null, null]);
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_3), [
+    "外出警戒設定", "在宅警戒１設定", "在宅警戒２設定", "在宅警戒３設定", "在宅警戒４設定", "在宅警戒５設定", null, null,
+  ]);
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_CLEAR, A.BIT_PATTERN.PATTERN_1), ["警戒解除", null, null, null, null, null, null, null]);
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_CLEAR, A.BIT_PATTERN.PATTERN_3), [
+    "外出警戒解除", "在宅警戒１解除", "在宅警戒２解除", "在宅警戒３解除", "在宅警戒４解除", "在宅警戒５解除", null, null,
+  ]);
+  // 未割付は「×」＝追加も変更もできない。5.2.3の「―」と区別する。
+  assert.equal(A.bitAssignments(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_1)[7].extensible, false);
+  assert.equal(A.bitAssignments(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1)[7].extensible, true);
+});
+
+test("警戒設定／解除に標準割付はなく、ヒストリー要求は割付表を持たない", function () {
+  assert.equal(A.bitAssignments(A.TYPE.SECURITY_SET, A.BIT_PATTERN.STANDARD), null);
+  assert.equal(A.bitAssignments(A.TYPE.SECURITY_CLEAR, A.BIT_PATTERN.STANDARD), null);
+  for (const pattern of A.BIT_PATTERN_NAMES) {
+    assert.equal(A.bitAssignments(A.TYPE.HISTORY_REQUEST, pattern), null);
+  }
+  assert.throws(function () { A.bitAssignments(A.TYPE.ALARM_1, "pattern9"); }, /unknown alarm bit pattern/);
+});
+
+test("bit1がLSB、bit8がMSBとして発信情報を組み立て・分解する", function () {
+  assert.equal(A.encodeInfo([1]), 0x01);
+  assert.equal(A.encodeInfo([8]), 0x80);
+  assert.equal(A.encodeInfo([1, 3]), 0x05); // 5.2.1の火災＋ガス漏れの例
+  assert.equal(A.encodeInfo([]), 0x00);
+  assert.deepEqual(A.decodeInfo(0x05), [1, 3]);
+  assert.deepEqual(A.decodeInfo(0x00), []);
+  assert.deepEqual(A.decodeInfo(0xFF), [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.throws(function () { A.encodeInfo([0]); }, /1 to 8/);
+  assert.throws(function () { A.encodeInfo([9]); }, /1 to 8/);
+});
+
+test("仕様書5.5①③：標準割付の火災・ガス漏れが印字どおりの電文になる", function () {
+  const fire = [bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.STANDARD, "火災、遠隔試験")];
+  assert.deepEqual(A.buildFrame({ type: A.TYPE.ALARM_1, infoBits: fire, buildingNo: 0, roomNo: 101 }), alarm101);
+  const gas = [bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.STANDARD, "ガス漏れ")];
+  assert.deepEqual(
+    A.buildFrame({ type: A.TYPE.ALARM_1, infoBits: gas, buildingNo: 0, roomNo: 503, historyNumber: 1 }),
+    history503,
+  );
+});
+
+test("仕様書5.5④：パターン１の警戒設定が01Hになる", function () {
+  const bits = [bitOf(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_1, "警戒設定")];
+  assert.equal(A.encodeInfo(bits), 0x01);
+  assert.deepEqual(A.buildFrame({ type: A.TYPE.SECURITY_SET, infoBits: bits, buildingNo: 0, roomNo: 101 }), securitySet101);
+});
+
+test("仕様書5.5⑥⑦：警戒情報付き防犯情報が30H／50Hになる", function () {
+  const away = [
+    bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1, "防犯(侵入)"),
+    bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1, "外出警戒"),
+  ];
+  assert.equal(A.encodeInfo(away), 0x30);
+  assert.deepEqual(
+    A.buildFrame({ type: A.TYPE.ALARM_1, infoBits: away, buildingNo: 0, roomNo: 101 }),
+    [0x02, 0x37, 0x00, 0x30, 0x00, 0x00, 0x01, 0x00, 0x01, 0x03, 0x6C],
+  );
+  const home = [
+    bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1, "防犯(侵入)"),
+    bitOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1, "在宅警戒"),
+  ];
+  assert.equal(A.encodeInfo(home), 0x50);
+  assert.deepEqual(
+    A.buildFrame({ type: A.TYPE.ALARM_1, infoBits: home, buildingNo: 0, roomNo: 101 }),
+    [0x02, 0x37, 0x00, 0x50, 0x00, 0x00, 0x01, 0x00, 0x01, 0x03, 0x8C],
+  );
+});
+
+test("infoとinfoBitsの同時指定を拒否し、infoBits省略時は従来どおりinfoを使う", function () {
+  assert.throws(function () {
+    A.buildFrame({ type: A.TYPE.ALARM_1, info: 1, infoBits: [1], roomNo: 101 });
+  }, /either info or infoBits/);
+  assert.deepEqual(A.buildFrame({ type: A.TYPE.ALARM_1, info: 0x01, roomNo: 101 }), alarm101);
+  assert.equal(A.buildFrame({ type: A.TYPE.ALARM_1, infoBits: [], roomNo: 101 })[3], 0x00);
+});
+
+test("describeInfoが選択中の割付で発信情報を読み解く", function () {
+  const away = A.describeInfo(0x30, { type: A.TYPE.ALARM_1, pattern: A.BIT_PATTERN.PATTERN_1 });
+  assert.equal(away.hex, "30");
+  assert.deepEqual(away.labels, ["防犯(侵入)", "外出警戒"]);
+  assert.equal(away.summary, "防犯(侵入)＋外出警戒");
+  assert.deepEqual(away.violations, []);
+  assert.equal(away.assigned, true);
+
+  // 同じ 30H でも標準割付には外出警戒がないため、bit6は未割付として読む。桁は落とさない。
+  const standard = A.describeInfo(0x30, { type: A.TYPE.ALARM_1, pattern: A.BIT_PATTERN.STANDARD });
+  assert.deepEqual(standard.labels, ["防犯(侵入)", "bit6（未割付）"]);
+  assert.deepEqual(standard.violations, []);
+
+  // 5.2.1：全bit OFFは全復旧を意味する。
+  assert.equal(A.describeInfo(0x00, { type: A.TYPE.ALARM_1 }).summary, "全復旧（全bit OFF）");
+  assert.equal(A.describeInfo(0x00, { type: A.TYPE.SECURITY_SET, pattern: "pattern1" }).summary, "警戒中の項目なし");
+  assert.equal(A.describeInfo(0x00, { type: A.TYPE.SECURITY_CLEAR, pattern: "pattern1" }).summary, "解除ありの項目なし");
+});
+
+test("describeInfoは仕様上使えないbitのONを違反として挙げる", function () {
+  // 5.2.4のパターン１はbit2以降が「×」。
+  const set = A.describeInfo(0x03, { type: A.TYPE.SECURITY_SET, pattern: A.BIT_PATTERN.PATTERN_1 });
+  assert.deepEqual(set.violations, [2]);
+  assert.deepEqual(set.labels, ["警戒設定", "bit2（未使用）"]);
+  // 5.2.5のヒストリー要求は全bit OFFが規定。
+  const request = A.describeInfo(0x01, { type: A.TYPE.HISTORY_REQUEST });
+  assert.equal(request.assigned, false);
+  assert.deepEqual(request.violations, [1]);
+  assert.equal(A.describeInfo(0x00, { type: A.TYPE.HISTORY_REQUEST }).summary, "ヒストリー要求（発信情報なし）");
+});
+
 console.log("=== " + passed + " alarm tests passed ===");

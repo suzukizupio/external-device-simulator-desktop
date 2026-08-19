@@ -323,6 +323,7 @@
           <div class="form-grid cols-3">
             <label>動作側<select id="alarmRole"><option value="intercom">集合インターホン（優先局）</option><option value="alarm">警報発信装置（非優先局）</option></select></label>
             <label>発信種別<select id="alarmType"><option value="00">00 警報情報①</option><option value="01">01 警報情報②</option><option value="04">04 警戒設定</option><option value="44">44 警戒解除</option><option value="30">30 ヒストリー要求</option></select></label>
+            <label>ビット割付<select id="alarmBitPattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
             <label>発信情報 (HEX)<input id="alarmInfo" value="01" maxlength="2"></label>
             <label>棟番号（00～99、BCD符号化）<input id="alarmBuilding" value="00" maxlength="2"></label>
             <label>発報元<select id="alarmSource"><option value="room">住戸</option><option value="manager">管理室</option><option value="entrance">集合玄関</option><option value="common">共用部</option><option value="none">なし</option></select></label>
@@ -330,6 +331,20 @@
             <label>履歴番号<input id="alarmHistory" type="number" min="0" max="15" value="0"></label>
             <label>送信方式<select id="alarmTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
           </div>
+          <fieldset class="bit-picker">
+            <legend>発信情報ビット（bit1がLSB＝01H。◇は対応付けを変更できない項目）</legend>
+            <div class="bit-grid" id="alarmInfoBits">
+              <label data-bit="1"><input type="checkbox"><span>bit1</span></label>
+              <label data-bit="2"><input type="checkbox"><span>bit2</span></label>
+              <label data-bit="3"><input type="checkbox"><span>bit3</span></label>
+              <label data-bit="4"><input type="checkbox"><span>bit4</span></label>
+              <label data-bit="5"><input type="checkbox"><span>bit5</span></label>
+              <label data-bit="6"><input type="checkbox"><span>bit6</span></label>
+              <label data-bit="7"><input type="checkbox"><span>bit7</span></label>
+              <label data-bit="8"><input type="checkbox"><span>bit8</span></label>
+            </div>
+            <div class="inline-options"><button class="secondary" id="alarmInfoClearButton">全bit OFF（00H）</button><span class="receive-hint" id="alarmInfoHint">—</span></div>
+          </fieldset>
           <div class="inline-options"><label><input id="alarmAutoRecord" type="checkbox" checked> 警報①②の送信成功時に履歴へ記録</label><label><input id="alarmAutoHistoryResponse" type="checkbox" checked> 履歴要求を受信したら自動応答</label></div>
           <p class="callout" id="alarmHistoryState">保持 0/15件</p>
           <div class="preview"><span>プレビュー</span><code id="alarmPreview">—</code></div>

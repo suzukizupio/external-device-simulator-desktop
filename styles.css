@@ -95,7 +95,14 @@ td { color: #c9d2e1; }
 .form-grid .span-2 { grid-column: span 2; }
 .form-grid .span-3 { grid-column: span 3; }
 .field-note { align-self: end; min-height: 34px; display: flex; align-items: center; padding: 7px 10px; border: 1px solid #293a59; border-radius: 6px; background: #0c1628; color: #a9bddc; font-size: 10px; }
-input:disabled { opacity: .55; cursor: not-allowed; }
+.bit-picker { margin-top: 14px; padding: 10px 13px 12px; border: 1px solid #293a59; border-radius: 7px; background: #0c1628; }
+.bit-picker legend { padding: 0 6px; color: var(--muted); font-size: 10px; }
+.bit-picker .inline-options { margin-top: 11px; }
+.bit-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px 12px; }
+.bit-grid label { display: flex; align-items: center; gap: 6px; color: #b3bfd1; font-size: 10px; }
+.bit-grid label.bit-unassigned { color: #6f7e97; }
+.bit-grid input { flex: none; }
+input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .inline-options, .button-row, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
 .inline-options label { color: #b3bfd1; }
 .locker-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; padding: 11px 12px; border: 1px solid #222e46; border-radius: 7px; background: #0c1424; }
@@ -220,5 +227,6 @@ input:disabled { opacity: .55; cursor: not-allowed; }
   .log-pane { grid-column: 2; height: 70vh; min-height: 420px; border-top: 1px solid var(--line); }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-grid .span-3 { grid-column: span 2; }
 }

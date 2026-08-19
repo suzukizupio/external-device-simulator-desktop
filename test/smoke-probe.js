@@ -426,6 +426,80 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   };
 }
 
+// 警報の発信情報ビットが実DOMで割付どおりに描画され、チェックとHEXが双方向に
+// 同期し、発信種別に応じて選べる割付が切り替わることを確認する。
+const ALARM_UI_SCRIPT = `
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    const boxes = () => Array.from($("alarmInfoBits").querySelectorAll("input[type=checkbox]"));
+    const labels = () => boxes().map((box) => box.closest("label").querySelector("span").textContent);
+    const change = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new Event("change"));
+    };
+
+    document.querySelector('[data-view="alarm"]').click();
+    change($("alarmRole"), "intercom");
+    change($("alarmType"), "00");
+    change($("alarmBitPattern"), "standard");
+    const standardLabels = labels();
+
+    // 標準割付でbit1（火災）をONにするとHEXが01Hになる。
+    const fire = boxes()[0];
+    fire.checked = true;
+    fire.dispatchEvent(new Event("change", { bubbles: true }));
+    const fireHex = $("alarmInfo").value;
+    const firePreview = (() => {
+      $("alarmPreviewButton").click();
+      return $("alarmPreview").textContent;
+    })();
+
+    // パターン１へ切り替えるとbit6・bit7に警戒情報が現れる。
+    change($("alarmBitPattern"), "pattern1");
+    const pattern1Labels = labels();
+
+    // HEX側から30Hを入れるとbit5とbit6がONになる（仕様書5.5⑥）。
+    $("alarmInfo").value = "30";
+    $("alarmInfo").dispatchEvent(new Event("input"));
+    const fromHex = boxes().map((box) => box.checked);
+    const hint = $("alarmInfoHint").textContent;
+
+    // 警戒設定情報には標準割付がないため、標準は選べずパターンへ寄せられる。
+    change($("alarmType"), "04");
+    const securityPattern = $("alarmBitPattern").value;
+    const standardDisabled = Array.from($("alarmBitPattern").options)
+      .find((option) => option.value === "standard").disabled;
+    const securityLabels = labels();
+
+    // ヒストリー要求は発信情報を持たないのでビット選択ごと無効になる。
+    change($("alarmType"), "30");
+    const requestDisabled = boxes().every((box) => box.disabled) && $("alarmBitPattern").disabled;
+    const requestHint = $("alarmInfoHint").textContent;
+
+    // 全bit OFFボタンで復旧電文（00H）に戻せる。
+    change($("alarmType"), "00");
+    $("alarmInfoClearButton").click();
+    const clearedHex = $("alarmInfo").value;
+    const clearedHint = $("alarmInfoHint").textContent;
+
+    return {
+      standardLabels,
+      fireHex,
+      firePreview,
+      pattern1Labels,
+      fromHex,
+      hint,
+      securityPattern,
+      standardDisabled,
+      securityLabels,
+      requestDisabled,
+      requestHint,
+      clearedHex,
+      clearedHint,
+    };
+  })()
+`;
+
 async function run({ window, app, sendToRenderer }) {
   try {
     const initial = await window.webContents.executeJavaScript(PROBE_SCRIPT);
@@ -485,10 +559,36 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`log filter contract failed: ${JSON.stringify(logUi)}`);
     }
 
+    const alarm = await window.webContents.executeJavaScript(ALARM_UI_SCRIPT);
+    if (alarm.standardLabels[0] !== "bit1 火災、遠隔試験" || alarm.standardLabels[5] !== "bit6（未割付）") {
+      throw new Error(`alarm standard bit labels failed: ${JSON.stringify(alarm.standardLabels)}`);
+    }
+    if (alarm.fireHex !== "01" || alarm.firePreview !== "02 37 00 01 00 00 01 00 01 03 3D") {
+      throw new Error(`alarm bit-to-hex sync failed: ${JSON.stringify(alarm)}`);
+    }
+    if (alarm.pattern1Labels[5] !== "bit6 外出警戒◇" || alarm.pattern1Labels[6] !== "bit7 在宅警戒◇") {
+      throw new Error(`alarm pattern1 labels failed: ${JSON.stringify(alarm.pattern1Labels)}`);
+    }
+    if (alarm.fromHex.join(",") !== "false,false,false,false,true,true,false,false") {
+      throw new Error(`alarm hex-to-bit sync failed: ${JSON.stringify(alarm.fromHex)}`);
+    }
+    if (!alarm.hint.includes("防犯(侵入)＋外出警戒")) {
+      throw new Error(`alarm info hint failed: ${alarm.hint}`);
+    }
+    if (alarm.securityPattern !== "pattern1" || !alarm.standardDisabled || alarm.securityLabels[0] !== "bit1 警戒設定◇") {
+      throw new Error(`alarm security-set pattern fallback failed: ${JSON.stringify(alarm)}`);
+    }
+    if (!alarm.requestDisabled || !alarm.requestHint.includes("00H固定")) {
+      throw new Error(`alarm history-request lockout failed: ${JSON.stringify(alarm)}`);
+    }
+    if (alarm.clearedHex !== "00" || !alarm.clearedHint.includes("全復旧")) {
+      throw new Error(`alarm all-clear button failed: ${JSON.stringify(alarm)}`);
+    }
+
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
     const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, receiveMonitor, layoutScroll })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, receiveMonitor, layoutScroll })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);
