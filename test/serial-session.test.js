@@ -9,6 +9,7 @@ class MockPort extends EventEmitter {
   static events = [];
   static blockedDrainPath = null;
   static releaseDrain = null;
+  static failingDrainPaths = new Set();
   static failingClosePaths = new Set();
   static throwingConstructorPaths = new Set();
 
@@ -35,6 +36,9 @@ class MockPort extends EventEmitter {
   }
 
   drain(callback) {
+    if (MockPort.failingDrainPaths.has(this.options.path)) {
+      return setImmediate(() => callback(new Error("Draining connection (FlushFileBuffers): Unknown error code 1")));
+    }
     if (MockPort.blockedDrainPath === this.options.path) {
       MockPort.releaseDrain = () => {
         MockPort.events.push(`${this.options.path}:drain`);
@@ -154,6 +158,24 @@ async function run() {
   assert.strictEqual(constructorFailureSession.snapshot().status, "error");
   assert.match(constructorFailureSession.snapshot().error, /constructor failure/);
   MockPort.throwingConstructorPaths.delete("COM_THROW");
+
+  // drain非対応の仮想COMポートでも、書き込めた電文を失敗扱いにしない。
+  MockPort.failingDrainPaths.add("COM_NO_DRAIN");
+  const noDrainSession = new SerialSession({ SerialPortCtor: MockPort, listPorts: async () => [] });
+  const drainWarnings = [];
+  noDrainSession.on("serial-error", (event) => drainWarnings.push(event.message));
+  await noDrainSession.open({ path: "COM_NO_DRAIN", baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" });
+  const noDrainPort = MockPort.instances[MockPort.instances.length - 1];
+  const firstWrite = await noDrainSession.write([0x02, 0x37]);
+  assert.deepStrictEqual(firstWrite.bytes, [0x02, 0x37], "drain失敗でも書き込みイベントを返す");
+  await noDrainSession.write([0x06]);
+  assert.deepStrictEqual(noDrainPort.writes, [[0x02, 0x37], [0x06]], "drain失敗後も送信を続けられる");
+  assert.strictEqual(drainWarnings.length, 1, "drain未対応の通知はセッションにつき1回だけ");
+  assert.match(drainWarnings[0], /drain\(FlushFileBuffers\)/);
+  assert.strictEqual(noDrainSession.snapshot().status, "open", "drain失敗でセッションを壊さない");
+  assert.strictEqual(noDrainSession.snapshot().error, null, "drain失敗をポート異常として残さない");
+  await noDrainSession.close();
+  MockPort.failingDrainPaths.delete("COM_NO_DRAIN");
 
   const signalSession = new SerialSession({ SerialPortCtor: MockPort, listPorts: async () => [] });
   await signalSession.open({ path: "COM_SIGNAL", baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" });
