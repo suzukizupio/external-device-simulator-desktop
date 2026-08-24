@@ -685,6 +685,230 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  // 6.共通定義 警報情報識別(KH_INF)
+  // 各バイトは上位ニブルが0011固定で、下位4bitに警報4種を割り付ける。
+  // 1バイト目が 0011DCBA なので、bit0=A、bit1=B、bit2=C、bit3=D の順。
+  // Ver1/Ver2 と Ver3 では割付そのものが異なるため、別表として持つ。
+  // ------------------------------------------------------------------
+  const ALARM_INFO_V1 = [
+    "火災", "ガス漏れ", "非常", "トイレコール",
+    "バスコール", "火災障害", "ガス障害", "防犯１発報",
+    null, "部屋コール", "防犯２発報", null,
+    "一酸化炭素警報", "健康異変", "水不使用", "水連続使用",
+    "水漏れ", "水予告", "水電池切れ", "システム予約",
+    "汎用コール", "セルフチェック", "機器異常", "非常解錠",
+  ];
+  const ALARM_INFO_V2 = ALARM_INFO_V1.concat(["遠隔試験", "防犯３発報", null, null]);
+  const ALARM_INFO_V3 = [
+    "火災", "遠隔試験", "ガス漏れ", "火災感知器作動",
+    "火災障害", "ガス障害", "電池切れ", "機器異常(1)",
+    "非常", "トイレコール", "バスコール", "部屋コール",
+    "汎用コール", "ワイヤレスコール", "救急", "システム予約",
+    "生活異変", "健康異変", "水不使用", "水連続使用",
+    "水漏れ", "水予告", "水電池切れ", "換気(一酸化炭素)",
+    "セルフチェック", "AC断", "共用部", "非常解錠",
+    "緊急", "機器異常(2)", "予備異常", null,
+    "防犯１発報", "防犯２発報", "防犯３発報", "防犯４発報",
+    "防犯５発報", null, null, "防犯異常",
+  ];
+  const ALARM_INFO_TABLE = Object.freeze({
+    1: Object.freeze(ALARM_INFO_V1.slice()),
+    2: Object.freeze(ALARM_INFO_V2.slice()),
+    3: Object.freeze(ALARM_INFO_V3.slice()),
+  });
+  // Ver1は6byte(24bit)、Ver2は7byte(26bit＋2bit未使用)、Ver3は10byte(40bit)。
+  const ALARM_INFO_BYTES = Object.freeze({ 1: 6, 2: 7, 3: 10 });
+
+  function alarmInfoByteLength(version) {
+    return ALARM_INFO_BYTES[normalizeVersion(version, true)];
+  }
+
+  // 画面がそのまま並べられるよう、bit位置・ラベル・未使用かどうかを返す。
+  function alarmInfoLayout(version) {
+    const resolved = normalizeVersion(version, true);
+    const labels = ALARM_INFO_TABLE[resolved];
+    const length = alarmInfoByteLength(resolved) * 4;
+    const layout = [];
+    for (let index = 0; index < length; index += 1) {
+      layout.push(Object.freeze({
+        index,
+        byteIndex: Math.floor(index / 4),
+        bit: index % 4,
+        label: labels[index] || null,
+        reserved: !labels[index],
+      }));
+    }
+    return Object.freeze(layout);
+  }
+
+  function alarmInfoIndexOf(name, version) {
+    const labels = ALARM_INFO_TABLE[normalizeVersion(version, true)];
+    const index = labels.indexOf(name);
+    if (index < 0) fail("ALARM_INFO_UNKNOWN", `警報「${name}」はVer${version}の割付にありません`, { name });
+    return index;
+  }
+
+  // selected は割付の添字（0起点）か警報名の配列。未使用bitは0固定なので拒否する。
+  function encodeAlarmInfo(selected, version) {
+    const resolved = normalizeVersion(version, true);
+    const layout = alarmInfoLayout(resolved);
+    const bytes = new Array(alarmInfoByteLength(resolved)).fill(0x30);
+    for (const item of Array.from(selected || [])) {
+      const index = typeof item === "number" ? item : alarmInfoIndexOf(item, resolved);
+      if (!Number.isInteger(index) || index < 0 || index >= layout.length) {
+        fail("ALARM_INFO_RANGE", `警報ビットの指定が範囲外です: ${item}`, { item });
+      }
+      if (layout[index].reserved) {
+        fail("ALARM_INFO_RESERVED", `bit${index}は未使用（０固定）です`, { index });
+      }
+      bytes[layout[index].byteIndex] |= 1 << layout[index].bit;
+    }
+    return bytes;
+  }
+
+  function decodeAlarmInfo(bytes, version) {
+    const resolved = normalizeVersion(version, true);
+    const raw = toBytes(bytes, "KH_INF");
+    const expected = alarmInfoByteLength(resolved);
+    if (raw.length !== expected) {
+      fail("ALARM_INFO_LENGTH", `KH_INFはVer${resolved}では${expected}バイトです`, { actual: raw.length });
+    }
+    const layout = alarmInfoLayout(resolved);
+    const active = [];
+    const violations = [];
+    raw.forEach((byte, position) => {
+      if ((byte & 0xF0) !== 0x30) {
+        fail("ALARM_INFO_FORMAT", `KH_INF ${position + 1}バイト目の上位ニブルは0011固定です`, { byte });
+      }
+    });
+    for (const entry of layout) {
+      if ((raw[entry.byteIndex] & (1 << entry.bit)) === 0) continue;
+      if (entry.reserved) violations.push(entry.index);
+      else active.push(entry.label);
+    }
+    return { version: resolved, bytes: raw, active, violations };
+  }
+
+  // ------------------------------------------------------------------
+  // メッセージ（ペイロード）定義。仕様書「6.メッセージ詳細」の記載を写す。
+  // 画面はこの定義から入力欄を組み立てる。
+  // ------------------------------------------------------------------
+  const FIELD = Object.freeze({
+    ADDRESS: "address",       // ADDR 6byte
+    ALARM_INFO: "alarmInfo",  // KH_INF Ver別 6/7/10byte
+    ENUM: "enum",             // 1byteの列挙
+    DIGITS: "digits",         // ASCII数字の固定桁
+    RAW: "raw",               // 定義未整備のコマンド用
+  });
+
+  function field(name, type, extra) {
+    return Object.freeze(Object.assign({ name, type }, extra || null));
+  }
+
+  // 35H系で共通の処理結果。31Hはコマンドで意味が変わるため個別に上書きする。
+  function answerField(overrides) {
+    return field("ANS", FIELD.ENUM, {
+      bytes: 1,
+      label: "処理結果",
+      values: Object.freeze(Object.assign({
+        0x30: "OK",
+        0x39: "住戸NO異常(電源OFF/NO不一致)",
+        0x40: "通信パラメータ異常",
+        0x45: "機能なし",
+        0x50: "要求中（同時処理無効）",
+      }, overrides || null)),
+    });
+  }
+
+  const ADDRESS_FIELD = field("ADDR", FIELD.ADDRESS, { bytes: 6, label: "住戸NO" });
+  const ALARM_INFO_FIELD = field("KH_INF", FIELD.ALARM_INFO, { label: "警報情報識別" });
+
+  const MESSAGE_SCHEMAS = Object.freeze({
+    // 6.1 初期化
+    "30,41": Object.freeze([field("ROK", FIELD.ENUM, {
+      bytes: 1,
+      label: "IC宅配送信情報",
+      // 値そのものがVerを表す。画面は仕様Verに合う値だけ出す。
+      values: Object.freeze({
+        0x30: "宅配通知無し（Ver1専用）",
+        0x31: "宅配通知有り（Ver1専用）",
+        0x32: "宅配通知無し（Ver2専用）",
+        0x33: "宅配通知有り（Ver2専用）",
+        0x34: "宅配通知無し（Ver3専用）",
+        0x35: "宅配通知有り（Ver3専用）",
+      }),
+      versionValues: Object.freeze({ 1: [0x30, 0x31], 2: [0x32, 0x33], 3: [0x34, 0x35] }),
+    })]),
+    "30,42": Object.freeze([]),
+    "30,43": Object.freeze([]),
+
+    // 6.6 警報出力関係
+    "35,41": Object.freeze([ADDRESS_FIELD, ALARM_INFO_FIELD]),
+    "35,42": Object.freeze([ADDRESS_FIELD]),
+    "35,62": Object.freeze([ADDRESS_FIELD, answerField({ 0x31: "火災障害以外の火災警報音とガス漏れ警報音は停止不可" })]),
+    "35,43": Object.freeze([]),
+    "35,63": Object.freeze([answerField()]),
+    "35,44": Object.freeze([ADDRESS_FIELD]),
+    "35,64": Object.freeze([ADDRESS_FIELD, ALARM_INFO_FIELD, answerField({ 0x31: "警報音のみ停止（警報発報中）" })]),
+    "35,45": Object.freeze([ADDRESS_FIELD]),
+    "35,65": Object.freeze([ADDRESS_FIELD, ALARM_INFO_FIELD, answerField()]),
+    "35,46": Object.freeze([]),
+    "35,47": Object.freeze([]),
+    "35,48": Object.freeze([ADDRESS_FIELD, ALARM_INFO_FIELD]),
+    "35,68": Object.freeze([ADDRESS_FIELD, answerField({ 0x31: "復旧指示警報が遠隔復旧不可" })]),
+  });
+
+  // 定義済みならフィールド配列、未整備ならnull（画面は生MESGへ退避する）。
+  function messageSchema(kind, command) {
+    const key = `${assertByte(kind, "kind").toString(16)},${assertByte(command, "command").toString(16)}`;
+    return MESSAGE_SCHEMAS[key] || null;
+  }
+
+  function fieldByteLength(entry, version) {
+    if (entry.type === FIELD.ALARM_INFO) return alarmInfoByteLength(version);
+    return entry.bytes;
+  }
+
+  // values は { ADDR: [...], KH_INF: [...], ANS: 0x30, ... } のフィールド名→値。
+  function buildMessage(kind, command, options) {
+    const opts = options || {};
+    const version = normalizeVersion(opts.version, true);
+    const schema = messageSchema(kind, command);
+    if (!schema) fail("MESSAGE_SCHEMA_MISSING", "このコマンドのメッセージ定義は未整備です", { kind, command });
+    const values = opts.values || {};
+    const message = [];
+    for (const entry of schema) {
+      const value = values[entry.name];
+      if (entry.type === FIELD.ALARM_INFO) {
+        message.push(...encodeAlarmInfo(value || [], version));
+        continue;
+      }
+      if (entry.type === FIELD.ADDRESS) {
+        if (value == null) fail("MESSAGE_FIELD_REQUIRED", `${entry.name}は必須です`, { field: entry.name });
+        const bytes = toBytes(value, entry.name);
+        if (bytes.length !== 6) fail("ADDRESS_LENGTH", "ADDRは6バイトです", { actual: bytes.length });
+        message.push(...bytes);
+        continue;
+      }
+      if (entry.type === FIELD.ENUM) {
+        const code = assertByte(value, entry.name);
+        if (!Object.prototype.hasOwnProperty.call(entry.values, code)) {
+          fail("MESSAGE_FIELD_VALUE", `${entry.name}に${byteHex(code)}は定義されていません`, { field: entry.name, code });
+        }
+        message.push(code);
+        continue;
+      }
+      const bytes = toBytes(value == null ? [] : value, entry.name);
+      const expected = fieldByteLength(entry, version);
+      if (expected != null && bytes.length !== expected) {
+        fail("MESSAGE_FIELD_LENGTH", `${entry.name}は${expected}バイトです`, { field: entry.name, actual: bytes.length });
+      }
+      message.push(...bytes);
+    }
+    return message;
+  }
+
   function buildInitializationRequest(options) {
     const opts = options || {};
     const version = normalizeVersion(opts.version, true);
@@ -770,6 +994,14 @@
     buildCommonAreaAddress,
     validateAddress,
     address,
+    FIELD,
+    ALARM_INFO_TABLE,
+    alarmInfoByteLength,
+    alarmInfoLayout,
+    encodeAlarmInfo,
+    decodeAlarmInfo,
+    messageSchema,
+    buildMessage,
     buildInitializationRequest,
     buildInitializationComplete,
     buildConnectionStart,

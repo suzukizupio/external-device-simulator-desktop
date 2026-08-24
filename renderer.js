@@ -1407,18 +1407,162 @@ function mcAddressHelper(api) {
   throw new Error("ADDRヘルパAPIを利用できません");
 }
 
+// Q48-008I 6章のメッセージ定義に従って入力欄を組み立てる。
+// 定義が未整備のコマンドは生MESGへ退避する。
+function mcSchema() {
+  const api = window.MansionController;
+  if (!api || !api.messageSchema) return null;
+  try {
+    return api.messageSchema(parseHexByte($("mcKind").value, "KIND"), parseHexByte($("mcCommand").value, "CMD"));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function mcSchemaActive() {
+  return Boolean($("mcUseSchema").checked && mcSchema());
+}
+
+function mcAlarmCheckboxes() {
+  return Array.from($("mcAlarmBits").querySelectorAll("input[type=checkbox]"));
+}
+
+function mcSelectedAlarms() {
+  return mcAlarmCheckboxes().filter((box) => box.checked).map((box) => Number(box.dataset.index));
+}
+
+// KH_INFはVerで割付そのものが変わるため、Verを変えたら並べ直す。
+function renderMcAlarmBits() {
+  const api = requireApi("MansionController");
+  const version = Number($("mcVersion").value);
+  const container = $("mcAlarmBits");
+  const previous = new Set(mcAlarmCheckboxes().filter((box) => box.checked).map((box) => box.dataset.label));
+  const fragment = document.createDocumentFragment();
+  for (const entry of api.alarmInfoLayout(version)) {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.index = String(entry.index);
+    box.dataset.label = entry.label || "";
+    // 未使用bitは0固定なので触らせない。
+    box.disabled = entry.reserved;
+    if (!entry.reserved && previous.has(entry.label)) box.checked = true;
+    const text = document.createElement("span");
+    text.textContent = entry.reserved ? `${entry.index + 1}（未使用）` : entry.label;
+    label.classList.toggle("bit-unassigned", entry.reserved);
+    label.append(box, text);
+    fragment.append(label);
+  }
+  container.replaceChildren(fragment);
+}
+
+function updateMcAlarmSummary() {
+  const api = requireApi("MansionController");
+  const version = Number($("mcVersion").value);
+  const selected = mcSelectedAlarms();
+  const bytes = api.encodeAlarmInfo(selected, version);
+  const names = mcAlarmCheckboxes().filter((box) => box.checked).map((box) => box.dataset.label);
+  $("mcAlarmSummary").textContent = `${api.alarmInfoByteLength(version)}byte ${toHex(bytes)}`
+    + `／${names.length ? names.join("＋") : "全復旧（全bit OFF）"}`;
+}
+
+// 列挙フィールドはselect、ADDRはADDRヘルパへ委譲する。
+function renderMcPayload() {
+  const api = window.MansionController;
+  const picker = $("mcPayload");
+  const schema = mcSchema();
+  if (!api || !schema) {
+    picker.hidden = true;
+    $("mcAlarmPicker").hidden = true;
+    $("mcPayloadFields").replaceChildren();
+    return;
+  }
+  picker.hidden = false;
+  const version = Number($("mcVersion").value);
+  const fragment = document.createDocumentFragment();
+  let needsAddress = false;
+  let hasAlarm = false;
+
+  for (const entry of schema) {
+    if (entry.type === api.FIELD.ADDRESS) { needsAddress = true; continue; }
+    if (entry.type === api.FIELD.ALARM_INFO) { hasAlarm = true; continue; }
+    if (entry.type !== api.FIELD.ENUM) continue;
+    const label = document.createElement("label");
+    label.textContent = `${entry.name}（${entry.label}）`;
+    const select = document.createElement("select");
+    select.id = `mcField_${entry.name}`;
+    const allowed = entry.versionValues ? entry.versionValues[version] : null;
+    for (const [code, text] of Object.entries(entry.values)) {
+      const value = Number(code);
+      if (allowed && !allowed.includes(value)) continue;
+      const option = document.createElement("option");
+      option.value = String(value);
+      option.textContent = `${value.toString(16).toUpperCase().padStart(2, "0")}H ${text}`;
+      select.append(option);
+    }
+    label.append(select);
+    fragment.append(label);
+  }
+  $("mcPayloadFields").replaceChildren(fragment);
+
+  $("mcAlarmPicker").hidden = !hasAlarm;
+  if (hasAlarm) {
+    renderMcAlarmBits();
+    updateMcAlarmSummary();
+  }
+
+  const parts = schema.map((entry) => entry.name);
+  const addressNote = needsAddress
+    ? ($("mcAddressType").value === "none" ? "／ADDRヘルパで住戸NOを指定してください" : "")
+    : "";
+  $("mcPayloadNote").textContent = parts.length
+    ? `構成: ${parts.join(" + ")}${addressNote}`
+    : "このコマンドはパラメータ無しです";
+}
+
+// 定義に沿ってMESGを組み立てる。ADDRはADDRヘルパの値を使う。
+function mcSchemaMessage(api) {
+  const schema = mcSchema();
+  const version = Number($("mcVersion").value);
+  const values = {};
+  for (const entry of schema) {
+    if (entry.type === api.FIELD.ADDRESS) {
+      const text = mcAddressHelper(api);
+      if (!text) throw new Error(`${entry.name}が必要です。ADDRヘルパで住戸NOを指定してください`);
+      values[entry.name] = text;
+      continue;
+    }
+    if (entry.type === api.FIELD.ALARM_INFO) {
+      values[entry.name] = mcSelectedAlarms();
+      continue;
+    }
+    if (entry.type === api.FIELD.ENUM) {
+      const element = $(`mcField_${entry.name}`);
+      if (!element) throw new Error(`${entry.name}の入力欄が見つかりません`);
+      values[entry.name] = Number(element.value);
+    }
+  }
+  return api.buildMessage(
+    parseHexByte($("mcKind").value, "KIND"),
+    parseHexByte($("mcCommand").value, "CMD"),
+    { version, values },
+  );
+}
+
 function buildMcFrame() {
   const api = requireApi("MansionController");
-  const address = mcAddressHelper(api);
-  const messageText = `${address}${$("mcMessage").value}`;
   const kind = parseHexByte($("mcKind").value, "KIND");
   const command = parseHexByte($("mcCommand").value, "CMD");
   const topology = mcTopology(api);
+  // 仕様定義があるコマンドは定義から組み立て、無いものは従来どおり生MESGを使う。
+  const message = mcSchemaActive()
+    ? mcSchemaMessage(api)
+    : latin1(`${mcAddressHelper(api)}${$("mcMessage").value}`, "MESG");
   const options = {
     kind,
     command,
     cmd: command,
-    message: latin1(messageText, "MESG"),
+    message,
     version: Number($("mcVersion").value),
     from: $("mcRole").value,
     topology,
@@ -1445,6 +1589,7 @@ function refreshMcCommands() {
     $("mcCommand").append(option);
   }
   if (definitions.some((definition) => definition.command.toString(16).toUpperCase().padStart(2, "0") === previous)) $("mcCommand").value = previous;
+  renderMcPayload();
 }
 
 async function preview(id, builder, multiple = false) {
@@ -2286,6 +2431,12 @@ function bindEvents() {
   $("disconnectButton").addEventListener("click", disconnect);
   $("serialPreset").addEventListener("change", (event) => applySerialPreset(event.target.value));
   ["mcVersion", "mcRole", "mcKind"].forEach((id) => $(id).addEventListener("change", refreshMcCommands));
+  ["mcCommand", "mcUseSchema", "mcAddressType"].forEach((id) => $(id).addEventListener("change", renderMcPayload));
+  $("mcAlarmBits").addEventListener("change", updateMcAlarmSummary);
+  $("mcAlarmClear").addEventListener("click", () => {
+    mcAlarmCheckboxes().forEach((box) => { box.checked = false; });
+    updateMcAlarmSummary();
+  });
   ["keyFormat", "keyProfile"].forEach((id) => $(id).addEventListener("change", syncKeyForm));
   $("elevatorCommand").addEventListener("change", () => {
     const api = requireApi("ElevatorProtocol");

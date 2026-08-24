@@ -299,6 +299,17 @@
             <label>自動応答MESG（受信ADDRの後ろに付加）<input id="mcResponseMessage" value=""></label>
             <label class="span-3">MESG（ASCII。ADDRヘルパ使用時は先頭へ自動付加）<textarea id="mcMessage" rows="6"></textarea></label>
           </div>
+          <fieldset class="bit-picker" id="mcPayload" hidden>
+            <legend>メッセージ（Q48-008I 6章の定義で組み立て）</legend>
+            <p class="receive-hint" id="mcPayloadNote">—</p>
+            <div class="form-grid cols-3" id="mcPayloadFields"></div>
+            <div id="mcAlarmPicker" hidden>
+              <p class="receive-hint">警報情報識別 KH_INF（0=警報復旧／1=警報発報中）</p>
+              <div class="bit-grid" id="mcAlarmBits"></div>
+              <div class="inline-options"><button class="secondary" id="mcAlarmClear">全解除（全復旧）</button><span class="receive-hint" id="mcAlarmSummary">—</span></div>
+            </div>
+          </fieldset>
+          <div class="inline-options"><label><input id="mcUseSchema" type="checkbox" checked> 仕様定義でメッセージを組み立てる（外すとMESGを直接使う）</label></div>
           <div class="inline-options"><label><input id="mcAutoResponse" type="checkbox"> 要求電文を受信したら台帳の応答コマンドで自動応答</label></div>
           <div class="preview"><span>プレビュー</span><code id="mcPreview">—</code></div>
           <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button></div>

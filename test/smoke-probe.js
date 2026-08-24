@@ -690,10 +690,89 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`preset warning must clear once reopened correctly: ${JSON.stringify(presetWarning.fixed)}`);
     }
 
+    // Q48-008I 6章のメッセージ定義から入力欄を組み立て、電文になるか。
+    const mcPayload = await window.webContents.executeJavaScript(`
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const set = (id, value) => { $(id).value = value; $(id).dispatchEvent(new Event("change")); };
+        document.querySelector('[data-view="mansion"]').click();
+        set("mcVersion", "3");
+        set("mcRole", "IC");
+        set("mcTopology", "standard");
+
+        // 初期化要求：ROKはVer3の2値だけが出る。
+        set("mcKind", "30");
+        set("mcCommand", "41");
+        const rok = $("mcField_ROK");
+        const rokOptions = Array.from(rok.options).map((option) => option.textContent);
+        rok.value = "52"; // 0x34 宅配通知無し（Ver3専用）
+        $("mcPreviewButton").click();
+        const initPreview = $("mcPreview").textContent;
+
+        // 警報変化情報：ADDR + KH_INF。KH_INFはVer3で40bit。
+        set("mcAddressType", "room");
+        $("mcBuilding").value = "BB";
+        $("mcAddressNumber").value = "101";
+        set("mcKind", "35");
+        set("mcCommand", "41");
+        const note = $("mcPayloadNote").textContent;
+        const boxes = Array.from($("mcAlarmBits").querySelectorAll("input[type=checkbox]"));
+        const labels = boxes.map((box) => box.closest("label").querySelector("span").textContent);
+        const reserved = boxes.filter((box) => box.disabled).length;
+        const fire = boxes.find((box) => box.dataset.label === "火災");
+        fire.checked = true;
+        fire.dispatchEvent(new Event("change", { bubbles: true }));
+        const alarmSummary = $("mcAlarmSummary").textContent;
+        $("mcPreviewButton").click();
+        const alarmPreview = $("mcPreview").textContent;
+
+        // Ver1へ落とすと割付そのものが変わる（火災の隣がガス漏れになる）。
+        set("mcVersion", "1");
+        const v1Labels = Array.from($("mcAlarmBits").querySelectorAll("input[type=checkbox]"))
+          .map((box) => box.closest("label").querySelector("span").textContent);
+        set("mcVersion", "3");
+
+        // 定義を使わない設定にすると入力欄が消え、生MESGへ戻る。
+        $("mcUseSchema").checked = false;
+        $("mcUseSchema").dispatchEvent(new Event("change"));
+        const rawMode = { hidden: $("mcPayload").hidden === false && $("mcUseSchema").checked === false };
+        $("mcUseSchema").checked = true;
+        $("mcUseSchema").dispatchEvent(new Event("change"));
+
+        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode };
+      })()
+    `);
+    if (mcPayload.rokOptions.length !== 2 || !mcPayload.rokOptions[0].includes("Ver3")) {
+      throw new Error(`ROK options must be limited to the selected version: ${JSON.stringify(mcPayload.rokOptions)}`);
+    }
+    if (mcPayload.initPreview !== "02 30 36 30 41 34 03 40") {
+      throw new Error(`initialization request payload wrong: ${mcPayload.initPreview}`);
+    }
+    if (!mcPayload.note.includes("ADDR + KH_INF")) {
+      throw new Error(`payload note wrong: ${mcPayload.note}`);
+    }
+    // Ver3のKH_INFは10byte×4bit＝40、うち未使用は3つ（f・l・m）。
+    if (mcPayload.labels.length !== 40 || mcPayload.reserved !== 3) {
+      throw new Error(`KH_INF layout wrong: ${mcPayload.labels.length} bits / ${mcPayload.reserved} reserved`);
+    }
+    if (mcPayload.labels[0] !== "火災" || mcPayload.labels[1] !== "遠隔試験" || mcPayload.labels[32] !== "防犯１発報") {
+      throw new Error(`KH_INF Ver3 labels wrong: ${JSON.stringify(mcPayload.labels.slice(0, 4))}`);
+    }
+    if (!mcPayload.alarmSummary.includes("10byte 31 30 30 30 30 30 30 30 30 30") || !mcPayload.alarmSummary.includes("火災")) {
+      throw new Error(`KH_INF summary wrong: ${mcPayload.alarmSummary}`);
+    }
+    if (mcPayload.alarmPreview !== "02 32 31 35 41 42 42 42 31 30 31 31 30 30 30 30 30 30 30 30 30 03 07") {
+      throw new Error(`alarm change telegram wrong: ${mcPayload.alarmPreview}`);
+    }
+    // Ver1は割付が別物（2番目がガス漏れ）。Verを変えたら並べ直すこと。
+    if (mcPayload.v1Labels.length !== 24 || mcPayload.v1Labels[1] !== "ガス漏れ") {
+      throw new Error(`KH_INF Ver1 layout wrong: ${JSON.stringify(mcPayload.v1Labels.slice(0, 3))}`);
+    }
+
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
     const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, receiveMonitor, layoutScroll })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, mcPayload, receiveMonitor, layoutScroll })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);
