@@ -649,10 +649,51 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`alarm bit checkbox layout collapsed: ${JSON.stringify(alarm.layout)}`);
     }
 
+    // 接続したまま画面を移ったときに通信条件の食い違いを警告するか。
+    const presetWarning = await window.webContents.executeJavaScript(`
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const read = () => ({ hidden: $("presetWarning").hidden, text: $("presetWarning").textContent });
+        const go = (view) => document.querySelector('[data-view="' + view + '"]').click();
+
+        // 未接続なら出さない。
+        go("mansion");
+        const disconnected = read();
+
+        // 警報(1200)で接続したまま、マンションコントローラ(4800)へ移った状態を作る。
+        applyConnectionState({ status: "open", sessionId: 1, options: { path: "COM_TEST", baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" } });
+        go("alarm");
+        const matched = read();
+        go("mansion");
+        const mismatched = read();
+
+        // 規定どおりの条件で開き直せば消える。
+        applyConnectionState({ status: "open", sessionId: 2, options: { path: "COM_TEST", baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" } });
+        const fixed = read();
+        applyConnectionState({ status: "closed" });
+        const closed = read();
+        return { disconnected, matched, mismatched, fixed, closed };
+      })()
+    `);
+    if (!presetWarning.disconnected.hidden || !presetWarning.closed.hidden) {
+      throw new Error(`preset warning must stay hidden while disconnected: ${JSON.stringify(presetWarning)}`);
+    }
+    if (!presetWarning.matched.hidden) {
+      throw new Error(`preset warning must stay hidden when settings match: ${JSON.stringify(presetWarning.matched)}`);
+    }
+    if (presetWarning.mismatched.hidden
+        || !presetWarning.mismatched.text.includes("4800,E,8,1")
+        || !presetWarning.mismatched.text.includes("1200,E,8,1")) {
+      throw new Error(`preset mismatch not reported: ${JSON.stringify(presetWarning.mismatched)}`);
+    }
+    if (!presetWarning.fixed.hidden) {
+      throw new Error(`preset warning must clear once reopened correctly: ${JSON.stringify(presetWarning.fixed)}`);
+    }
+
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
     const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, receiveMonitor, layoutScroll })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, receiveMonitor, layoutScroll })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);

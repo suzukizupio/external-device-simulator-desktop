@@ -38,6 +38,9 @@ const state = {
   // 2線式は全ロッカーを連続送信するため、住戸アドレス単位で最新状態を集計する。
   locker2Inbox: new Map(),
   locker2InboxStats: { total: 0, vacant: 0 },
+  // 接続中のポート設定と、画面の規定と食い違ったときの警告文。
+  connectionOptions: null,
+  presetWarning: "",
   // 受信モニタ：機種ごとに履歴と表示中の1件を保持する。
   receiveMonitors: {},
 };
@@ -295,6 +298,54 @@ const SERIAL_PRESETS = Object.freeze({
   alarm: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
 });
 
+// 画面ごとに通信仕様が定める条件が違うため、対応するプリセットを引けるようにする。
+const VIEW_PRESETS = Object.freeze({
+  locker2: "locker",
+  locker4: "locker",
+  mansion: "locker",
+  key: "key",
+  elevator: "elevator",
+  alarm: "alarm",
+});
+
+function presetLabel(preset) {
+  return `${preset.baudRate},${preset.parity === "even" ? "E" : preset.parity === "odd" ? "O" : "N"},${preset.dataBits},${preset.stopBits}`;
+}
+
+// 接続したまま画面を移ると通信条件が前の機種のまま残る。ボーレート違いは
+// 受信が化けるだけで気づきにくいので、接続中の実設定と突き合わせて警告する。
+function hidePresetWarning(element) {
+  element.hidden = true;
+  element.textContent = "";
+  element.title = "";
+  state.presetWarning = "";
+}
+
+function updatePresetWarning() {
+  const element = $("presetWarning");
+  if (!element) return;
+  const expected = SERIAL_PRESETS[VIEW_PRESETS[state.currentView]];
+  const actual = state.connectionOptions;
+  if (!state.connected || !expected || !actual) {
+    hidePresetWarning(element);
+    return;
+  }
+  const differs = ["baudRate", "dataBits", "stopBits", "parity"].some((key) => actual[key] !== expected[key]);
+  if (!differs) {
+    hidePresetWarning(element);
+    return;
+  }
+  const message = `通信条件が違います：この画面は ${presetLabel(expected)}／接続中は ${presetLabel(actual)}`;
+  element.hidden = false;
+  element.textContent = `⚠ ${presetLabel(expected)} で接続してください（現在 ${presetLabel(actual)}）`;
+  element.title = message + "。切断してプリセットを選び直してください。";
+  // 同じ警告をログへ何度も積まない。
+  if (state.presetWarning !== message) {
+    state.presetWarning = message;
+    addLog("warn", "PRESET", null, message);
+  }
+}
+
 function applySerialPreset(name) {
   const preset = SERIAL_PRESETS[name];
   if (!preset) return;
@@ -341,6 +392,8 @@ function applyConnectionState(snapshot) {
   $("serialPort").disabled = status === "opening" || status === "open";
   document.querySelectorAll(".requires-connection").forEach((button) => { button.disabled = !state.connected; });
   $("metricPort").textContent = snapshot && snapshot.options ? `${snapshot.options.path} / ${snapshot.options.baudRate}` : "—";
+  state.connectionOptions = state.connected && snapshot ? snapshot.options || null : null;
+  updatePresetWarning();
   if (!state.connected) {
     rejectControlWaiters(new Error("シリアル接続が切断されました"));
     resetFrameReader();
@@ -2079,11 +2132,13 @@ function navigate(view) {
   if (RECEIVE_MONITORS[view]) renderReceiveMonitor(view);
   document.querySelectorAll(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  const preset = ["locker2", "locker4", "mansion"].includes(view) ? "locker" : view === "key" ? "key" : view === "elevator" ? "elevator" : view === "alarm" ? "alarm" : null;
+  const preset = VIEW_PRESETS[view] || null;
   if (preset && !state.connected) {
     $("serialPreset").value = preset;
     applySerialPreset(preset);
   }
+  // 接続中は勝手に切り替えられないので、食い違いを警告で知らせる。
+  updatePresetWarning();
 }
 
 function bindPreview(buttonId, previewId, builder, multiple = false) {
