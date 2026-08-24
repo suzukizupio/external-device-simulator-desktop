@@ -822,6 +822,17 @@
   }
 
   const ADDRESS_FIELD = field("ADDR", FIELD.ADDRESS, { bytes: 6, label: "住戸NO" });
+  // 6.7 ボックス状態識別。1パケットへ最大3件入るが、画面は1件だけ扱う。
+  const BOX_STATUS_FIELD = field("STS", FIELD.ENUM, {
+    bytes: 1,
+    label: "ボックス状態識別",
+    values: Object.freeze({ 0x30: "取出し状態", 0x31: "着荷状態", 0x32: "滞留状態" }),
+  });
+  const PACKET_COUNT_FIELD = field("PKT NO", FIELD.ENUM, {
+    bytes: 1,
+    label: "1パケット内の件数",
+    values: Object.freeze({ 0x31: "1件" }),
+  });
   const ALARM_INFO_FIELD = field("KH_INF", FIELD.ALARM_INFO, { label: "警報情報識別" });
 
   const MESSAGE_SCHEMAS = Object.freeze({
@@ -857,6 +868,24 @@
     "35,47": Object.freeze([]),
     "35,48": Object.freeze([ADDRESS_FIELD, ALARM_INFO_FIELD]),
     "35,68": Object.freeze([ADDRESS_FIELD, answerField({ 0x31: "復旧指示警報が遠隔復旧不可" })]),
+
+    // 6.7 宅配ボックス制御。ボックス情報は1パケットに最大3件だが、
+    // 画面からは状態変化1件の通知（PKT NO=1）に絞って組み立てる。
+    "36,41": Object.freeze([
+      field("残PKT", FIELD.DIGITS, { bytes: 3, label: "残りパケット数", default: 0 }),
+      PACKET_COUNT_FIELD,
+      field("ボックスNO", FIELD.DIGITS, { bytes: 3, label: "ボックス番号 001～999", default: 1 }),
+      BOX_STATUS_FIELD,
+      ADDRESS_FIELD,
+    ]),
+    "36,43": Object.freeze([
+      field("残PKT", FIELD.DIGITS, { bytes: 4, label: "残りパケット数", default: 0 }),
+      PACKET_COUNT_FIELD,
+      BOX_STATUS_FIELD,
+      ADDRESS_FIELD,
+    ]),
+    "36,42": Object.freeze([]),
+    "36,62": Object.freeze([]),
   });
 
   // 定義済みならフィールド配列、未整備ならnull（画面は生MESGへ退避する）。
@@ -897,6 +926,17 @@
           fail("MESSAGE_FIELD_VALUE", `${entry.name}に${byteHex(code)}は定義されていません`, { field: entry.name, code });
         }
         message.push(code);
+        continue;
+      }
+      if (entry.type === FIELD.DIGITS) {
+        const width = entry.bytes;
+        const limit = Math.pow(10, width) - 1;
+        const number = requiredInteger(
+          value == null ? (entry.default == null ? 0 : entry.default) : Number(value),
+          entry.name, 0, limit,
+        );
+        const text = String(number).padStart(width, "0");
+        message.push(...Array.from(text, (character) => character.charCodeAt(0)));
         continue;
       }
       const bytes = toBytes(value == null ? [] : value, entry.name);

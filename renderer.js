@@ -1486,6 +1486,19 @@ function renderMcPayload() {
   for (const entry of schema) {
     if (entry.type === api.FIELD.ADDRESS) { needsAddress = true; continue; }
     if (entry.type === api.FIELD.ALARM_INFO) { hasAlarm = true; continue; }
+    if (entry.type === api.FIELD.DIGITS) {
+      const digits = document.createElement("label");
+      digits.textContent = `${entry.name}（${entry.label}）`;
+      const input = document.createElement("input");
+      input.id = `mcField_${entry.name}`;
+      input.type = "number";
+      input.min = "0";
+      input.max = String(Math.pow(10, entry.bytes) - 1);
+      input.value = String(entry.default == null ? 0 : entry.default);
+      digits.append(input);
+      fragment.append(digits);
+      continue;
+    }
     if (entry.type !== api.FIELD.ENUM) continue;
     const label = document.createElement("label");
     label.textContent = `${entry.name}（${entry.label}）`;
@@ -1536,7 +1549,7 @@ function mcSchemaMessage(api) {
       values[entry.name] = mcSelectedAlarms();
       continue;
     }
-    if (entry.type === api.FIELD.ENUM) {
+    if (entry.type === api.FIELD.ENUM || entry.type === api.FIELD.DIGITS) {
       const element = $(`mcField_${entry.name}`);
       if (!element) throw new Error(`${entry.name}の入力欄が見つかりません`);
       values[entry.name] = Number(element.value);

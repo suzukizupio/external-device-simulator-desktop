@@ -739,7 +739,17 @@ async function run({ window, app, sendToRenderer }) {
         $("mcUseSchema").checked = true;
         $("mcUseSchema").dispatchEvent(new Event("change"));
 
-        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode };
+        // 宅配ボックス：ICボックス情報は 残PKT + PKT NO + STS + ADDR。
+        set("mcKind", "36");
+        set("mcCommand", "43");
+        const boxNote = $("mcPayloadNote").textContent;
+        const boxFields = Array.from($("mcPayloadFields").querySelectorAll("input,select")).map((element) => element.id);
+        $("mcField_残PKT").value = "0";
+        $("mcField_STS").value = "49"; // 0x31 着荷状態
+        $("mcPreviewButton").click();
+        const boxPreview = $("mcPreview").textContent;
+
+        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode, boxNote, boxFields, boxPreview };
       })()
     `);
     if (mcPayload.rokOptions.length !== 2 || !mcPayload.rokOptions[0].includes("Ver3")) {
@@ -767,6 +777,15 @@ async function run({ window, app, sendToRenderer }) {
     // Ver1は割付が別物（2番目がガス漏れ）。Verを変えたら並べ直すこと。
     if (mcPayload.v1Labels.length !== 24 || mcPayload.v1Labels[1] !== "ガス漏れ") {
       throw new Error(`KH_INF Ver1 layout wrong: ${JSON.stringify(mcPayload.v1Labels.slice(0, 3))}`);
+    }
+    if (!mcPayload.boxNote.includes("残PKT + PKT NO + STS + ADDR")) {
+      throw new Error(`locker payload note wrong: ${mcPayload.boxNote}`);
+    }
+    if (mcPayload.boxFields.join(",") !== "mcField_残PKT,mcField_PKT NO,mcField_STS") {
+      throw new Error(`locker payload fields wrong: ${JSON.stringify(mcPayload.boxFields)}`);
+    }
+    if (mcPayload.boxPreview !== "02 31 37 36 43 30 30 30 30 31 31 42 42 42 31 30 31 03 02") {
+      throw new Error(`IC box telegram wrong: ${mcPayload.boxPreview}`);
     }
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
