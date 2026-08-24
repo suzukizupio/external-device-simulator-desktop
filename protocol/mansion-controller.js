@@ -828,6 +828,11 @@
     label: "ボックス状態識別",
     values: Object.freeze({ 0x30: "取出し状態", 0x31: "着荷状態", 0x32: "滞留状態" }),
   });
+  // 6.8 ゲート番号は01～99。01～64が集合玄関機1～64に対応する。
+  const GATE_FIELD = field("ゲート", FIELD.DIGITS, {
+    bytes: 2, label: "ゲート番号 01～99（01～64が集合玄関機1～64）", min: 1, default: 1,
+  });
+  const PERSON_FIELD = field("個人", FIELD.DIGITS, { bytes: 3, label: "個人番号", default: 0 });
   const PACKET_COUNT_FIELD = field("PKT NO", FIELD.ENUM, {
     bytes: 1,
     label: "1パケット内の件数",
@@ -886,6 +891,12 @@
     ]),
     "36,42": Object.freeze([]),
     "36,62": Object.freeze([]),
+
+    // 6.8 非接触キー制御。キー情報-2は個人番号付き（MC側の42HはVer3専用）。
+    "37,41": Object.freeze([GATE_FIELD, ADDRESS_FIELD]),
+    "37,42": Object.freeze([GATE_FIELD, ADDRESS_FIELD, PERSON_FIELD]),
+    "37,61": Object.freeze([GATE_FIELD, ADDRESS_FIELD]),
+    "37,62": Object.freeze([GATE_FIELD, ADDRESS_FIELD, PERSON_FIELD]),
   });
 
   // 定義済みならフィールド配列、未整備ならnull（画面は生MESGへ退避する）。
@@ -933,7 +944,7 @@
         const limit = Math.pow(10, width) - 1;
         const number = requiredInteger(
           value == null ? (entry.default == null ? 0 : entry.default) : Number(value),
-          entry.name, 0, limit,
+          entry.name, entry.min == null ? 0 : entry.min, limit,
         );
         const text = String(number).padStart(width, "0");
         message.push(...Array.from(text, (character) => character.charCodeAt(0)));

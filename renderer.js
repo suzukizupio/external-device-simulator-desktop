@@ -1492,7 +1492,7 @@ function renderMcPayload() {
       const input = document.createElement("input");
       input.id = `mcField_${entry.name}`;
       input.type = "number";
-      input.min = "0";
+      input.min = String(entry.min == null ? 0 : entry.min);
       input.max = String(Math.pow(10, entry.bytes) - 1);
       input.value = String(entry.default == null ? 0 : entry.default);
       digits.append(input);

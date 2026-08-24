@@ -749,7 +749,20 @@ async function run({ window, app, sendToRenderer }) {
         $("mcPreviewButton").click();
         const boxPreview = $("mcPreview").textContent;
 
-        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode, boxNote, boxFields, boxPreview };
+        // 非接触キー：ICキー情報-1は ゲート + ADDR、-2は個人番号が付く。
+        set("mcKind", "37");
+        set("mcCommand", "61");
+        $("mcField_ゲート").value = "2";
+        $("mcPreviewButton").click();
+        const keyPreview = $("mcPreview").textContent;
+        set("mcCommand", "62");
+        $("mcField_ゲート").value = "2";
+        $("mcField_個人").value = "3";
+        $("mcPreviewButton").click();
+        const keyPersonPreview = $("mcPreview").textContent;
+        const keyNote = $("mcPayloadNote").textContent;
+
+        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode, boxNote, boxFields, boxPreview, keyPreview, keyPersonPreview, keyNote };
       })()
     `);
     if (mcPayload.rokOptions.length !== 2 || !mcPayload.rokOptions[0].includes("Ver3")) {
@@ -786,6 +799,15 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (mcPayload.boxPreview !== "02 31 37 36 43 30 30 30 30 31 31 42 42 42 31 30 31 03 02") {
       throw new Error(`IC box telegram wrong: ${mcPayload.boxPreview}`);
+    }
+    if (mcPayload.keyPreview !== "02 31 33 37 61 30 32 42 42 42 31 30 31 03 27") {
+      throw new Error(`IC key telegram wrong: ${mcPayload.keyPreview}`);
+    }
+    if (mcPayload.keyPersonPreview !== "02 31 36 37 62 30 32 42 42 42 31 30 31 30 30 33 03 12") {
+      throw new Error(`IC key telegram with person wrong: ${mcPayload.keyPersonPreview}`);
+    }
+    if (!mcPayload.keyNote.includes("ゲート + ADDR + 個人")) {
+      throw new Error(`key payload note wrong: ${mcPayload.keyNote}`);
     }
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
