@@ -35,6 +35,9 @@ const state = {
   locker4Series: null,
   locker4Rows: [],
   locker2Rows: [],
+  // 2線式は全ロッカーを連続送信するため、住戸アドレス単位で最新状態を集計する。
+  locker2Inbox: new Map(),
+  locker2InboxStats: { total: 0, vacant: 0 },
   // 受信モニタ：機種ごとに履歴と表示中の1件を保持する。
   receiveMonitors: {},
 };
@@ -1562,6 +1565,7 @@ function recordReceiveEntry(view, bytes, at, frameError) {
   monitor.nextId += 1;
   monitor.history.push(entry);
   while (monitor.history.length > config.historyLimit) monitor.history.shift();
+  if (view === "locker2") updateLocker2Inbox(entry);
   const follow = receiveElement(view, "Follow");
   if (!follow || follow.checked || monitor.shownId == null) monitor.shownId = entry.id;
   renderReceiveMonitor(view);
@@ -1778,6 +1782,7 @@ function renderReceiveMonitor(view) {
   renderReceiveNotes(view, result);
   renderReceiveFields(view, result);
   renderReceiveLockers(view, result);
+  if (view === "locker2") renderLocker2Inbox();
   renderReceiveHistory(view);
 }
 
@@ -1786,6 +1791,10 @@ function clearReceiveMonitor(view) {
   if (!monitor) return;
   monitor.history.length = 0;
   monitor.shownId = null;
+  if (view === "locker2") {
+    state.locker2Inbox.clear();
+    state.locker2InboxStats = { total: 0, vacant: 0 };
+  }
   renderReceiveMonitor(view);
   toast("受信履歴を消去しました");
 }
@@ -1818,6 +1827,93 @@ function applyReceivedLocker4(result) {
   const detail = missing.length ? `（一覧にないロッカーNO: ${missing.join(", ")}）` : "";
   addLog("info", "RX-APPLY", null, `受信した${applied}件のロッカー状態を一覧へ反映${detail}`);
   toast(`${applied}件のロッカー状態を一覧へ反映しました${detail}`);
+}
+
+// Q55-001D：旧版は全ロッカーを連続送信するため、受信履歴（保持100件）だけでは
+// 登録済みの住戸が未登録ロッカーに押し出されて見えなくなる。
+// 住戸アドレス単位で最新状態を集計し、履歴の保持件数に関係なく残す。
+function updateLocker2Inbox(entry) {
+  state.locker2InboxStats.total += 1;
+  const parsed = (inspectReceiveEntry("locker2", entry) || {}).parsed;
+  if (!parsed || parsed.address == null || parsed.vacant) {
+    if (parsed && parsed.vacant) state.locker2InboxStats.vacant += 1;
+    return;
+  }
+  const previous = state.locker2Inbox.get(parsed.address);
+  state.locker2Inbox.set(parsed.address, {
+    address: parsed.address,
+    buildingNo: parsed.buildingNo,
+    roomNo: parsed.roomNo,
+    command: parsed.command,
+    commandLabel: parsed.commandLabel,
+    at: entry.at,
+    count: previous ? previous.count + 1 : 1,
+  });
+}
+
+function locker2InboxRows() {
+  return Array.from(state.locker2Inbox.values()).sort((left, right) => left.address - right.address);
+}
+
+function renderLocker2Inbox() {
+  const body = $("locker2InboxBody");
+  if (!body) return;
+  const rows = locker2InboxRows();
+  const stats = state.locker2InboxStats;
+  $("locker2InboxCount").textContent = `${rows.length}件`;
+  $("locker2InboxStats").textContent = stats.total === 0
+    ? "未受信"
+    : `受信 ${stats.total}件（登録済み ${stats.total - stats.vacant}件 / 未登録 ${stats.vacant}件）`;
+
+  if (rows.length === 0) {
+    const empty = document.createElement("tr");
+    empty.className = "receive-empty";
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.textContent = stats.total === 0 ? "受信待ち" : "登録済みロッカーの電文をまだ受信していません";
+    empty.append(cell);
+    body.replaceChildren(empty);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const line = document.createElement("tr");
+    for (const text of [
+      String(row.address),
+      row.buildingNo == null ? "—" : `${row.buildingNo}棟`,
+      row.roomNo == null ? "—" : `${row.roomNo}号室`,
+      row.commandLabel || (row.command == null ? "—" : `${toHex([row.command])}H`),
+      formatTime(row.at),
+      `${row.count}回`,
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      line.append(cell);
+    }
+    fragment.append(line);
+  }
+  body.replaceChildren(fragment);
+}
+
+// 表示中の1件ではなく、集計した住戸をまとめて登録一覧へ書き戻す。
+function applyLocker2Inbox() {
+  const rows = locker2InboxRows();
+  if (rows.length === 0) throw new Error("反映できる受信内容がありません");
+  const missing = [];
+  let applied = 0;
+  for (const row of rows) {
+    const target = state.locker2Rows.find((item) => item.no === row.address);
+    if (!target) { missing.push(row.address); continue; }
+    target.command = row.command;
+    if (row.buildingNo != null) target.buildingNo = row.buildingNo;
+    if (row.roomNo != null) target.roomNo = row.roomNo;
+    applied += 1;
+  }
+  renderLocker2Table();
+  const note = missing.length ? `（登録行なし: 住戸アドレス${missing.join("・")}）` : "";
+  addLog("info", "RX-APPLY", null, `住戸別の受信状況${applied}件を登録一覧へ反映${note}`);
+  toast(`${applied}件を登録一覧へ反映しました${missing.length ? `／${missing.length}件は登録行がありません` : ""}`);
 }
 
 function applyReceivedLocker2(result) {
@@ -2245,6 +2341,9 @@ function bindEvents() {
     });
     $(`${config.prefix}Clear`).addEventListener("click", () => clearReceiveMonitor(view));
   }
+  $("locker2InboxApply").addEventListener("click", () => {
+    try { applyLocker2Inbox(); } catch (error) { logError(error, "住戸別の受信状況の反映"); }
+  });
   // 解析条件を変える設定は、表示中の受信電文にも即座に反映する。
   $("locker4Action").addEventListener("change", () => renderReceiveMonitor("locker4"));
   $("locker2Profile").addEventListener("change", () => renderReceiveMonitor("locker2"));

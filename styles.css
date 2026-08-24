@@ -156,6 +156,7 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .receive-subtitle small { margin-left: 7px; color: var(--muted); font-size: 10px; font-weight: 400; }
 .receive-table-wrap { margin-top: 10px; max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
 .receive-table { width: 100%; border-collapse: collapse; font: 11px/1.5 Consolas, "Cascadia Mono", monospace; }
+.receive-scroll { max-height: 260px; overflow: auto; border: 1px solid #223050; border-radius: 6px; }
 .receive-table thead th { position: sticky; top: 0; z-index: 1; padding: 7px 9px; background: var(--panel-2); border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }
 .receive-table td { padding: 5px 9px; border-bottom: 1px solid rgba(47,61,88,.4); color: #c9d2e1; vertical-align: top; }
 .receive-table tbody tr:hover { background: #14203a; }

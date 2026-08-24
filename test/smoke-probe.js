@@ -395,6 +395,58 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     throw new Error(`locker2 apply-to-table failed: ${JSON.stringify(l2Row)}`);
   }
 
+  // 旧版は全ロッカーを連続送信するため、登録済みの電文が未登録ロッカーに
+  // 押し出されて見えなくなる。住戸別の集計が履歴の保持件数を超えて残ることを確かめる。
+  await send(Telegram2.buildTelegram({ command: Telegram2.CMD.ARRIVE, buildingNo: 1, roomNo: 101, address: 1 }));
+  for (let address = 5; address <= 130; address += 1) {
+    await send(Telegram2.buildVacantTelegram(address));
+  }
+  const inbox = await window.webContents.executeJavaScript(`
+    (() => {
+      const rows = Array.from(document.querySelectorAll("#locker2InboxBody tr"))
+        .map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => td.textContent));
+      return {
+        rows,
+        count: document.getElementById("locker2InboxCount").textContent,
+        stats: document.getElementById("locker2InboxStats").textContent,
+        historyCount: document.getElementById("locker2RxHistoryCount").textContent,
+      };
+    })()
+  `);
+  // 受信履歴は上限100件で古い順に捨てられるが、集計側は登録済み2件を保持し続ける。
+  if (inbox.count !== "2件" || inbox.rows.length !== 2) {
+    throw new Error(`locker2 inbox lost registered lockers: ${JSON.stringify(inbox)}`);
+  }
+  if (inbox.rows[0][0] !== "1" || inbox.rows[0][2] !== "101号室" || inbox.rows[0][3] !== "着荷(お届け)") {
+    throw new Error(`locker2 inbox row 1 wrong: ${JSON.stringify(inbox.rows[0])}`);
+  }
+  if (inbox.rows[1][0] !== "4" || inbox.rows[1][2] !== "305号室" || inbox.rows[1][3] !== "滞留") {
+    throw new Error(`locker2 inbox row 2 wrong: ${JSON.stringify(inbox.rows[1])}`);
+  }
+  if (!inbox.stats.includes("登録済み 2件") || !inbox.stats.includes("未登録 126件")) {
+    throw new Error(`locker2 inbox stats wrong: ${inbox.stats}`);
+  }
+  if (inbox.historyCount !== "100件") {
+    throw new Error(`locker2 history should stay capped: ${inbox.historyCount}`);
+  }
+
+  // 集計した住戸をまとめて登録一覧へ書き戻せること。
+  await click("locker2InboxApply");
+  await wait(120);
+  const inboxApplied = await window.webContents.executeJavaScript(`
+    (() => {
+      const rows = document.querySelectorAll("#locker2Body tr");
+      const read = (index) => ({
+        command: rows[index].querySelector("select").value,
+        numbers: Array.from(rows[index].querySelectorAll("input[type=number]")).map((input) => input.value),
+      });
+      return { first: read(0), fourth: read(3) };
+    })()
+  `);
+  if (inboxApplied.first.command !== "17" || inboxApplied.first.numbers.join("-") !== "1-101") {
+    throw new Error(`locker2 inbox bulk apply failed: ${JSON.stringify(inboxApplied)}`);
+  }
+
   // ------------------------------------- フレーム不成立でも受信内容を残す
   await navigate("key");
   // 先の履歴選択で追従を切っているため、最新表示へ戻してから受信させる。
