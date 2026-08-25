@@ -103,6 +103,56 @@ function requireApi(name) {
   return api;
 }
 
+// ------------------------------------------------------------------ 使い方
+// 画面が増えて操作が分かりにくくなるため、各画面から該当する説明へ飛べるようにする。
+// 説明そのものはindex.htmlに置き、ここでは移動だけを担う。
+
+const HELP_SECTIONS = Object.freeze({
+  overview: "help-about",
+  terminal: "help-terminal",
+  locker4: "help-locker4",
+  locker2: "help-locker2",
+  key: "help-key",
+  mansion: "help-mansion",
+  elevator: "help-elevator",
+  panasonicElevator: "help-panasonicElevator",
+  alarm: "help-alarm",
+  panasonic: "help-panasonic",
+  bridge: "help-bridge",
+  faults: "help-faults",
+  settings: "help-settings",
+});
+
+function scrollToHelp(sectionId) {
+  const target = document.getElementById(sectionId);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openHelp(sectionId) {
+  navigate("help");
+  // 画面を切り替えた直後は高さが確定していないため、次のフレームで移動する。
+  requestAnimationFrame(() => scrollToHelp(sectionId));
+}
+
+// 各画面の見出しへ「使い方」ボタンを差し込む。HTML側は説明の記述に専念させる。
+function installHelpButtons() {
+  for (const [view, section] of Object.entries(HELP_SECTIONS)) {
+    const heading = document.querySelector(`#view-${view} .page-heading`);
+    if (!heading || heading.querySelector(".help-open")) continue;
+    const button = document.createElement("button");
+    button.className = "secondary help-open";
+    button.type = "button";
+    button.textContent = "使い方";
+    button.title = "この画面の説明を開きます";
+    button.addEventListener("click", () => openHelp(section));
+    heading.append(button);
+  }
+  for (const button of document.querySelectorAll("[data-help-jump]")) {
+    button.addEventListener("click", () => scrollToHelp(button.dataset.helpJump));
+  }
+}
+
 // ---------------------------------------------------------------- バージョン
 // 試験の記録と不具合報告で「どの版で起きたか」を特定できるようにする。
 // ビルド情報は tools/build-stamp.js がビルド時に埋め込むため、
@@ -134,6 +184,7 @@ async function applyAppVersion() {
   line.textContent = `通信仕様準拠シミュレータ v${info.version}`;
   line.title = versionSummary(info);
   $("appVersionBadge").textContent = `v${info.version}`;
+  $("helpVersionBadge").textContent = `v${info.version}`;
   $("appVersionValue").textContent = `${info.name} v${info.version}`;
   $("appBuildValue").textContent = formatBuildStamp(info);
   $("appRuntimeValue").textContent = `Electron ${info.electron} / Chromium ${info.chrome} / Node ${info.node} / ${info.platform}`;
@@ -4399,6 +4450,7 @@ async function initialize() {
   state.locker4Rows = createLocker4Rows(DEFAULT_LOCKER_COUNT);
   state.locker2Rows = createLocker2Rows(DEFAULT_LOCKER2_COUNT);
   bindEvents();
+  installHelpButtons();
   // 版の表示はシリアル初期化を待たせない。取得できなくても起動は続ける。
   await applyAppVersion().catch((error) => logError(error, "バージョン取得"));
   const profileLoaded = loadSavedProfile();

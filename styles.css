@@ -68,6 +68,15 @@ button.danger { background: #49242e; border-color: #743443; color: #ffc6cd; }
 .view { display: none; max-width: 1120px; margin: 0 auto; }
 .view.active { display: block; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+/* 見出しへ差し込む「使い方」ボタンと、説明画面の目次・節。 */
+.page-heading .help-open { flex: none; align-self: flex-start; margin-left: auto; }
+.page-heading .help-open + .spec-badge { margin-left: 10px; }
+.help-toc { display: flex; flex-wrap: wrap; gap: 8px; }
+.help-section { scroll-margin-top: 10px; }
+.help-section h2 { margin-bottom: 8px; }
+.help-section h3 { margin-top: 16px; }
+.help-section p { margin-bottom: 8px; color: #b3bfd1; font-size: 12px; line-height: 1.7; }
+.help-section .check-list, .help-section .steps { margin-top: 6px; }
 .page-heading h1 { margin: 0 0 3px; font-size: 23px; line-height: 1.25; }
 .page-heading p, .card-title p { margin: 0; color: var(--muted); }
 .spec-badge { border: 1px solid #38568d; background: #152748; color: #a9c6ff; border-radius: 14px; padding: 4px 10px; font-size: 10px; white-space: nowrap; }

@@ -1080,7 +1080,7 @@ async function run({ window, app, sendToRenderer }) {
     if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
       throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
     }
-    if (initial.title !== "外部疑似装置 Next" || initial.views !== 13 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
+    if (initial.title !== "外部疑似装置 Next" || initial.views !== 14 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 
@@ -1232,6 +1232,33 @@ async function run({ window, app, sendToRenderer }) {
     if (!scanBlocked.log || scanBlocked.startDisabled) {
       throw new Error(`link scan without port failed: ${JSON.stringify(scanBlocked)}`);
     }
+
+    const help = await window.webContents.executeJavaScript(`
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        // 各画面の見出しへ「使い方」ボタンが入っていること。
+        const views = ["terminal", "locker4", "locker2", "key", "mansion", "elevator",
+          "panasonicElevator", "alarm", "panasonic", "bridge", "faults", "settings"];
+        const missing = views.filter((view) => !document.querySelector("#view-" + view + " .page-heading .help-open"));
+
+        // 宅配4線式の「使い方」を押すと、説明画面のその節へ移動する。
+        document.querySelector("#view-locker4 .page-heading .help-open").click();
+        const opened = document.getElementById("view-help").classList.contains("active");
+        const navActive = document.querySelector('.nav-item[data-view="help"]').classList.contains("active");
+        const toc = $("helpToc").querySelectorAll("[data-help-jump]").length;
+        const sections = document.querySelectorAll("#view-help .help-section").length;
+        // 目次の項目がすべて実在する節を指していること。
+        const brokenLinks = Array.from($("helpToc").querySelectorAll("[data-help-jump]"))
+          .map((button) => button.dataset.helpJump)
+          .filter((id) => !document.getElementById(id));
+        return { missing, opened, navActive, toc, sections, brokenLinks, badge: $("helpVersionBadge").textContent };
+      })()
+    `);
+    if (help.missing.length) throw new Error(`help buttons missing on: ${help.missing.join(", ")}`);
+    if (!help.opened || !help.navActive) throw new Error(`help screen did not open: ${JSON.stringify(help)}`);
+    if (help.brokenLinks.length) throw new Error(`help table of contents points to missing sections: ${help.brokenLinks.join(", ")}`);
+    if (help.toc < 16 || help.sections < 15) throw new Error(`help content is incomplete: ${JSON.stringify(help)}`);
+    if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(help.badge)) throw new Error(`help version badge failed: ${help.badge}`);
 
     const pev = await window.webContents.executeJavaScript(PANASONIC_ELEVATOR_UI_SCRIPT);
     if (pev.badge !== "9600,E,8,1" || pev.toElevator.join(",") !== "IE,IK,IH,SB" || pev.fromElevator.join(",") !== "SH") {

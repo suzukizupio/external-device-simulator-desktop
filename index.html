@@ -35,6 +35,7 @@
   <div class="layout">
     <nav class="sidebar" aria-label="機能一覧">
       <button class="nav-item active" data-view="overview"><span>⌂</span>概要</button>
+      <button class="nav-item" data-view="help"><span>?</span>使い方</button>
       <button class="nav-item" data-view="terminal"><span>⌁</span>汎用ターミナル</button>
       <p>宅配・入退館</p>
       <button class="nav-item" data-view="locker4"><span>4</span>宅配 4線式</button>
@@ -95,6 +96,247 @@
             </tbody>
           </table></div>
           <div class="actions"><button class="secondary" id="copyVersionButton">バージョン情報をコピー</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-help">
+        <div class="page-heading"><div><h1>使い方</h1><p>画面ごとの操作と、困ったときの調べ方</p></div><span class="spec-badge" id="helpVersionBadge">—</span></div>
+
+        <article class="card">
+          <div class="card-title"><div><h2>目次</h2><p>見出しを押すとその説明へ移動します</p></div></div>
+          <div class="help-toc" id="helpToc">
+            <button class="secondary" data-help-jump="help-about">このアプリについて</button>
+            <button class="secondary" data-help-jump="help-basic">最初にすること</button>
+            <button class="secondary" data-help-jump="help-terminal">汎用ターミナル</button>
+            <button class="secondary" data-help-jump="help-locker4">宅配 4線式</button>
+            <button class="secondary" data-help-jump="help-locker2">宅配 2線式</button>
+            <button class="secondary" data-help-jump="help-key">非接触キー</button>
+            <button class="secondary" data-help-jump="help-mansion">マンション制御</button>
+            <button class="secondary" data-help-jump="help-elevator">エレベータ（アイホン）</button>
+            <button class="secondary" data-help-jump="help-panasonicElevator">エレベータ（パナソニック）</button>
+            <button class="secondary" data-help-jump="help-alarm">警報（アイホン）</button>
+            <button class="secondary" data-help-jump="help-panasonic">警報（パナソニック）</button>
+            <button class="secondary" data-help-jump="help-bridge">電文変換</button>
+            <button class="secondary" data-help-jump="help-faults">異常注入</button>
+            <button class="secondary" data-help-jump="help-settings">通信設定</button>
+            <button class="secondary" data-help-jump="help-trouble">困ったときは</button>
+            <button class="secondary" data-help-jump="help-words">用語</button>
+          </div>
+        </article>
+
+        <article class="card help-section" id="help-about">
+          <h2>このアプリについて</h2>
+          <p>集合住宅システムにつながる外部装置（宅配ボックス・非接触キー・エレベータ・警報発信装置など）をパソコンで疑似し、実機を用意せずに通信試験を行うためのツールです。相手装置になりすまして電文を送り、受け取った電文が通信仕様どおりかを桁ごとに検証します。</p>
+          <ul class="check-list">
+            <li>アイホンの通信仕様書6冊と、パナソニックの5冊に対応しています</li>
+            <li>送る前に必ずプレビューで電文を確認できます</li>
+            <li>受信した電文は「どの桁が何を意味するか」まで分解して表示します</li>
+            <li>仕様に合わない値は黙って直さず、理由を示して止めます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-basic">
+          <h2>最初にすること</h2>
+          <ol class="steps">
+            <li><strong>COMポートを選ぶ</strong>（画面上部）。一覧に出ないときは↻で更新します</li>
+            <li><strong>通信プリセットを選ぶ</strong>。対象装置に合う条件（宅配／MCなら4800,E,8,1など）を選びます</li>
+            <li><strong>接続</strong>を押します</li>
+            <li>左のメニューから<strong>対象の装置を選びます</strong></li>
+            <li>値を入れて<strong>検証・プレビュー</strong>で電文を確認し、<strong>送信</strong>します</li>
+            <li>右側の<strong>通信ログ</strong>で送受信と解析結果を確認します</li>
+          </ol>
+          <p class="callout">接続したまま別の画面へ移ると、装置ごとに通信条件が違うため上部に警告が出ます。その場合はいったん切断し、プリセットを選び直してから接続してください。</p>
+        </article>
+
+        <article class="card help-section" id="help-terminal">
+          <h2>汎用ターミナル</h2>
+          <p>任意のバイト列を送るための画面です。仕様が分からない電文の調査や、専用画面にない電文を送るときに使います。</p>
+          <ul class="check-list">
+            <li>HEX（例 02 31 03）かASCIIで入力します</li>
+            <li>STX／ETXの付加、BCC（XOR・加算）の自動計算ができます</li>
+            <li>「BCCを故意に破壊」で異常電文を作れます</li>
+            <li>下のボタンからENQ・ACK・NAK・EOTなどの制御コードを単独で送れます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-locker4">
+          <h2>宅配 4線式(B方式)　Q48-005F</h2>
+          <p>宅配ボックスと集合住宅システムのあいだの通信です。100件のロッカー表を編集して送ります。</p>
+          <ul class="check-list">
+            <li><strong>動作</strong>で、自分が宅配ボックス側（情報応答）かシステム側（情報要求）かを選びます</li>
+            <li>ロッカー表で棟番号・住戸番号・状態を設定します。範囲指定の一括設定が使えます</li>
+            <li>送信したい行の<strong>チェックを入れて</strong>から送信します</li>
+            <li>1パケットの件数（3件／10件）を超える分は自動で複数パケットに分かれ、パッケージNOで残数を示します</li>
+            <li>宅配側で動作しているとき、情報要求を受けたら現在のロッカー表で自動応答できます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-locker2">
+          <h2>宅配 2線式　Q55-001D</h2>
+          <p>宅配ボックスからの一方向通信です。応答は返りません。</p>
+          <ul class="check-list">
+            <li>住戸アドレスは「登録順の連番」という規定どおり自動採番されるため、入力しません</li>
+            <li>対象システム（標準／PATMOα）でボックス数の上限が変わります</li>
+            <li>登録した行は5件ずつ、1秒間隔で送信されます</li>
+            <li>受信モニタの下に「住戸別の受信状況」があり、相手が全ロッカーを連続送信しても住戸単位で最新状態を追えます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-key">
+          <h2>非接触キー　Q48-006F</h2>
+          <p>キーをかざした情報を送ります。10byte（個人番号なし）と13byte（個人番号あり）の2形式があります。</p>
+          <ul class="check-list">
+            <li>対象システムを選ぶと、棟番号・個人番号の上限が変わります（V-fineは個人番号8まで、など）</li>
+            <li>上限を超える値は「注意」として表示し、電文は仕様どおりに作ります</li>
+            <li>受信側として動作するときは、BCCが正しければACK、異常ならNAKを自動で返せます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-mansion">
+          <h2>マンション制御　Q48-008I</h2>
+          <p>マンションコントローラと集合インターホンのあいだの通信です。110種類のコマンドを扱います。</p>
+          <ul class="check-list">
+            <li><strong>Version</strong>（1〜3）と<strong>動作側</strong>（MC／IC）で、選べるコマンドが変わります</li>
+            <li>初期化・警報出力・宅配ボックス制御・非接触キー制御は、項目を入力すると仕様どおりのメッセージを組み立てます</li>
+            <li>それ以外のコマンドは「仕様定義でメッセージを組み立てる」のチェックを外し、MESGを直接入力します</li>
+            <li>ADDR（住戸アドレス）は棟コード2桁＋装置番号4桁です。棟なしはBB、1〜9棟はB1〜B9になります</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-elevator">
+          <h2>エレベータ連動（アイホン）　Q46-005J</h2>
+          <p>21byte固定、全13コマンドです。機種プロファイルで使えるコマンドが変わります。</p>
+          <ul class="check-list">
+            <li><strong>対象</strong>で機種（DASH VHX、V-fine VBZ、VIXUSなど）を選ぶと、その機種で使えないコマンドは弾かれます</li>
+            <li><strong>送信元</strong>で優先局が決まります。ENQ衝突時は集合インターホン側が優先します</li>
+            <li>EV側で動作しているとき、ECALLを受けたらかご状態に応じてESTAT／ESTOPで自動応答できます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-panasonicElevator">
+          <h2>エレベータ連動（パナソニック）</h2>
+          <p>18byte固定、全5コマンド（IE／IK／IH／SB／SH）です。アイホンとは通信手順が違います。</p>
+          <ul class="check-list">
+            <li>正常応答が<strong>10H／30H</strong>の2種類で、NAKがありません。検証できない電文には応答せず、相手の再送を待ちます</li>
+            <li>共同玄関解錠(IK)は<strong>付加コード</strong>で種類が変わり、住戸を特定できるのは00（住戸による解錠）だけです。01（管理室）・02（暗証番号）では棟番号・住戸番号が固定値のため入力できません</li>
+            <li>ENQ衝突時は送信権を相手へ渡し、エレベータ1秒・IFU2秒と待ち時間に差をつけて再送します</li>
+            <li>ヘルスチェック(IH)を受けたら、運行状態（正常運行中／点検中）を載せた応答(SH)を自動で返せます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-alarm">
+          <h2>警報（アイホン）　Q49-023G</h2>
+          <p>11byte固定。発信情報のビットに警報が割り付けられています。</p>
+          <ul class="check-list">
+            <li><strong>ビット割付</strong>（標準／パターン1〜3）を選ぶと、各ビットの意味が変わります。画面には警報名が出ます</li>
+            <li>◇が付くビットは対応付けを変更できない項目、空欄は未割付です。未使用ビットはチェックできません</li>
+            <li>ヒストリー要求を受けたら、記録した履歴を古い順に返せます（最大15件、リング状）</li>
+            <li>発報元は住戸のほか、管理室・集合玄関・共用部を選べます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-panasonic">
+          <h2>警報（パナソニック）</h2>
+          <p>1つの画面で4プロトコル（HPC／TSS／大興／リモート）を切り替えます。形式が2種類あります。</p>
+          <ul class="check-list">
+            <li><strong>HPC／TSS</strong> … STXで始まる11byte固定。1200,E,8,1</li>
+            <li><strong>大興／リモート</strong> … SNDで始まるASCIIレコード（最大10件）。1200,N,8,1。パリティを使いません</li>
+            <li>プロトコルを切り替えると、電文形式・通信条件・入力欄・受信の読み方がまとめて変わります</li>
+            <li>受信した電文からプロトコルを判定します。一意に決まれば自動で切り替え、決められないときは候補と「どちらで読むと何になるか」を示します（詳しくは「困ったときは」）</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-bridge">
+          <h2>電文変換（ブリッジ）</h2>
+          <p>受信した電文を別の形式へ読み替えて送信します。<strong>受信ポートと送信ポートに別のCOMポートを使います。</strong></p>
+          <p class="callout">画面上部の接続が<strong>受信ポート</strong>、この画面の「回線」で開くのが<strong>送信ポート</strong>です。RS422とRS232Cのように電気規格が違っても、それぞれの変換器を挿せばどちらもCOMポートとして扱えます。</p>
+          <h3 class="receive-subtitle">警報（メーカー間）</h3>
+          <ul class="check-list">
+            <li>アイホン Q49-023G ⇄ パナソニック4種を双方向に変換します</li>
+            <li><strong>この対応付けは通信仕様書には規定がありません。</strong>両仕様書の警報名が一致することだけを根拠にした変換です</li>
+            <li>相手に枠がない警報（HPCの「水漏れ」「CO」など）は送れないため、理由を表示します</li>
+            <li>変換表を画面で確認できます</li>
+          </ul>
+          <h3 class="receive-subtitle">宅配・非接触キー → マンションコントローラ</h3>
+          <ul class="check-list">
+            <li>こちらは Q48-008I 側に受け皿（6.7 宅配ボックス制御／6.8 非接触キー制御）があるため、<strong>仕様の定義に沿った変換</strong>です</li>
+            <li>非接触キーはゲート番号・住戸・個人番号がそのまま載ります</li>
+            <li>宅配4線式は「荷物なし→取出し状態」「荷物あり→着荷状態」だけが対応します。集荷預り・食配着荷・書留着荷・宅配ロボには対応する状態がないため送れません</li>
+            <li>装置からMCへの一方向です。MCから装置へ状態を書き込む電文は仕様上ありません</li>
+          </ul>
+          <p class="callout"><strong>回線は受信1つ・送信1つです。</strong>宅配ボックスと非接触キーを同時には扱えず、変換元で選んだどちらか一方になります。実際の集合インターホンのように両方を1台のマンションコントローラへ中継するには、宅配用・キー用・MC用で計3回線が必要です（未対応）。</p>
+        </article>
+
+        <article class="card help-section" id="help-faults">
+          <h2>異常注入</h2>
+          <p>わざと異常な通信を起こして、相手装置の動きを確かめます。</p>
+          <ul class="check-list">
+            <li>BCC異常・BCC欠落・送信遅延・無送信・STX重複を選べます</li>
+            <li><strong>対象段階</strong>で、ENQだけ・電文だけ・応答だけ、と適用先を絞れます</li>
+            <li><strong>適用回</strong>で、毎回か1回目だけかを選べます</li>
+            <li>プレビューには正常な電文、ログには実際に送った値が残ります</li>
+            <li>受信時の自動応答（ACK／NAK／無応答）もここで切り替えます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-settings">
+          <h2>通信設定</h2>
+          <ul class="check-list">
+            <li>ボーレート・パリティなどを個別に指定できます（プリセットで足りないとき）</li>
+            <li>DTR／RTSの操作と、CTS／DSR／DCDの取得ができます</li>
+            <li><strong>通信条件の判別</strong>で、相手の条件が分からないときに順に試して探せます</li>
+            <li>全画面の入力値をこのPCへ保存したり、JSONで書き出して共有できます</li>
+            <li>通信ログの保持件数（2,000／20,000／100,000件）を選べます</li>
+          </ul>
+        </article>
+
+        <article class="card help-section" id="help-trouble">
+          <h2>困ったときは</h2>
+
+          <h3 class="receive-subtitle">相手の通信速度やパリティが分からない</h3>
+          <p>「通信設定」画面の<strong>通信条件の判別</strong>を使います。条件を順に切り替えて実際に受信し、仕様どおりのフレームとして読める設定を探します。見つかった条件はボタン1つで反映できます。</p>
+          <p class="callout">判別中は接続を切ります。<strong>相手が自発的に送信している状態</strong>（警報を発生させる、キーをかざす、など）にしてから実行してください。受信が1件もない条件は判定できません。</p>
+
+          <h3 class="receive-subtitle">受信データが化けている</h3>
+          <p>受信モニタが偏りから当たりを付けます。「1バイトあたりのビット変化が少なく00Hが多い」なら<strong>設定が相手より速い</strong>、「ビット変化が多いのに電文より短い」なら<strong>遅い</strong>可能性があります。目安のボーレートも示しますが、確定するには上記の判別を実行してください。</p>
+
+          <h3 class="receive-subtitle">どのプロトコルの電文か分からない（警報）</h3>
+          <p>警報（パナソニック）画面の受信モニタが、アイホンQ49-023Gとパナソニック4種のどれとして成立するかを判定します。プロトコル固有の要素があれば一意に特定し、共通部分しかない電文では候補と読みの違いを示します。</p>
+          <ul class="check-list">
+            <li>発報元が管理室・集合玄関・共用部 → アイホン</li>
+            <li>発信種別 05H・10H → HPC ／ 44H → TSSまたはアイホン</li>
+            <li>警報No.40（宅配登録･削除）や定時送信 → リモート</li>
+            <li>発信種別 00H・01H だけの電文は、アイホン／HPC／TSSのどれでも成立するため決められません</li>
+          </ul>
+
+          <h3 class="receive-subtitle">送ったのに応答がない</h3>
+          <ul class="check-list">
+            <li>通信条件（特にパリティ）が合っているか。上部の警告と「通信条件の判別」で確認します</li>
+            <li>動作側（自分がどちら側か）の設定が相手と噛み合っているか</li>
+            <li>送信方式が「電文のみ」になっていないか。仕様手順にするとENQから始めます</li>
+            <li>異常注入が「無送信」や「無応答」のまま残っていないか</li>
+          </ul>
+
+          <h3 class="receive-subtitle">試験の記録を残したい</h3>
+          <p>通信ログの↓ボタンで保存できます。受信時刻・HEX・ASCII・解析結果が残ります。不具合を報告するときは、「概要」画面の<strong>バージョン情報</strong>もコピーして添えてください。</p>
+        </article>
+
+        <article class="card help-section" id="help-words">
+          <h2>用語</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>用語</th><th>意味</th></tr></thead>
+            <tbody>
+              <tr><td>電文</td><td>1回の通信で送る意味のあるまとまり。STXで始まりBCCで終わる形が多い</td></tr>
+              <tr><td>STX / ETX</td><td>電文の開始（02H）と終了（03H）を示す制御コード</td></tr>
+              <tr><td>BCC</td><td>誤り検出用の検査値。機種によりXOR・加算・16進2文字と計算方法が違う</td></tr>
+              <tr><td>ENQ / ACK / NAK / EOT</td><td>送信要求（05H）／正常応答（06H）／異常応答（15H）／転送終了（04H）。パナソニックのエレベータ連動だけACKが10H・30H</td></tr>
+              <tr><td>ENQ手順</td><td>ENQ→ACK→電文→ACK→EOT の順で送る通信手順。「送信方式」で選びます</td></tr>
+              <tr><td>ENQ衝突</td><td>双方が同時にENQを送った状態。機種ごとに優先局や待ち時間の規定があります</td></tr>
+              <tr><td>パリティ</td><td>1文字ごとの誤り検出ビット。Even（偶数）／None（なし）など。合わないと受信が化けます</td></tr>
+              <tr><td>ADDR</td><td>Q48-008Iの住戸アドレス。棟コード2桁＋装置番号4桁の6バイト</td></tr>
+              <tr><td>ヒストリー</td><td>過去に送った警報の履歴。要求を受けると古い順に返します</td></tr>
+            </tbody>
+          </table></div>
         </article>
       </section>
 
