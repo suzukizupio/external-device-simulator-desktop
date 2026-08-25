@@ -41,6 +41,27 @@ test("応答が完了電文しかない初期化要求にも応答する", () =>
   assert.equal(result.definition.command, 0x42);
 });
 
+test("VIXUS Advanceで許可された静止画要求だけに応答する", () => {
+  const request = M.buildFrame({
+    kind: M.KIND.STILL_IMAGE,
+    command: 0x45,
+    version: 3,
+    from: M.ROLE.MC,
+    product: M.PRODUCT.VIXUS_ADVANCE,
+  });
+  const result = AutoResponder.mansionResponse(request, {
+    version: 3,
+    role: M.ROLE.IC,
+    product: M.PRODUCT.VIXUS_ADVANCE,
+  });
+  assert.equal(result.definition.command, 0x65);
+  assert.equal(M.parseFrame(result.frame, {
+    version: 3,
+    from: M.ROLE.IC,
+    product: M.PRODUCT.VIXUS_ADVANCE,
+  }).command, 0x65);
+});
+
 test("一括応答が必要な要求は業務データ不足として断る", () => {
   // 34/44 全防犯情報要求 → 34/64 全防犯情報応答（bulk）
   const request = M.buildFrame({ kind: 0x34, command: 0x44, version: 3, from: M.ROLE.MC, message: [] });

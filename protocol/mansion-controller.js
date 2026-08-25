@@ -37,6 +37,10 @@
     BIDIRECTIONAL: "BIDIRECTIONAL",
   });
   const ROLE = Object.freeze({ IC: "IC", MC: "MC" });
+  const PRODUCT = Object.freeze({
+    GENERIC: "generic",
+    VIXUS_ADVANCE: "vixus-advance",
+  });
   const COMMAND_TYPE = Object.freeze({
     REQUEST: "request",
     RESPONSE: "response",
@@ -319,6 +323,21 @@
     return false;
   }
 
+  const VIXUS_ADVANCE_STILL_COMMANDS = Object.freeze([0x45, 0x54, 0x65, 0x74]);
+
+  function normalizeProduct(value) {
+    const product = value == null ? PRODUCT.GENERIC : String(value);
+    if (!Object.values(PRODUCT).includes(product)) {
+      fail("INVALID_PRODUCT", "product はgenericまたはvixus-advanceで指定してください", { product });
+    }
+    return product;
+  }
+
+  function productAllows(definition, product) {
+    if (product !== PRODUCT.VIXUS_ADVANCE || definition.kind !== KIND.STILL_IMAGE) return true;
+    return VIXUS_ADVANCE_STILL_COMMANDS.includes(definition.command);
+  }
+
   function getCommandDefinition(kindValue, commandValue, options) {
     const kind = normalizeCommandByte(kindValue, "kind");
     const command = normalizeCommandByte(commandValue, "command");
@@ -347,18 +366,29 @@
         });
       }
     }
+    const product = normalizeProduct(opts.product);
+    if (!productAllows(definition, product)) {
+      fail("UNSUPPORTED_PRODUCT", `${definition.name} はVIXUS Advanceでは使用できません`, {
+        kind,
+        command,
+        product,
+        allowedCommands: VIXUS_ADVANCE_STILL_COMMANDS.slice(),
+      });
+    }
     return definition;
   }
 
   function listCommandDefinitions(options) {
     const opts = options || {};
     const version = normalizeVersion(opts.version, false);
+    const product = normalizeProduct(opts.product);
     if (opts.from !== undefined && opts.from !== ROLE.IC && opts.from !== ROLE.MC) {
       fail("INVALID_ROLE", "from はICまたはMCで指定してください", { from: opts.from });
     }
     return COMMAND_REGISTRY.filter((definition) => {
       if (version !== null && !definition.versions.includes(version)) return false;
       if (opts.from !== undefined && !directionAllows(definition.direction, opts.from)) return false;
+      if (!productAllows(definition, product)) return false;
       return true;
     });
   }
@@ -420,7 +450,7 @@
     assertPrintableAscii(message, "message");
     let commandDefinition = null;
     if (opts.validateCommand !== false) {
-      commandDefinition = getCommandDefinition(kind, command, { version: opts.version, from: opts.from });
+      commandDefinition = getCommandDefinition(kind, command, { version: opts.version, from: opts.from, product: opts.product });
     }
     return Object.freeze({
       raw: Object.freeze(bytes.slice()),
@@ -451,7 +481,7 @@
       fail("MESSAGE_TOO_LONG", "MESGは最大94バイトです", { actual: message.length, maximum: 94 });
     }
     if (opts.validateCommand !== false) {
-      getCommandDefinition(kind, command, { version: opts.version, from: opts.from });
+      getCommandDefinition(kind, command, { version: opts.version, from: opts.from, product: opts.product });
     } else {
       normalizeVersion(opts.version, false);
     }
@@ -1018,6 +1048,7 @@
     ADDRESS_TYPE,
     DIRECTION,
     ROLE,
+    PRODUCT,
     COMMAND_TYPE,
     KIND,
     KIND_NAMES,

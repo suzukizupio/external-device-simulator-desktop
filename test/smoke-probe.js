@@ -45,6 +45,15 @@ const LOCKER_UI_SCRIPT = `
     const numbersOf = (tr) => Array.from(tr.querySelectorAll("input[type=number]")).map((input) => input.value).join("-");
     const initialRows = rowsOf("locker4Body").length;
     const initialRows2 = rowsOf("locker2Body").length;
+    const locker4Profile = document.getElementById("locker4Profile");
+    locker4Profile.value = "vFineVaz";
+    locker4Profile.dispatchEvent(new Event("change"));
+    const profileConstraint = {
+      hint: document.getElementById("locker4ConstraintHint").textContent,
+      countMax: document.getElementById("locker4Count").max,
+    };
+    locker4Profile.value = "standard";
+    locker4Profile.dispatchEvent(new Event("change"));
     document.getElementById("locker4PageNext").click();
     const locker4NextFirst = document.querySelector("#locker4Body .locker-no").textContent;
     document.getElementById("locker4PagePrevious").click();
@@ -115,6 +124,7 @@ const LOCKER_UI_SCRIPT = `
         restoredRows: rowsOf("locker4Body").length,
         visible: document.getElementById("locker4Visible").textContent,
         preview: document.getElementById("locker4Preview").textContent,
+        profileConstraint,
         initialRows2,
         locker2NextFirst,
         assigned2,
@@ -1044,6 +1054,9 @@ const PANASONIC_UI_SCRIPT = `
       propertyHidden: $("panaPropertyField").hidden,
       propertyDrawn: $("panaPropertyField").offsetHeight > 0,
       scheduledDrawn: $("panaScheduledButton").offsetHeight > 0,
+      signalsHidden: $("panaRemoteSignals").closest("label").hidden,
+      timingHidden: $("panaRemoteTimingState").hidden,
+      roleLabels: Array.from($("panaRole").options).map((option) => option.textContent),
     };
 
     $("panaRecordClear").click();
@@ -1075,8 +1088,10 @@ const PANASONIC_ELEVATOR_UI_SCRIPT = `
     // IFU→エレベータでは4コマンド、エレベータ→IFUはヘルスチェック応答だけ。
     change($("pevDirection"), "toElevator");
     const toElevator = Array.from($("pevCommand").options).map((option) => option.value);
+    const autoHealthEnabledForIfu = !$("pevAutoHealth").disabled;
     change($("pevDirection"), "fromElevator");
     const fromElevator = Array.from($("pevCommand").options).map((option) => option.value);
+    const autoHealthDisabledForElevator = $("pevAutoHealth").disabled;
     const health = { extras: Array.from($("pevExtra").options).map((option) => option.textContent), usage: usage() };
 
     // 住戸でのエレベータコールは棟・住戸だけを使う。
@@ -1107,7 +1122,7 @@ const PANASONIC_ELEVATOR_UI_SCRIPT = `
     };
 
     change($("pevCommand"), "IE");
-    return { badge, toElevator, fromElevator, health, call, unlockByRoom, unlockByAdmin, healthRequest, keyInfo };
+    return { badge, toElevator, fromElevator, autoHealthEnabledForIfu, autoHealthDisabledForElevator, health, call, unlockByRoom, unlockByAdmin, healthRequest, keyInfo };
   })()
 `;
 
@@ -1146,6 +1161,10 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (!locker.preview.startsWith("#1 02 ")) {
       throw new Error(`locker preview failed: ${JSON.stringify(locker)}`);
+    }
+    if (locker.profileConstraint.countMax !== "100" || !locker.profileConstraint.hint.includes("最大100ロッカー")
+        || !locker.profileConstraint.hint.includes("最大ロッカーNo 100")) {
+      throw new Error(`locker profile constraints failed: ${JSON.stringify(locker.profileConstraint)}`);
     }
     if (locker.initialRows2 !== 50 || locker.visible2 !== "100" || locker.limit2 !== "上限 100 件" || locker.locker2NextFirst !== "051") {
       throw new Error(`locker2 table was not rendered: ${JSON.stringify(locker)}`);
@@ -1250,7 +1269,8 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (pana.remote.alarmCount !== 29 || pana.remote.third !== "03 防犯(代表)" || !pana.remote.hasDelivery ||
         pana.remote.scheduledHidden || pana.remote.propertyHidden ||
-        !pana.remote.propertyDrawn || !pana.remote.scheduledDrawn) {
+        !pana.remote.propertyDrawn || !pana.remote.scheduledDrawn || pana.remote.signalsHidden || pana.remote.timingHidden ||
+        !pana.remote.roleLabels[1].includes("リモート送信機")) {
       throw new Error(`panasonic remote form failed: ${JSON.stringify(pana.remote)}`);
     }
 
@@ -1310,7 +1330,8 @@ async function run({ window, app, sendToRenderer }) {
     if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(help.badge)) throw new Error(`help version badge failed: ${help.badge}`);
 
     const pev = await window.webContents.executeJavaScript(PANASONIC_ELEVATOR_UI_SCRIPT);
-    if (pev.badge !== "9600,E,8,1" || pev.toElevator.join(",") !== "IE,IK,IH,SB" || pev.fromElevator.join(",") !== "SH") {
+    if (pev.badge !== "9600,E,8,1" || pev.toElevator.join(",") !== "IE,IK,IH,SB" || pev.fromElevator.join(",") !== "SH"
+        || !pev.autoHealthEnabledForIfu || !pev.autoHealthDisabledForElevator) {
       throw new Error(`panasonic elevator command table failed: ${JSON.stringify(pev)}`);
     }
     // ヘルスチェック応答の付加コードは運行状態を表す。
@@ -1456,7 +1477,16 @@ async function run({ window, app, sendToRenderer }) {
         const keyPersonPreview = $("mcPreview").textContent;
         const keyNote = $("mcPayloadNote").textContent;
 
-        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode, boxNote, boxFields, boxPreview, keyPreview, keyPersonPreview, keyNote };
+        // VIXUS Advanceの静止画は、送信方向ごとに仕様で認められた4コマンドだけに絞る。
+        set("mcProduct", "vixus-advance");
+        set("mcKind", "39");
+        const vixusIcCommands = Array.from($("mcCommand").options).map((option) => option.value);
+        set("mcRole", "MC");
+        const vixusMcCommands = Array.from($("mcCommand").options).map((option) => option.value);
+        const vixusStillCommands = [...vixusMcCommands, ...vixusIcCommands].sort();
+        set("mcProduct", "generic");
+
+        return { rokOptions, initPreview, note, labels, reserved, alarmSummary, alarmPreview, v1Labels, rawMode, boxNote, boxFields, boxPreview, keyPreview, keyPersonPreview, keyNote, vixusStillCommands };
       })()
     `);
     if (mcPayload.rokOptions.length !== 2 || !mcPayload.rokOptions[0].includes("Ver3")) {
@@ -1502,6 +1532,9 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (!mcPayload.keyNote.includes("ゲート + ADDR + 個人")) {
       throw new Error(`key payload note wrong: ${mcPayload.keyNote}`);
+    }
+    if (mcPayload.vixusStillCommands.join(",") !== "45,54,65,74") {
+      throw new Error(`VIXUS Advance still-image commands wrong: ${JSON.stringify(mcPayload.vixusStillCommands)}`);
     }
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });

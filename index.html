@@ -168,6 +168,7 @@
             <li>ロッカー表で棟番号・住戸番号・状態を設定します。範囲指定の一括設定が使えます</li>
             <li>送信したい行の<strong>チェックを入れて</strong>から送信します</li>
             <li>1パケットの件数（3件／10件）を超える分は自動で複数パケットに分かれ、パッケージNOで残数を示します</li>
+            <li><strong>対象プロファイル</strong>でシステム／基板／2方向アダプター段数を選ぶと、最大ロッカー数・最大ロッカーNo・パケットNo・状態コードを仕様上限で検査します</li>
             <li>宅配側で動作しているとき、情報要求を受けたら現在のロッカー表で自動応答できます</li>
           </ul>
         </article>
@@ -198,6 +199,8 @@
           <p>マンションコントローラと集合インターホンのあいだの通信です。110種類のコマンドを扱います。</p>
           <ul class="check-list">
             <li><strong>Version</strong>（1〜3）と<strong>動作側</strong>（MC／IC）で、選べるコマンドが変わります</li>
+            <li><strong>VIXUS Advance</strong>では、静止画機能を全静止画消去（45H／65H）と全住戸情報初期化（54H／74H）に限定します</li>
+            <li>「起動・周期通信開始」は、起動時の初期化電文を10秒間隔で再送し、通信接続開始後は30秒ごとにヘルスチェックを送受信します</li>
             <li>初期化・警報出力・宅配ボックス制御・非接触キー制御は、項目を入力すると仕様どおりのメッセージを組み立てます</li>
             <li>それ以外のコマンドは「仕様定義でメッセージを組み立てる」のチェックを外し、MESGを直接入力します</li>
             <li>ADDR（住戸アドレス）は棟コード2桁＋装置番号4桁です。棟なしはBB、1〜9棟はB1〜B9になります</li>
@@ -222,6 +225,7 @@
             <li>共同玄関解錠(IK)は<strong>付加コード</strong>で種類が変わり、住戸を特定できるのは00（住戸による解錠）だけです。01（管理室）・02（暗証番号）では棟番号・住戸番号が固定値のため入力できません</li>
             <li>ENQ衝突時は送信権を相手へ渡し、エレベータ1秒・IFU2秒と待ち時間に差をつけて再送します</li>
             <li>ヘルスチェック(IH)を受けたら、運行状態（正常運行中／点検中）を載せた応答(SH)を自動で返せます</li>
+            <li>IFU側では1分周期のヘルスチェックを有効にでき、送信完了後1秒以内のENQ受信を通信正常として判定します</li>
           </ul>
         </article>
 
@@ -243,6 +247,9 @@
             <li><strong>HPC／TSS</strong> … STXで始まる11byte固定。1200,E,8,1</li>
             <li><strong>大興／リモート</strong> … SNDで始まるASCIIレコード（最大10件）。1200,N,8,1。パリティを使いません</li>
             <li>プロトコルを切り替えると、電文形式・通信条件・入力欄・受信の読み方がまとめて変わります</li>
+            <li>HPCは現状＋過去15件を保持し、過去情報なし・住戸記録なし・2棟以上の住戸要求にはNAKを返します</li>
+            <li>TSSはENQのACK以外5回／無応答256回、テキストのNAK／無応答5回を別々に数えて再送します</li>
+            <li>リモートの定時送信は受信装置→IFUです。IFUは定時アンサーバック後10秒まで警報送信を保留し、DTR／RTSもタイミングチャートに沿って制御できます</li>
             <li>受信した電文からプロトコルを判定します。一意に決まれば自動で切り替え、決められないときは候補と「どちらで読むと何になるか」を示します（詳しくは「困ったときは」）</li>
           </ul>
         </article>
@@ -364,10 +371,11 @@
             <label>動作<select id="locker4Action"><option value="response">宅配側：情報応答／変化通知</option><option value="request">システム側：情報要求</option></select></label>
             <label>機種No<input id="locker4Model" value="001" maxlength="3"></label>
             <label>1パケット件数<select id="locker4PacketSize"><option value="3">3件</option><option value="10" selected>10件</option></select></label>
-            <label>対象プロファイル<select id="locker4Profile"><option value="standard">標準</option><option value="vixus">VIXUS</option><option value="dearis">dearis</option><option value="adapter2">2方向アダプター</option></select></label>
+            <label>対象プロファイル<select id="locker4Profile"><option value="standard">標準（300ロッカー系）</option><option value="vFineVaz">V-fine / VAZ（100・No100）</option><option value="vFineVbz">V-fine / VBZ（100・No999）</option><option value="dashVhxLegacy">DASH VHX ～Ver2.03</option><option value="dashVhx">DASH VHX Ver2.04～</option><option value="dashWism">DASH WISM</option><option value="fagus">FAGUS</option><option value="vixus">VIXUS / 1Pr / Advance</option><option value="patmo">PATMOα</option><option value="dearis">dearis</option><option value="adapter2">2方向アダプター 1段</option><option value="adapter2Stage2">2方向アダプター 2段</option><option value="adapter2Stage3Port2">2方向アダプター 3段 Port2</option><option value="adapter2Stage3Port3">2方向アダプター 3段 Port3</option><option value="generic">汎用（仕様外値の試験用）</option></select></label>
             <label>送信方式<select id="locker4Transport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
             <label>表示選択<select id="locker4Filter"><option value="all">すべて表示</option><option value="selected">送信登録のみ</option><option value="stored">荷物ありのみ</option></select></label>
           </div>
+          <p class="callout" id="locker4ConstraintHint">—</p>
 
           <div class="locker-tools">
             <label>ロッカー数<input id="locker4Count" type="number" min="1" max="999" value="100"></label>
@@ -567,6 +575,7 @@
             <label>仕様Ver<select id="mcVersion"><option value="3">Ver3</option><option value="2">Ver2</option><option value="1">Ver1</option></select></label>
             <label>役割<select id="mcRole"><option value="MC">マンションコントローラ</option><option value="IC">インターホン制御装置</option></select></label>
             <label>システム<select id="mcTopology"><option value="standard">標準</option><option value="multiBuilding">多棟</option><option value="multiStation">1棟多局</option></select></label>
+            <label>対象機種<select id="mcProduct"><option value="generic">標準／汎用</option><option value="vixus-advance">VIXUS Advance</option></select></label>
             <label>KIND<select id="mcKind"><option value="30">30 初期化</option><option value="31">31 IC→MC 呼出</option><option value="32">32 住戸全情報</option><option value="33">33 MC→IC 呼出</option><option value="34">34 防犯</option><option value="35">35 警報</option><option value="36">36 宅配</option><option value="37">37 非接触キー</option><option value="38">38 メッセージ</option><option value="39">39 静止画</option><option value="3A">3A ヘルス</option><option value="3B">3B グループ</option></select></label>
             <label>CMD<select id="mcCommand"></select></label>
             <label>送信方式<select id="mcTransport"><option value="handshake">仕様手順（EOTなし）</option><option value="direct">電文のみ</option></select></label>
@@ -587,9 +596,10 @@
             </div>
           </fieldset>
           <div class="inline-options"><label><input id="mcUseSchema" type="checkbox" checked> 仕様定義でメッセージを組み立てる（外すとMESGを直接使う）</label></div>
-          <div class="inline-options"><label><input id="mcAutoResponse" type="checkbox"> 要求電文を受信したら台帳の応答コマンドで自動応答</label></div>
+          <div class="inline-options"><label><input id="mcAutoResponse" type="checkbox"> 要求電文を受信したら台帳の応答コマンドで自動応答</label><label><input id="mcDeliveryNotification" type="checkbox"> IC起動時：宅配通知あり</label></div>
+          <div class="inline-options"><span class="receive-hint" id="mcLifecycleState">起動シーケンス停止中</span></div>
           <div class="preview"><span>プレビュー</span><code id="mcPreview">—</code></div>
-          <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button></div>
+          <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button><button class="secondary requires-connection" id="mcLifecycleStart" disabled>起動・周期通信開始</button><button class="danger" id="mcLifecycleStop" disabled>起動・周期通信停止</button></div>
         </article>
       </section>
 
@@ -628,7 +638,7 @@
             <label>送信方式<select id="pevTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
             <label>ACK送出コード<select id="pevAckCode"><option value="16">10H</option><option value="48">30H</option></select></label>
           </div>
-          <div class="inline-options"><label><input id="pevAutoResponse" type="checkbox" checked> ヘルスチェックを受信したら運行状態で自動応答</label><label>運行状態<select id="pevCarState"><option value="normal">正常運行中（00）</option><option value="inspection">点検中（01）</option></select></label></div>
+          <div class="inline-options"><label><input id="pevAutoResponse" type="checkbox" checked> ヘルスチェックを受信したら運行状態で自動応答</label><label><input id="pevAutoHealth" type="checkbox"> IFU側で1分ごとにヘルスチェック</label><label>運行状態<select id="pevCarState"><option value="normal">正常運行中（00）</option><option value="inspection">点検中（01）</option></select></label><span class="receive-hint" id="pevHealthState">周期監視停止中</span></div>
           <p class="callout" id="pevHint">—</p>
           <div class="preview"><span>プレビュー</span><code id="pevPreview">—</code></div>
           <div class="actions"><button class="secondary" id="pevPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="pevSendButton" disabled>送信</button><button class="secondary requires-connection" id="pevHealthButton" disabled>ヘルスチェック送信</button><button class="secondary requires-connection" id="pevAckButton" disabled>ACK送出</button><button class="secondary requires-connection" id="pevEotButton" disabled>EOT送出</button></div>
@@ -696,7 +706,7 @@
         <article class="card form-card">
           <div class="form-grid cols-3">
             <label>プロトコル<select id="panaProtocol"><option value="hpc">HPC</option><option value="tss">TSS</option><option value="daiko">大興</option><option value="remote">リモート</option></select></label>
-            <label>動作側<select id="panaRole"><option value="ifu">ﾊﾟﾅｿﾆｯｸIFU（送信側）</option><option value="peer">他社通報機（受信側）</option></select></label>
+            <label>動作側<select id="panaRole"><option value="ifu">ﾊﾟﾅｿﾆｯｸIFU</option><option value="peer">他社通報機／リモート送信機</option></select></label>
             <label>送信方式<select id="panaTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
           </div>
 
@@ -740,7 +750,8 @@
               <tbody id="panaRecordRows"></tbody>
             </table></div>
             <p class="callout" id="panaRecordState">0/10レコード</p>
-            <div class="inline-options"><label><input id="panaAutoAnswerback" type="checkbox" checked> 受信した警報データ・定時送信へアンサーバックを自動送信</label></div>
+            <div class="inline-options"><label><input id="panaAutoAnswerback" type="checkbox" checked> 受信した警報データ・定時送信へアンサーバックを自動送信</label><label><input id="panaRemoteSignals" type="checkbox" checked> リモートのDTR／RTSタイミングを自動制御</label></div>
+            <p class="callout" id="panaRemoteTimingState" hidden>リモート送信待機なし</p>
           </div>
 
           <div class="preview"><span>プレビュー</span><code id="panaPreview">—</code></div>

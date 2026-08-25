@@ -37,9 +37,14 @@ const state = {
   panaHistories: {},
   panaHistoryPending: null,
   panaRecords: [],
+  panaRemoteAlarmBlockedUntil: 0,
+  panaRemoteGateTimer: null,
   // 大興／リモートのアンサーバックは伝送制御ではなく電文で届くため、
   // 制御コード待ちとは別の待ち行列で受け取る。
   panaAnswerWaiters: [],
+  mcLifecycle: null,
+  pevHealthTimer: null,
+  pevHealthMonitor: null,
   activeTransaction: null,
   lastIoAt: 0,
   manualReceiveStage: null,
@@ -98,6 +103,26 @@ const LOCKER4_BASIC_STATES = Object.freeze([0x30, 0x31]);
 const LOCKER4_DEARIS_STATES = Object.freeze([0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x40, 0x41, 0x42]);
 const LOCKER4_ROBOT_STATES = Object.freeze([0x40, 0x41, 0x42]);
 const DEFAULT_LOCKER_COUNT = 100;
+// Q48-005F 3章／6.3：システム・通信基板・2方向アダプター段数で
+// 最大ロッカー数、最大ロッカーNo、パケットNo上限、使用可能状態が変わる。
+// genericは旧プロファイル保存データを読み込むための明示的な仕様外試験枠。
+const LOCKER4_PROFILES = Object.freeze({
+  generic: Object.freeze({ label: "汎用（仕様外値の試験用）", maxLockers: 999, maxLockerNo: 999, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+  standard: Object.freeze({ label: "標準（300ロッカー系）", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  vFineVaz: Object.freeze({ label: "V-fine / VAZ", maxLockers: 100, maxLockerNo: 100, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  vFineVbz: Object.freeze({ label: "V-fine / VBZ", maxLockers: 100, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  dashVhxLegacy: Object.freeze({ label: "DASH VHX 外部通信基板 ～Ver2.03", maxLockers: 100, maxLockerNo: 100, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  dashVhx: Object.freeze({ label: "DASH VHX Ver2.04～", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  dashWism: Object.freeze({ label: "DASH WISM", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  fagus: Object.freeze({ label: "FAGUS", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  vixus: Object.freeze({ label: "VIXUS / VIXUS1Pr / Advance", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+  patmo: Object.freeze({ label: "PATMOα", maxLockers: 40, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_BASIC_STATES }),
+  dearis: Object.freeze({ label: "dearis", maxLockers: 300, maxLockerNo: 999, maxPacketNo: 33, states: LOCKER4_DEARIS_STATES }),
+  adapter2: Object.freeze({ label: "2方向アダプター 1段（2台）", maxLockers: 150, maxLockerNo: 650, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+  adapter2Stage2: Object.freeze({ label: "2方向アダプター 2段（4台）", maxLockers: 75, maxLockerNo: 575, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+  adapter2Stage3Port2: Object.freeze({ label: "2方向アダプター 3段・最終Port2（8台）", maxLockers: 37, maxLockerNo: 538, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+  adapter2Stage3Port3: Object.freeze({ label: "2方向アダプター 3段・最終Port3（8台）", maxLockers: 38, maxLockerNo: 537, maxPacketNo: 99, states: LOCKER4_BASIC_STATES }),
+});
 
 // Q48-006F 4.5：システム別の棟番号・個人番号制約。
 const KEY_PROFILES = Object.freeze({
@@ -599,6 +624,9 @@ function applyConnectionState(snapshot) {
   state.connectionOptions = state.connected && snapshot ? snapshot.options || null : null;
   updatePresetWarning();
   if (!state.connected) {
+    stopMcLifecycle("接続切断により起動・周期通信を停止しました");
+    $("pevAutoHealth").checked = false;
+    stopPanasonicElevatorHealth("接続切断により周期監視を停止しました");
     rejectControlWaiters(new Error("シリアル接続が切断されました"));
     rejectPanasonicAnswerWaiters(new Error("シリアル接続が切断されました"));
     resetFrameReader();
@@ -608,6 +636,10 @@ function applyConnectionState(snapshot) {
     resetLocker4Inbound();
     state.lastIoAt = 0;
     clearReceiveTimer();
+    if (state.panaRemoteGateTimer) clearTimeout(state.panaRemoteGateTimer);
+    state.panaRemoteGateTimer = null;
+    state.panaRemoteAlarmBlockedUntil = 0;
+    updateRemoteTimingState("接続切断によりリモート送信待機を解除しました");
     if (keyReceiver) keyReceiver.reset();
   }
   updateMetrics();
@@ -816,6 +848,7 @@ async function sendAutomaticResponse(valid, stage) {
 
 function handleInboundControl(bytes, consumedBySender) {
   if (consumedBySender || !viewUsesHandshake(state.currentView) || bytes.length !== 1) return;
+  if (bytes[0] === 0x05 && state.currentView === "panasonicElevator") resolvePanasonicElevatorHealthEnq();
   if (bytes[0] === 0x04 && state.currentView === "locker4") {
     clearReceiveTimer();
     let completed = null;
@@ -881,6 +914,8 @@ async function runHandshake(packets, options) {
   const fsm = new H.SendHandshakeFSM({
     packets,
     maxRetries: opts.maxRetries == null ? 5 : opts.maxRetries,
+    retryLimits: opts.retryLimits,
+    retryUnexpectedControl: opts.retryUnexpectedControl === true,
     sendEot: opts.sendEot !== false,
     textRetryMode: opts.textRetryMode || "restart",
   });
@@ -890,7 +925,8 @@ async function runHandshake(packets, options) {
   while (queue.length) {
     const event = queue.shift();
     if (event.type === "retry") {
-      addLog("warn", "RETRY", null, `${event.reason} / ${event.retriesUsed}/${event.maxRetries}`);
+      const count = event.retriesForKey == null ? event.retriesUsed : event.retriesForKey;
+      addLog("warn", "RETRY", null, `${event.reason} / ${count}/${event.maxRetries}`);
       continue;
     }
     if (event.type === "failed") {
@@ -1160,10 +1196,15 @@ function locker4State(value, index) {
   const stateByte = parseHexByte(value, `状態(${index + 1}行)`);
   const allowed = [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x40, 0x41, 0x42];
   if (!allowed.includes(stateByte)) throw new RangeError(`状態(${index + 1}行)が仕様範囲外です`);
-  const profile = $("locker4Profile").value;
-  if (profile === "adapter2" && ![0x30, 0x31].includes(stateByte)) throw new RangeError("2方向アダプターは30/31Hのみ対応です");
-  if (profile !== "dearis" && ![0x30, 0x31].includes(stateByte)) throw new RangeError("32～35H・40～42Hはdearisプロファイル専用です");
+  const profile = locker4ProfileInfo();
+  if (!profile.states.includes(stateByte)) {
+    throw new RangeError(`${profile.label}では状態${stateByte.toString(16).toUpperCase()}Hを使用できません`);
+  }
   return stateByte;
+}
+
+function locker4ProfileInfo() {
+  return LOCKER4_PROFILES[$("locker4Profile").value] || LOCKER4_PROFILES.standard;
 }
 
 function locker4ModelNo() {
@@ -1172,7 +1213,36 @@ function locker4ModelNo() {
 }
 
 function locker4AllowedStates() {
-  return $("locker4Profile").value === "dearis" ? LOCKER4_DEARIS_STATES : LOCKER4_BASIC_STATES;
+  return locker4ProfileInfo().states;
+}
+
+function syncLocker4Profile() {
+  const profile = locker4ProfileInfo();
+  $("locker4Count").max = String(profile.maxLockers);
+  $("locker4BulkFrom").max = String(profile.maxLockerNo);
+  $("locker4BulkTo").max = String(profile.maxLockerNo);
+  const packetLimit = profile.maxPacketNo + 1;
+  $("locker4ConstraintHint").textContent = `${profile.label}：1装置あたり最大${profile.maxLockers}ロッカー／最大ロッカーNo ${profile.maxLockerNo}`
+    + `／パケットNo 00～${String(profile.maxPacketNo).padStart(2, "0")}（最大${packetLimit}パケット）`
+    + (profile === LOCKER4_PROFILES.generic ? "。仕様外・異常系試験として明示選択されています" : "");
+}
+
+function validateLocker4Profile(lockers, packetSize) {
+  const profile = locker4ProfileInfo();
+  if (state.locker4Rows.length > profile.maxLockers) {
+    throw new RangeError(`${profile.label}の最大ロッカー数は${profile.maxLockers}です。ロッカー数を減らしてください`);
+  }
+  const maximumNo = state.locker4Rows.reduce((maximum, row) => Math.max(maximum, row.lockerNo), 0);
+  if (maximumNo > profile.maxLockerNo) {
+    throw new RangeError(`${profile.label}の最大ロッカーNoは${profile.maxLockerNo}です`);
+  }
+  if (Array.isArray(lockers) && lockers.length) {
+    const packets = Math.ceil(lockers.length / packetSize);
+    if (packets - 1 > profile.maxPacketNo) {
+      throw new RangeError(`${profile.label}のパケットNo上限${profile.maxPacketNo}を超えます。1パケット件数を増やすか送信登録を減らしてください`);
+    }
+  }
+  return profile;
 }
 
 function createLocker4Row(lockerNo) {
@@ -1281,6 +1351,7 @@ function locker4RowElement(row, allowed, api) {
 }
 
 function renderLocker4Table() {
+  syncLocker4Profile();
   const api = requireApi("Telegram4");
   const allowed = locker4AllowedStates();
   const filter = $("locker4Filter").value;
@@ -1302,7 +1373,8 @@ function renderLocker4Table() {
 }
 
 function applyLocker4Count() {
-  const count = integerValue("locker4Count", "ロッカー数", 1, 999);
+  const profile = locker4ProfileInfo();
+  const count = integerValue("locker4Count", "ロッカー数", 1, profile.maxLockers);
   const rows = state.locker4Rows;
   if (count < rows.length) rows.length = count;
   else while (rows.length < count) rows.push(createLocker4Row(rows.length + 1));
@@ -1359,11 +1431,17 @@ function commitLocker4Send(rows) {
 function buildLocker4Packets() {
   const api = requireApi("Telegram4");
   const modelNo = locker4ModelNo();
-  if ($("locker4Action").value === "request") return [api.buildRequestTelegram({ modelNo })];
+  if ($("locker4Action").value === "request") {
+    validateLocker4Profile([], Number($("locker4PacketSize").value));
+    return [api.buildRequestTelegram({ modelNo })];
+  }
+  const packetSize = Number($("locker4PacketSize").value);
+  const lockers = locker4Lockers();
+  validateLocker4Profile(lockers, packetSize);
   return api.buildResponsePackets({
     modelNo,
-    packetSize: Number($("locker4PacketSize").value),
-    lockers: locker4Lockers(),
+    packetSize,
+    lockers,
   });
 }
 
@@ -1588,7 +1666,10 @@ function handleApplicationFrame(view, frame, transportResponse, valid) {
     else if (view === "panasonic") handlePanasonicRequest(frame);
     else if (view === "panasonicElevator") handlePanasonicElevatorRequest(frame);
     else if (view === "locker4") handleLocker4Request(frame);
-    else if (view === "mansion") handleMansionRequest(frame);
+    else if (view === "mansion") {
+      handleMansionLifecycleFrame(frame);
+      handleMansionRequest(frame);
+    }
     else if (view === "elevator") handleElevatorRequest(frame);
   } catch (error) {
     logError(error, "自動応答の準備");
@@ -1882,16 +1963,13 @@ function rejectPanasonicAnswerWaiters(error) {
 async function sendPanasonicBlock(frame, forceHandshake = false) {
   const info = panasonicInfo();
   if (!forceHandshake && $("panaTransport").value === "direct") return transmit(frame, "frame");
-  // 仕様上の上限は256回だが、送信FSMが扱えるのは255回まで。
   const specRetries = $("panaRole").value === "ifu" ? info.ifuRetries : info.peerRetries;
-  const maxRetries = Math.min(specRetries, 255);
-  if (specRetries > maxRetries) {
-    addLog("info", "SEQ", null, `再送上限は仕様の${specRetries}回に対し${maxRetries}回で試験します`);
-  }
   return runHandshake([frame], {
     sendEot: false,
     textRetryMode: "sameText",
-    maxRetries,
+    maxRetries: specRetries,
+    retryLimits: info.retryLimits,
+    retryUnexpectedControl: true,
     linkTimeoutMs: info.linkTimeoutMs,
     textTimeoutMs: info.textTimeoutMs,
     // ENQ衝突時はIFUが優先する。
@@ -1899,8 +1977,23 @@ async function sendPanasonicBlock(frame, forceHandshake = false) {
   });
 }
 
+// HPC要求はフレーム形式だけでなく、IFUが実際に返せる履歴・住戸状態まで確認して
+// 電文ACK/NAKを決める。ここでNGにしないとACK送信後に「応答なし」となってしまう。
+function panasonicInboundApplicationError(frame) {
+  if (!panasonicIsBlock() || panasonicProtocol() !== panasonicApi().PROTOCOL.HPC || $("panaRole").value !== "ifu") return null;
+  const api = panasonicApi();
+  const parsed = api.parseBlockFrame(frame, { protocol: panasonicProtocol() });
+  if (!parsed.request) return null;
+  const history = panasonicHistory();
+  if (parsed.typeName === "historyRequest" && (!history || history.empty)) return "ヒストリー情報がないためNAK応答";
+  if (parsed.typeName === "dwellingRequest" && (!history || !history.dwellingFrame(parsed.buildingNo, parsed.roomNo))) {
+    return `${parsed.buildingNo}棟 ${String(parsed.roomNo).padStart(4, "0")}号室の送信済みイベントがないためNAK応答`;
+  }
+  return null;
+}
+
 // アンサーバックがNAK、または5秒間ない場合はリトライ送信（計3回）を行う。
-async function sendPanasonicRecord(frame, label = "警報データ") {
+async function sendPanasonicRecordCore(frame, label = "警報データ") {
   const info = panasonicInfo();
   if ($("panaTransport").value === "direct") return transmit(frame, "frame");
   const attempts = info.sendAttempts;
@@ -1930,6 +2023,63 @@ async function sendPanasonicRecord(frame, label = "警報データ") {
   }
   setSequence("失敗");
   throw new Error(`アンサーバックを受信できず、リトライ上限（計${attempts}回）に達しました`);
+}
+
+function updateRemoteTimingState(detail) {
+  const element = $("panaRemoteTimingState");
+  if (!element) return;
+  const remaining = Math.max(0, state.panaRemoteAlarmBlockedUntil - Date.now());
+  element.textContent = detail || (remaining > 0 ? `定時通信後の警報送信待機 ${Math.ceil(remaining / 1000)}秒` : "リモート送信待機なし");
+}
+
+function setRemoteAlarmGate(milliseconds) {
+  state.panaRemoteAlarmBlockedUntil = Date.now() + milliseconds;
+  if (state.panaRemoteGateTimer) clearTimeout(state.panaRemoteGateTimer);
+  state.panaRemoteGateTimer = setTimeout(() => {
+    state.panaRemoteGateTimer = null;
+    state.panaRemoteAlarmBlockedUntil = 0;
+    updateRemoteTimingState("定時通信後10秒が経過し、警報送信可能です");
+  }, milliseconds);
+  updateRemoteTimingState();
+}
+
+async function applyRemoteOutputSignals(signals, detail) {
+  if (panasonicProtocol() !== "remote" || !$("panaRemoteSignals").checked || !window.serialAPI || !state.connected) return;
+  const snapshot = await window.serialAPI.setSignals(signals);
+  if (typeof signals.dtr === "boolean") $("signalDtr").checked = signals.dtr;
+  if (typeof signals.rts === "boolean") $("signalRts").checked = signals.rts;
+  $("signalState").textContent = JSON.stringify(snapshot);
+  addLog("info", "REMOTE-SIGNAL", null, detail);
+}
+
+async function waitForRemoteAlarmGate(frame) {
+  if (panasonicProtocol() !== "remote" || $("panaRole").value !== "ifu") return;
+  const parsed = panasonicApi().parseRecordFrame(frame, { protocol: "remote" });
+  if (parsed.kind !== "alarm") return;
+  const remaining = state.panaRemoteAlarmBlockedUntil - Date.now();
+  if (remaining <= 0) return;
+  updateRemoteTimingState(`定時通信中に発生した警報を${Math.ceil(remaining / 1000)}秒待機します`);
+  addLog("warn", "REMOTE-WAIT", null, `定時通信アンサーバック後10秒まで警報送信を${remaining}ms保留`);
+  await sleep(remaining);
+  state.panaRemoteAlarmBlockedUntil = 0;
+  updateRemoteTimingState("警報送信待機を完了しました");
+}
+
+async function sendPanasonicRecord(frame, label = "警報データ") {
+  const remoteAlarm = panasonicProtocol() === "remote"
+    && $("panaRole").value === "ifu"
+    && panasonicApi().parseRecordFrame(frame, { protocol: "remote" }).kind === "alarm";
+  await waitForRemoteAlarmGate(frame);
+  if (remoteAlarm) await applyRemoteOutputSignals({ dtr: false, rts: false }, "警報送信開始: DTR/RTSをBUSYへ設定");
+  try {
+    return await sendPanasonicRecordCore(frame, label);
+  } finally {
+    if (remoteAlarm) {
+      await applyRemoteOutputSignals({ rts: true }, "アンサーバック完了: RTSを解除");
+      await sleep(1000);
+      await applyRemoteOutputSignals({ dtr: true }, "RTS解除から1秒後: DTRを解除");
+    }
+  }
 }
 
 async function sendPanasonicFrame(frame, label) {
@@ -2045,12 +2195,18 @@ function handlePanasonicRecordFrame(frame, valid) {
     }
     return;
   }
-  if (!$("panaAutoAnswerback").checked || $("panaRole").value !== "peer") return;
   const accepted = valid !== false && parsed !== null;
   const scheduled = parsed !== null && parsed.kind === "scheduled";
+  const expectedReceiver = scheduled ? "ifu" : "peer";
+  if (!$("panaAutoAnswerback").checked || $("panaRole").value !== expectedReceiver) return;
   scheduleAutoResponse("パナソニックアンサーバック", async () => {
+    if (scheduled) await applyRemoteOutputSignals({ dtr: false, rts: false }, "定時通信受信: DTR/RTSをBUSYへ設定");
     await transmit(api.buildAnswerback({ protocol, accepted, scheduled }), "response");
     addLog(accepted ? "info" : "warn", "AUTO", null, `受信電文へ${accepted ? "ACK" : "NAK"}アンサーバック`);
+    if (scheduled) {
+      await applyRemoteOutputSignals({ rts: true, dtr: true }, "定時通信アンサーバック完了: DTR/RTSを解除");
+      if (accepted) setRemoteAlarmGate(10_000);
+    }
   });
 }
 
@@ -2131,6 +2287,9 @@ function syncPanasonicForm() {
   $("panaAckButton").hidden = block;
   $("panaNakButton").hidden = block;
   $("panaPropertyField").hidden = !info.scheduled;
+  $("panaRemoteTimingState").hidden = !info.scheduled;
+  $("panaRemoteSignals").closest("label").hidden = !info.scheduled;
+  if (info.scheduled) updateRemoteTimingState();
 
   if (block) syncPanasonicInfoForm();
   else renderPanasonicRecords();
@@ -2227,6 +2386,12 @@ function syncPanasonicElevatorForm() {
   $("pevHint").textContent = fixed.length
     ? `${label}：${fixed.join("・")}が仕様上の固定値です`
     : `${label}：棟番号・住戸番号・LB番号を指定します`;
+  const canScheduleHealth = panasonicElevatorDirection() === api.DIRECTION.TO_ELEVATOR;
+  $("pevAutoHealth").disabled = !canScheduleHealth;
+  if (!canScheduleHealth && $("pevAutoHealth").checked) {
+    $("pevAutoHealth").checked = false;
+    stopPanasonicElevatorHealth("エレベータ側動作では周期ヘルスチェックを送信しません");
+  }
 
   if (state.currentView === "panasonicElevator") updatePresetWarning();
   renderReceiveMonitor("panasonicElevator");
@@ -2340,6 +2505,107 @@ async function sendPanasonicElevatorFrame(frame, forceHandshake = false) {
   throw new Error(`ACKを受信できず、リトライ上限（計${attempts}回）に達しました`);
 }
 
+function updatePanasonicElevatorHealthState(detail) {
+  const running = Boolean(state.pevHealthTimer);
+  $("pevHealthState").textContent = detail || (running ? "1分周期監視中" : "周期監視停止中");
+}
+
+function stopPanasonicElevatorHealth(detail = "周期監視停止中") {
+  if (state.pevHealthTimer) clearInterval(state.pevHealthTimer);
+  state.pevHealthTimer = null;
+  if (state.pevHealthMonitor) {
+    state.pevHealthMonitor.cancel();
+    state.pevHealthMonitor = null;
+  }
+  updatePanasonicElevatorHealthState(detail);
+}
+
+function createPanasonicElevatorHealthMonitor(timeoutMs) {
+  if (state.pevHealthMonitor) state.pevHealthMonitor.cancel();
+  let resolvePromise;
+  let rejectPromise;
+  const monitor = {
+    armed: false,
+    seen: false,
+    done: false,
+    timer: null,
+    promise: new Promise((resolve, reject) => { resolvePromise = resolve; rejectPromise = reject; }),
+    arm() {
+      if (this.done) return;
+      this.armed = true;
+      if (this.seen) return this.complete();
+      this.timer = setTimeout(() => {
+        if (this.done) return;
+        this.done = true;
+        rejectPromise(new Error("ヘルスチェック送信完了後1秒以内にENQを受信できませんでした"));
+      }, timeoutMs);
+    },
+    signal() {
+      if (this.done) return;
+      this.seen = true;
+      if (this.armed) this.complete();
+    },
+    complete() {
+      if (this.done) return;
+      this.done = true;
+      clearTimeout(this.timer);
+      resolvePromise();
+    },
+    cancel() {
+      if (this.done) return;
+      this.done = true;
+      clearTimeout(this.timer);
+      rejectPromise(new Error("ヘルスチェック監視を中止しました"));
+    },
+  };
+  monitor.promise.catch(() => undefined);
+  state.pevHealthMonitor = monitor;
+  return monitor;
+}
+
+function resolvePanasonicElevatorHealthEnq() {
+  if (state.pevHealthMonitor) state.pevHealthMonitor.signal();
+}
+
+async function runPanasonicElevatorHealthCheck() {
+  const api = panasonicElevatorApi();
+  if (panasonicElevatorDirection() !== api.DIRECTION.TO_ELEVATOR) throw new Error("ヘルスチェックはﾊﾟﾅｿﾆｯｸIFU側から送信します");
+  const monitor = createPanasonicElevatorHealthMonitor(api.TIMING.healthResponseMs);
+  try {
+    const frame = api.healthRequest();
+    $("pevPreview").textContent = toHex(frame);
+    updatePanasonicElevatorHealthState("ヘルスチェック送信中");
+    await sendPanasonicElevatorFrame(frame);
+    monitor.arm();
+    updatePanasonicElevatorHealthState("応答ENQ待ち（1秒）");
+    await monitor.promise;
+    addLog("info", "PEV-HEALTH", null, "送信完了後1秒以内にENQを受信：通信正常");
+    updatePanasonicElevatorHealthState("通信正常");
+  } finally {
+    if (state.pevHealthMonitor === monitor) state.pevHealthMonitor = null;
+  }
+}
+
+function startPanasonicElevatorHealth() {
+  const api = panasonicElevatorApi();
+  if (!state.connected) throw new Error("シリアルポートが未接続です");
+  if (panasonicElevatorDirection() !== api.DIRECTION.TO_ELEVATOR) throw new Error("周期ヘルスチェックはﾊﾟﾅｿﾆｯｸIFU側で使用します");
+  if (state.pevHealthTimer) clearInterval(state.pevHealthTimer);
+  state.pevHealthTimer = setInterval(() => {
+    if (!state.connected || state.currentView !== "panasonicElevator") return;
+    if (state.activeTransaction) {
+      addLog("warn", "PEV-HEALTH", null, `周期ヘルスチェックを保留: ${state.activeTransaction}の通信中です`);
+      return;
+    }
+    withTransaction("周期ヘルスチェック", runPanasonicElevatorHealthCheck)
+      .catch((error) => {
+        updatePanasonicElevatorHealthState("通信異常");
+        logError(error, "周期ヘルスチェック");
+      });
+  }, api.TIMING.healthIntervalMs);
+  updatePanasonicElevatorHealthState("1分周期監視中（次回は60秒後）");
+}
+
 async function sendPanasonicElevator() {
   const frame = previewPanasonicElevator();
   return sendPanasonicElevatorFrame(frame);
@@ -2381,10 +2647,13 @@ function applyReceivedPanasonicElevator(result) {
 // Q48-005F：宅配側として動作しているときだけ、情報要求へ現在のロッカーデータで応答する。
 function handleLocker4Request(frame) {
   if (!$("locker4AutoResponse").checked || $("locker4Action").value !== "response") return;
+  const lockers = locker4CurrentLockers();
+  const packetSize = Number($("locker4PacketSize").value);
+  validateLocker4Profile(lockers, packetSize);
   const result = requireApi("AutoResponder").locker4Response(frame, {
-    lockers: locker4CurrentLockers(),
+    lockers,
     modelNo: locker4ModelNo(),
-    packetSize: Number($("locker4PacketSize").value),
+    packetSize,
   });
   if (!result || logUnsupportedAutoResponse(result)) return;
   scheduleAutoResponse("4線式自動応答", async () => {
@@ -2404,12 +2673,24 @@ function handleLocker4Request(frame) {
 
 // Q48-008I：KIND/CMD台帳で応答コマンドが確定する要求にだけ応答する。
 function handleMansionRequest(frame) {
+  if (state.mcLifecycle) {
+    const api = requireApi("MansionController");
+    const incomingRole = $("mcRole").value === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
+    const parsed = api.parseFrame(frame, {
+      version: Number($("mcVersion").value),
+      from: incomingRole,
+      product: $("mcProduct").value,
+    });
+    // 起動シーケンスとヘルスチェックはライフサイクル機能が応答するため二重送信しない。
+    if ([api.KIND.INITIALIZATION, api.KIND.HEALTH_CHECK].includes(parsed.kind)) return;
+  }
   if (!$("mcAutoResponse").checked) return;
   const api = requireApi("MansionController");
   const result = requireApi("AutoResponder").mansionResponse(frame, {
     version: Number($("mcVersion").value),
     topology: mcTopology(api),
     role: $("mcRole").value,
+    product: $("mcProduct").value,
     message: $("mcResponseMessage").value,
   });
   if (!result || logUnsupportedAutoResponse(result)) return;
@@ -2418,6 +2699,143 @@ function handleMansionRequest(frame) {
     if ($("mcTransport").value === "direct") await transmit(result.frame, "frame");
     else await runHandshake([result.frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC" });
   });
+}
+
+function updateMcLifecycleState(detail) {
+  const lifecycle = state.mcLifecycle;
+  const element = $("mcLifecycleState");
+  if (lifecycle) {
+    const phase = lifecycle.healthTimer ? "通信接続済み・30秒ヘルスチェック中" : "初期化シーケンス中（10秒再送）";
+    element.textContent = `${lifecycle.role}：${phase}${detail ? ` — ${detail}` : ""}`;
+  } else {
+    element.textContent = detail || "起動シーケンス停止中";
+  }
+  $("mcLifecycleStop").disabled = !lifecycle;
+}
+
+function clearMcLifecycleTimer(name) {
+  if (!state.mcLifecycle || !state.mcLifecycle[name]) return;
+  clearInterval(state.mcLifecycle[name]);
+  state.mcLifecycle[name] = null;
+}
+
+function stopMcLifecycle(detail = "起動・周期通信を停止しました") {
+  if (state.mcLifecycle) {
+    clearMcLifecycleTimer("initTimer");
+    clearMcLifecycleTimer("healthTimer");
+  }
+  state.mcLifecycle = null;
+  updateMcLifecycleState(detail);
+}
+
+async function sendMcLifecycleFrame(frame, label) {
+  if (!state.connected) throw new Error("シリアルポートが未接続です");
+  if ($("mcTransport").value === "direct") await transmit(frame, "frame");
+  else await runHandshake([frame], {
+    sendEot: false,
+    textRetryMode: "sameText",
+    priority: $("mcRole").value === "IC",
+  });
+  addLog("info", "MC-LIFE", frame, label);
+}
+
+function queueMcLifecycleFrame(label, build) {
+  const lifecycle = state.mcLifecycle;
+  if (!lifecycle || !state.connected) return;
+  if (state.activeTransaction) {
+    addLog("warn", "MC-LIFE", null, `${label}を保留: ${state.activeTransaction}の通信中です`);
+    return;
+  }
+  withTransaction(label, async () => {
+    if (!state.mcLifecycle || state.mcLifecycle !== lifecycle) return;
+    await sendMcLifecycleFrame(build(), label);
+  }).catch((error) => logError(error, label));
+}
+
+function startMcHealthChecks(detail) {
+  const lifecycle = state.mcLifecycle;
+  if (!lifecycle || lifecycle.healthTimer) return;
+  clearMcLifecycleTimer("initTimer");
+  lifecycle.healthTimer = setInterval(() => {
+    queueMcLifecycleFrame("MCヘルスチェック", () => requireApi("MansionController").buildHealthCheckRequest({
+      version: lifecycle.version,
+      from: lifecycle.role,
+    }));
+  }, 30_000);
+  updateMcLifecycleState(detail || "通信接続開始。次回ヘルスチェックは30秒後です");
+}
+
+async function startMcLifecycle() {
+  if (!state.connected) throw new Error("シリアルポートが未接続です");
+  stopMcLifecycle("起動シーケンスを開始します");
+  const api = requireApi("MansionController");
+  const lifecycle = {
+    role: $("mcRole").value,
+    version: Number($("mcVersion").value),
+    product: $("mcProduct").value,
+    initTimer: null,
+    healthTimer: null,
+    sawInitializationRequest: false,
+    sawConnectionStart: false,
+    sawInitializationComplete: false,
+  };
+  state.mcLifecycle = lifecycle;
+
+  const initialFrame = lifecycle.role === api.ROLE.IC
+    ? api.buildInitializationRequest({ version: lifecycle.version, deliveryNotification: $("mcDeliveryNotification").checked })
+    : api.buildInitializationComplete({ version: lifecycle.version });
+  await sendMcLifecycleFrame(initialFrame, lifecycle.role === api.ROLE.IC ? "初期化要求" : "初期化完了");
+  lifecycle.initTimer = setInterval(() => {
+    if (!state.mcLifecycle || state.mcLifecycle !== lifecycle) return;
+    const complete = lifecycle.role === api.ROLE.IC
+      ? lifecycle.sawInitializationComplete
+      : lifecycle.sawInitializationRequest && lifecycle.sawConnectionStart;
+    if (complete) return clearMcLifecycleTimer("initTimer");
+    queueMcLifecycleFrame(lifecycle.role === api.ROLE.IC ? "初期化要求10秒再送" : "初期化完了10秒再送", () => (
+      lifecycle.role === api.ROLE.IC
+        ? api.buildInitializationRequest({ version: lifecycle.version, deliveryNotification: $("mcDeliveryNotification").checked })
+        : api.buildInitializationComplete({ version: lifecycle.version })
+    ));
+  }, 10_000);
+  updateMcLifecycleState("最初の初期化電文を送信しました");
+}
+
+function handleMansionLifecycleFrame(frame) {
+  const lifecycle = state.mcLifecycle;
+  if (!lifecycle) return;
+  const api = requireApi("MansionController");
+  const incomingRole = lifecycle.role === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
+  const parsed = api.parseFrame(frame, {
+    version: lifecycle.version,
+    from: incomingRole,
+    product: lifecycle.product,
+  });
+  if (parsed.kind === api.KIND.INITIALIZATION && parsed.command === 0x41 && lifecycle.role === api.ROLE.MC) {
+    lifecycle.sawInitializationRequest = true;
+    queueMcLifecycleFrame("初期化要求への初期化完了", () => api.buildInitializationComplete({ version: lifecycle.version }));
+    updateMcLifecycleState("初期化要求を受信しました");
+    return;
+  }
+  if (parsed.kind === api.KIND.INITIALIZATION && parsed.command === 0x42 && lifecycle.role === api.ROLE.IC) {
+    if (lifecycle.sawInitializationComplete) return;
+    lifecycle.sawInitializationComplete = true;
+    clearMcLifecycleTimer("initTimer");
+    queueMcLifecycleFrame("通信接続開始", () => api.buildConnectionStart({ version: lifecycle.version }));
+    startMcHealthChecks("初期化完了を受信し、通信接続開始を送信します");
+    return;
+  }
+  if (parsed.kind === api.KIND.INITIALIZATION && parsed.command === 0x43 && lifecycle.role === api.ROLE.MC) {
+    lifecycle.sawConnectionStart = true;
+    if (lifecycle.sawInitializationRequest) clearMcLifecycleTimer("initTimer");
+    startMcHealthChecks("通信接続開始を受信しました");
+    return;
+  }
+  if (parsed.kind === api.KIND.HEALTH_CHECK && parsed.command === 0x41) {
+    queueMcLifecycleFrame("MCヘルスチェック応答", () => api.buildHealthCheckResponse({
+      version: lifecycle.version,
+      from: lifecycle.role,
+    }));
+  }
 }
 
 // Q46-005J 4.5.1：EV側として動作しているとき、ECALLへ動作中／停止中情報を返す。
@@ -2451,6 +2869,8 @@ function mcAddressHelper(api) {
   const options = {
     version: Number($("mcVersion").value),
     topology,
+    product: $("mcProduct").value,
+    vixusAdvance: $("mcProduct").value === api.PRODUCT.VIXUS_ADVANCE,
     building: $("mcBuilding").value.trim(),
   };
   const addressType = type === "room" ? api.ADDRESS_TYPE.RESIDENCE
@@ -2638,6 +3058,7 @@ function buildMcFrame() {
     message,
     version: Number($("mcVersion").value),
     from: $("mcRole").value,
+    product: $("mcProduct").value,
     topology,
   };
   const builder = api.buildFrame || api.buildTelegram || api.build;
@@ -2653,6 +3074,7 @@ function refreshMcCommands() {
   const definitions = api.listCommandDefinitions({
     version: Number($("mcVersion").value),
     from: $("mcRole").value,
+    product: $("mcProduct").value,
   }).filter((definition) => definition.kind === kind);
   $("mcCommand").replaceChildren();
   for (const definition of definitions) {
@@ -4138,6 +4560,7 @@ function describeFrame(view, frame) {
     const value = (api.parseFrame || api.parseTelegram || api.parse).call(api, frame, {
       version: Number($("mcVersion").value),
       from: incomingRole,
+      product: $("mcProduct").value,
     });
     return `MC KIND=${Number(value.kind).toString(16).toUpperCase()} CMD=${Number(value.command == null ? value.cmd : value.command).toString(16).toUpperCase()}`;
   }
@@ -4171,6 +4594,13 @@ function inspectReceive(bytes, at) {
     let valid = true;
     try {
       addLog("info", "PARSE", null, describeFrame(view, event.bytes));
+      if (view === "panasonic") {
+        const applicationError = panasonicInboundApplicationError(event.bytes);
+        if (applicationError) {
+          valid = false;
+          addLog("warn", "VALIDATE", event.bytes, applicationError);
+        }
+      }
     } catch (error) {
       logError(error, "受信電文検証");
       valid = false;
@@ -4198,6 +4628,11 @@ function navigate(view) {
   if (state.activeTransaction && view !== state.currentView) {
     toast(`${state.activeTransaction}の通信中は画面を切り替えられません`, true);
     return;
+  }
+  if (state.currentView === "mansion" && view !== "mansion") stopMcLifecycle("画面切替により起動・周期通信を停止しました");
+  if (state.currentView === "panasonicElevator" && view !== "panasonicElevator") {
+    $("pevAutoHealth").checked = false;
+    stopPanasonicElevatorHealth("画面切替により周期監視を停止しました");
   }
   state.currentView = view;
   resetFrameReader();
@@ -4260,7 +4695,7 @@ function applyLogLimit() {
 function collectProfile() {
   const values = {};
   document.querySelectorAll("input[id], select[id], textarea[id]").forEach((element) => {
-    if (["serialPort", "profileImportFile", "logSearch"].includes(element.id) || element.type === "file") return;
+    if (["serialPort", "profileImportFile", "logSearch", "pevAutoHealth"].includes(element.id) || element.type === "file") return;
     values[element.id] = element.type === "checkbox" ? { checked: element.checked } : { value: element.value };
   });
   return {
@@ -4280,7 +4715,7 @@ function applyProfile(profile) {
   }
   const delayedCommand = profile.values.mcCommand;
   for (const [id, setting] of Object.entries(profile.values)) {
-    if (id === "mcCommand") continue;
+    if (id === "mcCommand" || id === "pevAutoHealth") continue;
     const element = $(id);
     if (!element || !setting || typeof setting !== "object") continue;
     if (element.type === "checkbox" && typeof setting.checked === "boolean") element.checked = setting.checked;
@@ -4289,6 +4724,7 @@ function applyProfile(profile) {
       element.value = setting.value;
     }
   }
+  $("pevAutoHealth").checked = false;
   // v1.0で保存した「ルーム5桁」は、棟番号と部屋番号へ分離して引き継ぐ。
   const legacyRoom = profile.values.keyRoom && profile.values.keyRoom.value;
   if (!profile.values.keyBuilding && typeof legacyRoom === "string" && /^\d{5}$/.test(legacyRoom)) {
@@ -4456,7 +4892,11 @@ function bindEvents() {
   $("connectButton").addEventListener("click", connect);
   $("disconnectButton").addEventListener("click", disconnect);
   $("serialPreset").addEventListener("change", (event) => applySerialPreset(event.target.value));
-  ["mcVersion", "mcRole", "mcKind"].forEach((id) => $(id).addEventListener("change", refreshMcCommands));
+  ["mcVersion", "mcRole", "mcProduct"].forEach((id) => $(id).addEventListener("change", () => {
+    stopMcLifecycle("設定変更により起動・周期通信を停止しました");
+    refreshMcCommands();
+  }));
+  $("mcKind").addEventListener("change", refreshMcCommands);
   ["mcCommand", "mcUseSchema", "mcAddressType"].forEach((id) => $(id).addEventListener("change", renderMcPayload));
   $("mcAlarmBits").addEventListener("change", updateMcAlarmSummary);
   $("mcAlarmClear").addEventListener("click", () => {
@@ -4547,6 +4987,13 @@ function bindEvents() {
       else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC", idleBeforeEnqMs: $("mcRole").value === "IC" ? 50 : 0 });
     }); } catch (error) { logError(error, "MC送信"); }
   });
+  $("mcLifecycleStart").addEventListener("click", () => {
+    withTransaction("MC起動シーケンス", startMcLifecycle).catch((error) => {
+      stopMcLifecycle("起動シーケンスを開始できませんでした");
+      logError(error, "MC起動シーケンス");
+    });
+  });
+  $("mcLifecycleStop").addEventListener("click", () => stopMcLifecycle());
   $("elevatorSendButton").addEventListener("click", async () => {
     try { await withTransaction("エレベータ", async () => {
       const frame = await preview("elevatorPreview", buildElevatorFrame);
@@ -4619,6 +5066,8 @@ function bindEvents() {
   });
   $("panaScheduledButton").addEventListener("click", () => {
     withTransaction("定時送信", async () => {
+      if (panasonicProtocol() !== panasonicApi().PROTOCOL.REMOTE) throw new Error("定時送信はリモートプロトコルで使用します");
+      if ($("panaRole").value !== "peer") throw new Error("定時送信は受信装置側からﾊﾟﾅｿﾆｯｸIFUへ送信します");
       const frame = panasonicApi().buildScheduledFrame({ protocol: panasonicProtocol(), propertyCode: $("panaProperty").value });
       $("panaPreview").textContent = panasonicPreviewText(frame);
       await sendPanasonicRecord(frame, "定時送信");
@@ -4649,13 +5098,21 @@ function bindEvents() {
     withTransaction("エレベータ（パナソニック）", sendPanasonicElevator).catch((error) => logError(error, "パナソニックEV送信"));
   });
   $("pevHealthButton").addEventListener("click", () => {
-    withTransaction("ヘルスチェック", async () => {
-      const api = panasonicElevatorApi();
-      if (panasonicElevatorDirection() !== api.DIRECTION.TO_ELEVATOR) throw new Error("ヘルスチェックはﾊﾟﾅｿﾆｯｸIFU側から送信します");
-      const frame = api.healthRequest();
-      $("pevPreview").textContent = toHex(frame);
-      await sendPanasonicElevatorFrame(frame);
-    }).catch((error) => logError(error, "ヘルスチェック送信"));
+    withTransaction("ヘルスチェック", runPanasonicElevatorHealthCheck)
+      .catch((error) => {
+        updatePanasonicElevatorHealthState("通信異常");
+        logError(error, "ヘルスチェック送信");
+      });
+  });
+  $("pevAutoHealth").addEventListener("change", () => {
+    try {
+      if ($("pevAutoHealth").checked) startPanasonicElevatorHealth();
+      else stopPanasonicElevatorHealth();
+    } catch (error) {
+      $("pevAutoHealth").checked = false;
+      stopPanasonicElevatorHealth("周期監視を開始できませんでした");
+      logError(error, "周期ヘルスチェック");
+    }
   });
   $("pevAckButton").addEventListener("click", () => {
     withTransaction("ACK送出", async () => {

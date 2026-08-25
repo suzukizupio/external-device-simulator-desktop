@@ -50,6 +50,13 @@ test("4プロトコルの形式と通信条件が仕様どおり", function () {
   assert.equal(P.protocolInfo("tss").history, false);
   assert.equal(P.protocolInfo("remote").scheduled, true);
   assert.equal(P.protocolInfo("daiko").scheduled, false);
+  assert.deepEqual(P.protocolInfo("tss").retryLimits, {
+    linkResponse: 5,
+    linkTimeout: 256,
+    textResponse: 5,
+    textTimeout: 5,
+    other: 5,
+  });
   assert.throws(() => P.protocolInfo("unknown"), /未知のプロトコル/);
 });
 
@@ -174,9 +181,10 @@ test("要求電文の固定値を守らせる", function () {
   assert.equal(P.parse(request, { protocol: "hpc" }).request, true);
   assert.throws(() => P.buildFrame({ protocol: "hpc", type: 0x30, buildingNo: 1 }), /棟番号・住戸番号は00固定/);
   assert.throws(() => P.buildFrame({ protocol: "hpc", type: 0x30, info: 0x01 }), /警報情報は00H固定/);
-  // 住戸情報要求は警報情報だけが00H固定で、対象住戸は指定する。
-  const dwelling = P.buildFrame({ protocol: "hpc", type: 0x10, buildingNo: 2, roomNo: 305 });
+  // 住戸情報要求は警報情報だけが00H固定で、0棟／1棟の対象住戸を指定する。
+  const dwelling = P.buildFrame({ protocol: "hpc", type: 0x10, buildingNo: 1, roomNo: 305 });
   assert.equal(P.parse(dwelling, { protocol: "hpc" }).roomNo, 305);
+  assert.throws(() => P.buildFrame({ protocol: "hpc", type: 0x10, buildingNo: 2, roomNo: 305 }), /2棟以上の場合はNAK応答/);
   assert.throws(() => P.buildFrame({ protocol: "hpc", type: 0x10, info: 0x01 }), /警報情報は00H固定/);
 });
 
@@ -298,7 +306,7 @@ test("ヒストリーは現状から1つ前へ進み、保持件数でリング�
   for (const roomNo of [101, 102, 103]) {
     history.record({ type: 0x00, infoBits: [0], buildingNo: 1, roomNo });
   }
-  assert.equal(history.size, 3);
+  assert.equal(history.size, 2);
   assert.equal(history.peek().roomNo, 103);
   // 1回目の要求は「1つ前」、2回目は「2つ前」、3回目で現状へ戻る。
   const rooms = [history.next(), history.next(), history.next()].map((entry) => entry.roomNo);
@@ -318,7 +326,8 @@ test("ヒストリーは15件を超えると古い情報を捨てる", function 
   }
   assert.equal(history.size, P.HISTORY_LIMIT);
   assert.equal(history.peek().roomNo, 20);
-  assert.equal(history.toArray()[P.HISTORY_LIMIT - 1].roomNo, 6);
+  assert.equal(history.toArray().length, P.HISTORY_LIMIT + 1);
+  assert.equal(history.toArray()[P.HISTORY_LIMIT].roomNo, 5);
   // 住戸情報要求はポインタを動かさず、指定住戸の最新状態を返す。
   history.next();
   const pointer = history.pointer;
@@ -330,6 +339,18 @@ test("ヒストリーは15件を超えると古い情報を捨てる", function 
   // 要求電文は記録できない。
   assert.throws(() => history.record({ type: 0x30 }), /要求電文はヒストリーに記録できません/);
   assert.throws(() => new P.PanasonicHistory({ protocol: "tss" }), /ヒストリー応答はありません/);
+});
+
+test("現状しかないときはヒストリー情報なしとしてNAK対象になる", function () {
+  const history = new P.PanasonicHistory({ protocol: "hpc" });
+  history.record({ type: 0x00, infoBits: [0], buildingNo: 1, roomNo: 101 });
+  assert.equal(history.size, 0);
+  assert.equal(history.empty, true);
+  assert.equal(history.peek().roomNo, 101);
+  assert.equal(history.next(), null);
+  assert.equal(history.nextFrame(), null);
+  // 現状は住戸情報要求への応答には使用できる。
+  assert.equal(P.parse(history.dwellingFrame(1, 101), { protocol: "hpc" }).roomNo, 101);
 });
 
 // ------------------------------------------------------- プロトコルの判定

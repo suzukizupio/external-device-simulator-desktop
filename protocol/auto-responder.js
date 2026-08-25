@@ -47,6 +47,7 @@
       MansionController.getCommandDefinition(definition.kind, definition.command, {
         version: options.version,
         from: options.role,
+        product: options.product,
       });
       return true;
     } catch (_error) {
@@ -62,6 +63,7 @@
       MansionController.validateAddress(candidate, {
         version: options.version,
         topology: options.topology,
+        vixusAdvance: options.product === MansionController.PRODUCT.VIXUS_ADVANCE,
       });
       return candidate;
     } catch (_error) {
@@ -75,6 +77,7 @@
     const parsed = MansionController.validateFrame(frame, {
       version: opts.version,
       from: peerRole(role),
+      product: opts.product,
     });
     const request = parsed.commandDefinition || MansionController.findCommandDefinition(parsed.kind, parsed.command);
     if (!request) return unsupported("台帳にないKIND/CMDです");
@@ -85,7 +88,7 @@
       definition.responseTo === request.command &&
       (definition.type === COMMAND_TYPE.RESPONSE || definition.type === COMMAND_TYPE.COMPLETION) &&
       (opts.version == null || definition.versions.includes(opts.version)) &&
-      canSend(definition, { version: opts.version, role }));
+      canSend(definition, { version: opts.version, role, product: opts.product }));
     // 応答電文があればそれを返し、初期化要求のように応答が完了電文しかない場合はそれを使う。
     const answer = candidates.find((definition) => definition.type === COMMAND_TYPE.RESPONSE) ||
       candidates.find((definition) => definition.type === COMMAND_TYPE.COMPLETION && !definition.bulk) || null;
@@ -107,6 +110,7 @@
         message,
         version: opts.version,
         from: role,
+        product: opts.product,
       }),
       definition: answer,
       request,

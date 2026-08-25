@@ -40,7 +40,9 @@
   class SendHandshakeFSM {
     constructor(options) {
       options = options || {};
-      this.maxRetries = options.maxRetries == null ? 5 : integer(options.maxRetries, "最大再送回数", 0, 255);
+      this.maxRetries = options.maxRetries == null ? 5 : integer(options.maxRetries, "最大再送回数", 0, 65535);
+      this.retryLimits = this._normalizeRetryLimits(options.retryLimits);
+      this.retryUnexpectedControl = options.retryUnexpectedControl === true;
       this.sendEot = options.sendEot !== false;
       this.textRetryMode = options.textRetryMode == null ? "restart" : options.textRetryMode;
       if (this.textRetryMode !== "restart" && this.textRetryMode !== "sameText") {
@@ -56,6 +58,7 @@
       this.packets = [];
       this.packetIndex = 0;
       this.retriesUsed = 0;
+      this.retryCounts = {};
       this.lastFailure = null;
     }
 
@@ -69,6 +72,7 @@
         packetIndex: this.packetIndex,
         packetCount: this.packets.length,
         retriesUsed: this.retriesUsed,
+        retryCounts: Object.assign({}, this.retryCounts),
         maxRetries: this.maxRetries,
         sendEot: this.sendEot,
         textRetryMode: this.textRetryMode,
@@ -82,6 +86,7 @@
       this.packets = normalizePackets(source);
       this.packetIndex = 0;
       this.retriesUsed = 0;
+      this.retryCounts = {};
       this.lastFailure = null;
       this.state = STATE.WAIT_LINK_ACK;
       return this._events(this._sendControl("ENQ", CODE.ENQ));
@@ -93,7 +98,11 @@
 
       if (value === CODE.NAK) return this._retry("nak");
       if (value === CODE.ENQ) return this._events(this._event("collision", { value }));
-      if (value !== CODE.ACK) return this._events(this._event("ignored", { reason: "unexpected-control", value }));
+      if (value !== CODE.ACK) {
+        return this.retryUnexpectedControl
+          ? this._retry("unexpected-control")
+          : this._events(this._event("ignored", { reason: "unexpected-control", value }));
+      }
 
       if (this.state === STATE.WAIT_LINK_ACK) {
         this.state = STATE.WAIT_TEXT_ACK;
@@ -138,15 +147,22 @@
 
     _retry(reason) {
       this.lastFailure = reason;
-      if (this.retriesUsed >= this.maxRetries) {
+      const retryKey = this._retryKey(reason);
+      const maxRetries = this.retryLimits ? this.retryLimits[retryKey] : this.maxRetries;
+      const retriesForKey = this.retryLimits ? (this.retryCounts[retryKey] || 0) : this.retriesUsed;
+      if (retriesForKey >= maxRetries) {
         this.state = STATE.FAILED;
         return this._events(this._event("failed", {
           reason,
+          retryKey,
           packetIndex: this.packetIndex,
           retriesUsed: this.retriesUsed,
+          retriesForKey,
+          maxRetries,
         }));
       }
       this.retriesUsed += 1;
+      this.retryCounts[retryKey] = (this.retryCounts[retryKey] || 0) + 1;
       const failedPacketIndex = this.packetIndex;
       if (this.state === STATE.WAIT_TEXT_ACK && this.textRetryMode === "sameText") {
         const retrySameText = this._event("retry", {
@@ -154,7 +170,9 @@
           failedPacketIndex,
           restartPacketIndex: failedPacketIndex,
           retriesUsed: this.retriesUsed,
-          maxRetries: this.maxRetries,
+          retriesForKey: this.retryCounts[retryKey],
+          retryKey,
+          maxRetries,
         });
         return this._events(retrySameText, this._event("send", {
           kind: "TEXT",
@@ -171,9 +189,30 @@
         failedPacketIndex,
         restartPacketIndex: 0,
         retriesUsed: this.retriesUsed,
-        maxRetries: this.maxRetries,
+        retriesForKey: this.retryCounts[retryKey],
+        retryKey,
+        maxRetries,
       });
       return this._events(retry, this._sendControl("ENQ", CODE.ENQ));
+    }
+
+    _normalizeRetryLimits(value) {
+      if (value == null) return null;
+      if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("retryLimitsはオブジェクトで指定してください");
+      const keys = ["linkResponse", "linkTimeout", "textResponse", "textTimeout", "other"];
+      const result = {};
+      for (const key of keys) {
+        const fallback = key === "other" ? this.maxRetries : (value.other == null ? this.maxRetries : value.other);
+        result[key] = value[key] == null ? integer(fallback, `${key}再送回数`, 0, 65535) : integer(value[key], `${key}再送回数`, 0, 65535);
+      }
+      return Object.freeze(result);
+    }
+
+    _retryKey(reason) {
+      const link = this.state === STATE.WAIT_LINK_ACK;
+      if (reason === "timeout") return link ? "linkTimeout" : "textTimeout";
+      if (reason === "nak" || reason === "unexpected-control") return link ? "linkResponse" : "textResponse";
+      return "other";
     }
 
     _sendControl(kind, value) {

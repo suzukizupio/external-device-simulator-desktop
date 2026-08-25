@@ -46,9 +46,17 @@
       label: "TSS", style: STYLE.BLOCK, document: "通信仕様書（新TSSプロトコル）",
       serial: Object.freeze({ baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even" }),
       history: false, dwellingRequest: false, scheduled: false,
-      // ENQ応答がACK以外はMAX5回、ENQ応答タイムアウトはMAX256回、テキストNAKはMAX5回。
+      // ENQ応答がACK以外はMAX5回、ENQ応答タイムアウトはMAX256回、
+      // テキストNAK／応答タイムアウトはMAX5回。送信側の役割ではなく失敗理由で決まる。
       linkTimeoutMs: 1000, textTimeoutMs: 1000, textWaitMs: 2000,
-      ifuRetries: 5, peerRetries: 256,
+      ifuRetries: 256, peerRetries: 256,
+      retryLimits: Object.freeze({
+        linkResponse: 5,
+        linkTimeout: 256,
+        textResponse: 5,
+        textTimeout: 5,
+        other: 5,
+      }),
     }),
     [PROTOCOL.DAIKO]: Object.freeze({
       label: "大興", style: STYLE.RECORD, document: "通信仕様書（大興プロトコル）",
@@ -365,6 +373,9 @@
     if (entry.request && entry.addressed === false && (buildingNo !== 0 || roomNo !== 0)) {
       throw new Error(entry.label + "の棟番号・住戸番号は00固定です");
     }
+    if (entry.name === "dwellingRequest" && buildingNo >= 2) {
+      throw new Error("住戸情報要求の棟指定が2棟以上の場合はNAK応答です");
+    }
 
     const frame = [CODE.STX, SIZE, entry.code, info, buildingNo]
       .concat(encodeDwelling(roomNo, historyNumber), [CODE.ETX]);
@@ -392,6 +403,9 @@
     if (entry.bits === null && info !== 0) throw new Error(entry.label + "の警報情報は00H固定です");
     if (entry.request && entry.addressed === false && (buildingNo !== 0 || dwelling.roomNo !== 0 || dwelling.historyNumber !== 0)) {
       throw new Error(entry.label + "の棟番号・住戸番号は00固定です");
+    }
+    if (entry.name === "dwellingRequest" && buildingNo >= 2) {
+      throw new Error("住戸情報要求の棟指定が2棟以上の場合はNAK応答です");
     }
 
     return {
@@ -750,9 +764,9 @@
   // HPCのヒストリー処理
   // ------------------------------------------------------------------
 
-  // ・現状より1つ前、2つ前…と出力し、15を超えたら再び現状へ戻るリング。
-  // ・15に満たない場合は保持件数だけでリングを作る。
-  // ・15を超えた場合は古い情報を消し、全体をシフトして新情報を加える。
+  // ・現状とは別に1つ前～15個前を保持し、最後まで出力したら現状へ戻るリング。
+  // ・過去情報が15に満たない場合は保持済みの過去情報と現状だけでリングを作る。
+  // ・過去情報が15を超えた場合は最古の情報を消し、現状＋過去15件を保持する。
   // ・ヒストリー情報がない場合の要求にはNAKを返す（応答電文は作らない）。
   const HISTORY_LIMIT = 15;
 
@@ -769,7 +783,7 @@
     }
 
     get size() {
-      return this._entries.length;
+      return Math.max(0, this._entries.length - 1);
     }
 
     get pointer() {
@@ -777,7 +791,7 @@
     }
 
     get empty() {
-      return this._entries.length === 0;
+      return this.size === 0;
     }
 
     reset() {
@@ -797,7 +811,7 @@
         buildingNo: parsed.buildingNo,
         roomNo: parsed.roomNo,
       });
-      if (this._entries.length > this.limit) this._entries.length = this.limit;
+      if (this._entries.length > this.limit + 1) this._entries.length = this.limit + 1;
       this._pointer = 0;
       return this;
     }
@@ -805,7 +819,7 @@
     // ポインタ0は「現状」＝最新送信イベント。要求のたびに1つ前へ進み、
     // 保持件数を一周したら再び現状へ戻る（保持が15未満ならその件数でリング）。
     peek() {
-      if (this.empty) return null;
+      if (this._entries.length === 0) return null;
       const entry = this._entries[this._pointer];
       return Object.assign({}, entry, { historyNumber: this._pointer });
     }

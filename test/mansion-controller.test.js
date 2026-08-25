@@ -186,6 +186,26 @@ test("Ver2専用とVer3専用コマンドを相互に拒否", () => {
   expectProtocolError(() => M.getCommandDefinition(0x3B, 0x41, { version: 1 }), "UNSUPPORTED_VERSION");
 });
 
+test("VIXUS Advanceは仕様で認められた静止画4コマンドだけを許可", () => {
+  const allowed = M.listCommandDefinitions({ version: 3, product: M.PRODUCT.VIXUS_ADVANCE })
+    .filter((definition) => definition.kind === M.KIND.STILL_IMAGE)
+    .map((definition) => definition.command);
+  assert.deepEqual(allowed, [0x45, 0x65, 0x54, 0x74]);
+  assert.equal(
+    M.getCommandDefinition(0x39, 0x45, { version: 3, product: M.PRODUCT.VIXUS_ADVANCE }).name,
+    "全静止画消去要求",
+  );
+  expectProtocolError(
+    () => M.buildFrame({ kind: 0x39, command: 0x41, version: 3, from: M.ROLE.MC, product: M.PRODUCT.VIXUS_ADVANCE }),
+    "UNSUPPORTED_PRODUCT",
+  );
+  const generic = M.buildFrame({ kind: 0x39, command: 0x41, version: 3, from: M.ROLE.MC });
+  expectProtocolError(
+    () => M.parseFrame(generic, { version: 3, from: M.ROLE.MC, product: M.PRODUCT.VIXUS_ADVANCE }),
+    "UNSUPPORTED_PRODUCT",
+  );
+});
+
 test("versionの文字列化やnullを黙って受け入れない", () => {
   expectProtocolError(() => M.getCommandDefinition(0x30, 0x41, { version: "3" }), "INVALID_VERSION");
   expectProtocolError(() => M.getCommandDefinition(0x30, 0x41, { version: null }), "INVALID_VERSION");
