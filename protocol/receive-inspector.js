@@ -15,16 +15,17 @@
       require("./noncontact-key.js"),
       require("./panasonic-alarm.js"),
       require("./panasonic-elevator.js"),
-      require("./alarm-identifier.js")
+      require("./alarm-identifier.js"),
+      require("./link-analyzer.js")
     );
   } else {
-    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator, root.AlarmIdentifier);
+    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator, root.AlarmIdentifier, root.LinkAnalyzer);
   }
-})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier) {
+})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier, LinkAnalyzer) {
   "use strict";
 
-  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator || !AlarmIdentifier) {
-    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator and AlarmIdentifier");
+  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator || !AlarmIdentifier || !LinkAnalyzer) {
+    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier and LinkAnalyzer");
   }
 
   const STX = 0x02;
@@ -898,6 +899,23 @@
     return Object.prototype.hasOwnProperty.call(HANDLERS, profile);
   }
 
+  // 電文として成立しなかったときだけ、通信条件のずれを疑う材料を添える。
+  // 正常に読めている受信へ毎回付けても判断の助けにならない。
+  function attachLinkAnalysis(result, options) {
+    const opts = options || {};
+    if (result.valid || !opts.baudRate) return result;
+    try {
+      const link = LinkAnalyzer.analyze(result.bytes, {
+        baudRate: opts.baudRate,
+        expectedLength: opts.expectedLength,
+      });
+      if (link.suspicious) result.link = link;
+    } catch (_error) {
+      // 分析できなくても受信内容の表示は妨げない。
+    }
+    return result;
+  }
+
   function inspect(profile, input, options) {
     const bytes = toBytes(input);
     const key = String(profile == null ? "" : profile);
@@ -910,7 +928,7 @@
       return finalize(result);
     }
     try {
-      return HANDLERS[key](bytes, options || {});
+      return attachLinkAnalysis(HANDLERS[key](bytes, options || {}), options);
     } catch (error) {
       const result = baseResult(key, bytes);
       result.summary = `解析中に例外が発生しました（${bytes.length}バイト）`;
@@ -921,7 +939,7 @@
   }
 
   // フレーム境界の検出段階で失敗した受信データも、同じ枠組みで表示できるようにする。
-  function errorResult(profile, input, message) {
+  function errorResult(profile, input, message, options) {
     const bytes = toBytes(input);
     const key = String(profile == null ? "" : profile);
     const result = baseResult(key, bytes);
@@ -930,7 +948,7 @@
     result.problems.push(message || "受信データを解釈できません");
     result.badges.push(badge("フレーム不成立", STATUS.ERROR));
     result.fields = bytes.length ? rawDumpFields(bytes) : [];
-    return finalize(result);
+    return attachLinkAnalysis(finalize(result), options);
   }
 
   return Object.freeze({

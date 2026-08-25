@@ -51,6 +51,8 @@ const state = {
   presetWarning: "",
   // 受信モニタ：機種ごとに履歴と表示中の1件を保持する。
   receiveMonitors: {},
+  // 通信条件の判別：条件ごとの受信結果。
+  scanResults: [],
 };
 
 // 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
@@ -2614,6 +2616,176 @@ function trackLocker4Packet(value) {
   state.locker4Inbound = state.locker4Series.accept(value);
 }
 
+// ------------------------------------------------------------ 通信条件の判別
+// ボーレートやパリティが分からない相手に対して、条件を順に試し、
+// どの条件なら仕様どおりのフレームとして読めるかを実際の受信で確かめる。
+// 受信データの偏りから向きを推定する protocol/link-analyzer.js と違い、
+// こちらは実際に開いて受けるので確定できる（ただし相手が送信してこないと判らない）。
+
+// 対応機器で実際に使われる条件を先に試し、それでも見つからない場合に範囲を広げる。
+const KNOWN_LINK_SETTINGS = Object.freeze([
+  { baudRate: 4800, parity: "even" },   // 宅配4線式・2線式・マンションコントローラ
+  { baudRate: 9600, parity: "even" },   // 非接触キー・パナソニックEV
+  { baudRate: 1200, parity: "even" },   // アイホンEV・警報
+  { baudRate: 1200, parity: "none" },   // パナソニック大興・リモート
+  { baudRate: 2400, parity: "even" },
+  { baudRate: 19200, parity: "even" },
+  { baudRate: 9600, parity: "none" },
+  { baudRate: 4800, parity: "none" },
+]);
+
+function wideLinkSettings() {
+  const rates = requireApi("LinkAnalyzer").STANDARD_BAUD_RATES;
+  return rates.reduce((list, baudRate) => list.concat(
+    { baudRate, parity: "even" },
+    { baudRate, parity: "none" }
+  ), []);
+}
+
+function linkSettingLabel(setting) {
+  const parity = setting.parity === "even" ? "E" : setting.parity === "odd" ? "O" : "N";
+  return `${setting.baudRate},${parity},${setting.dataBits || 8},${setting.stopBits || 1}`;
+}
+
+// 集めたバイト列を全機種のリーダーへ通し、フレームとして成立するものを探す。
+// 成立すれば、その条件で「意味のある電文」が届いていたことになる。
+const SCAN_PROFILES = Object.freeze([
+  { profile: "locker4", label: "宅配4線式" },
+  { profile: "locker2", label: "宅配2線式" },
+  { profile: "key", label: "非接触キー" },
+  { profile: "mansion", label: "マンションコントローラ" },
+  { profile: "elevator", label: "エレベータ（アイホン）" },
+  { profile: "panasonicElevator", label: "エレベータ（パナソニック）" },
+  { profile: "alarm", label: "警報（アイホン）" },
+  { profile: "panasonicAlarm", label: "警報（パナソニック）" },
+]);
+
+function evaluateScanBytes(bytes) {
+  if (!bytes || bytes.length === 0) return [];
+  const Reader = requireApi("FrameReader");
+  const hits = [];
+  for (const entry of SCAN_PROFILES) {
+    let frames = [];
+    try {
+      const reader = new Reader(entry.profile, { validateCommand: false });
+      frames = reader.push(bytes).filter((event) => event.type === "frame");
+    } catch (_error) {
+      continue;
+    }
+    if (frames.length === 0) continue;
+    // フレーム境界が取れただけでは弱いので、中身まで読めるものを数える。
+    const verified = frames.filter((event) => {
+      try { return Boolean(describeScanFrame(entry.profile, event.bytes)); } catch (_error) { return false; }
+    });
+    hits.push({ profile: entry.profile, label: entry.label, frames: frames.length, verified: verified.length });
+  }
+  // 中身まで読めた数が多いものを先に見せる。
+  return hits.sort((a, b) => b.verified - a.verified || b.frames - a.frames);
+}
+
+// 判別では画面の設定に依存しない読み方だけを使う（動作側や機種プロファイルは未知のため）。
+function describeScanFrame(profile, frame) {
+  if (profile === "locker2") return requireApi("Telegram2").parseTelegram(frame);
+  if (profile === "locker4") return requireApi("Telegram4").parseTelegram(frame);
+  if (profile === "key") return requireApi("NoncontactKey").parseTelegram(frame);
+  if (profile === "mansion") return requireApi("MansionController").parseFrame(frame);
+  if (profile === "elevator") return requireApi("ElevatorProtocol").parseFrame(frame, {});
+  if (profile === "panasonicElevator") return requireApi("PanasonicElevator").parseFrame(frame);
+  if (profile === "alarm") return requireApi("AlarmProtocol").parseFrame(frame);
+  if (profile === "panasonicAlarm") {
+    const identified = requireApi("AlarmIdentifier").identify(frame, {});
+    return identified.targets.length ? identified : null;
+  }
+  return null;
+}
+
+function renderScanRow(entry) {
+  const row = document.createElement("tr");
+  const hits = entry.hits || [];
+  const best = hits[0] || null;
+  const verdict = entry.error ? `開けません（${entry.error}）`
+    : entry.bytes.length === 0 ? "受信なし"
+      : best && best.verified > 0 ? "★ この条件で読めます"
+        : best ? "フレーム境界のみ一致" : "解釈できず";
+  const cells = [
+    linkSettingLabel(entry.setting),
+    entry.error ? "—" : `${entry.bytes.length}byte`,
+    best ? `${best.label} ${best.verified}/${best.frames}件` : "—",
+    verdict,
+  ];
+  for (const text of cells) {
+    const cell = document.createElement("td");
+    cell.textContent = text;
+    row.append(cell);
+  }
+  if (best && best.verified > 0) row.classList.add("receive-row", "ok");
+  else if (entry.bytes.length > 0) row.classList.add("receive-row", "warn");
+  return row;
+}
+
+function renderScanResults() {
+  const body = $("scanResults");
+  if (state.scanResults.length === 0) {
+    body.replaceChildren(emptyReceiveRow(4, "未実行"));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const entry of state.scanResults) fragment.append(renderScanRow(entry));
+  body.replaceChildren(fragment);
+}
+
+function scanBestSetting() {
+  const found = state.scanResults.find((entry) => (entry.hits || []).some((hit) => hit.verified > 0));
+  return found || null;
+}
+
+async function runLinkScan() {
+  if (!window.serialAPI) throw new Error("ElectronのserialAPIを利用できません");
+  const path = $("serialPort").value;
+  if (!path) throw new Error("COMポートを選択してください");
+  const settings = $("scanScope").value === "wide" ? wideLinkSettings() : KNOWN_LINK_SETTINGS.map((item) => ({ ...item }));
+  const dwellMs = integerValue("scanDwell", "待ち時間", 500, 15000);
+
+  state.scanResults = [];
+  renderScanResults();
+  $("scanApply").disabled = true;
+  $("scanStart").disabled = true;
+  $("scanState").value = `判別中 0/${settings.length}`;
+  addLog("info", "SCAN", null, `通信条件の判別を開始（${settings.length}通り／1条件あたり${dwellMs}ms）`);
+  try {
+    await window.serialAPI.scan({ path, settings, dwellMs });
+    const best = scanBestSetting();
+    if (best) {
+      const hit = best.hits[0];
+      $("scanState").value = `${linkSettingLabel(best.setting)} で受信`;
+      addLog("info", "SCAN", null, `判別完了：${linkSettingLabel(best.setting)} で${hit.label}のフレームを${hit.verified}件読み取りました`);
+      toast(`${linkSettingLabel(best.setting)} で受信できました`);
+      $("scanApply").disabled = false;
+    } else {
+      const received = state.scanResults.filter((entry) => entry.bytes.length > 0).length;
+      $("scanState").value = received ? "読める条件なし" : "受信なし";
+      addLog("warn", "SCAN", null, received
+        ? "判別完了：どの条件でも仕様どおりのフレームになりませんでした"
+        : "判別完了：どの条件でも受信がありません。相手が送信しているか、結線を確認してください");
+    }
+  } finally {
+    $("scanStart").disabled = false;
+  }
+}
+
+function applyScanSetting() {
+  const best = scanBestSetting();
+  if (!best) throw new Error("適用できる条件が見つかっていません");
+  $("serialPreset").value = "custom";
+  $("serialBaud").value = String(best.setting.baudRate);
+  $("serialDataBits").value = String(best.setting.dataBits || 8);
+  $("serialStopBits").value = String(best.setting.stopBits || 1);
+  $("serialParity").value = best.setting.parity || "none";
+  $("serialFlow").value = best.setting.flowControl || "none";
+  toast(`通信設定へ ${linkSettingLabel(best.setting)} を反映しました`);
+  addLog("info", "SCAN", null, `通信設定へ ${linkSettingLabel(best.setting)} を反映しました`);
+}
+
 // ---------------------------------------------------------------- 受信モニタ
 // 受信電文の解析は protocol/receive-inspector.js に集約し、ここでは
 // 「現在の画面設定を解析条件へ渡す」「結果を描画する」だけを行う。
@@ -2636,26 +2808,45 @@ function receiveMonitorState(view) {
 
 // 解析条件は送信フォームと同じ設定から作る。方向・機種制約の食い違いを
 // 「異常」ではなく「注意」として示すため、インスペクタへ渡して判定させる。
+// 固定長の機種だけ、受信バイト数と突き合わせて通信条件のずれを推定できる。
+const EXPECTED_FRAME_LENGTH = Object.freeze({
+  locker2: 11,
+  key: 13,
+  elevator: 21,
+  alarm: 11,
+  panasonicElevator: 18,
+});
+
+function linkInspectOptions(view) {
+  const options = {};
+  if (state.connectionOptions) options.baudRate = state.connectionOptions.baudRate;
+  let expected = EXPECTED_FRAME_LENGTH[view];
+  // パナソニック警報はSTX形式のときだけ11byte固定。
+  if (view === "panasonic" && panasonicIsBlock()) expected = requireApi("PanasonicAlarm").BLOCK_LENGTH;
+  if (expected) options.expectedLength = expected;
+  return options;
+}
+
 function receiveInspectOptions(view) {
   if (view === "locker4") {
-    return { expectedType: $("locker4Action").value === "request" ? "response" : "request" };
+    return Object.assign(linkInspectOptions(view), { expectedType: $("locker4Action").value === "request" ? "response" : "request" });
   }
   if (view === "locker2") {
-    return { maxBuilding: locker2Limits().maxBuilding };
+    return Object.assign(linkInspectOptions(view), { maxBuilding: locker2Limits().maxBuilding });
   }
   if (view === "key") {
     const profile = keyProfile();
-    return { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label };
+    return Object.assign(linkInspectOptions(view), { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label });
   }
   if (view === "panasonic") {
     // アイホンQ49-023Gの読みはビット割付で変わるため、警報（アイホン）画面の選択を渡す。
-    return { protocol: $("panaProtocol").value, aiphonePattern: $("alarmBitPattern").value };
+    return Object.assign(linkInspectOptions(view), { protocol: $("panaProtocol").value, aiphonePattern: $("alarmBitPattern").value });
   }
   if (view === "panasonicElevator") {
     // 電文の向きは電文自身が決めるため、選択中の動作側は注意の判定にだけ使う。
-    return { direction: $("pevDirection").value === "toElevator" ? "fromElevator" : "toElevator" };
+    return Object.assign(linkInspectOptions(view), { direction: $("pevDirection").value === "toElevator" ? "fromElevator" : "toElevator" });
   }
-  return {};
+  return linkInspectOptions(view);
 }
 
 function receiveElement(view, suffix) {
@@ -2700,7 +2891,7 @@ function inspectReceiveEntry(view, entry) {
   const api = window.ReceiveInspector;
   if (!entry || !api) return null;
   return entry.frameError
-    ? api.errorResult(view, entry.bytes, entry.frameError)
+    ? api.errorResult(view, entry.bytes, entry.frameError, receiveInspectOptions(view))
     : api.inspect(view, entry.bytes, receiveInspectOptions(view));
 }
 
@@ -2733,6 +2924,22 @@ function renderReceiveNotes(view, result) {
     item.className = "receive-note warn";
     item.textContent = `注意: ${warning}`;
     fragment.append(item);
+  }
+  // 通信条件のずれが疑われるときは、向きと候補を示す。
+  if (result && result.link) {
+    const item = document.createElement("p");
+    item.className = "receive-note warn";
+    const candidates = result.link.baudCandidates.length
+      ? `／目安として ${result.link.baudCandidates.join(" または ")}bps（確定には「通信設定」の判別を実行してください）`
+      : "";
+    item.textContent = `通信条件: ${result.link.text}${candidates}`;
+    fragment.append(item);
+    for (const reason of result.link.reasons) {
+      const line = document.createElement("p");
+      line.className = "receive-note info";
+      line.textContent = reason;
+      fragment.append(line);
+    }
   }
   // 受信バイト列だけから判定したプロトコルと、その決め手・読みの違い。
   if (result && result.identification) {
@@ -3660,6 +3867,14 @@ function bindEvents() {
       logError(error, "バージョン情報のコピー");
     }
   });
+  $("scanStart").addEventListener("click", () => {
+    withTransaction("通信条件の判別", runLinkScan).catch((error) => {
+      $("scanStart").disabled = false;
+      $("scanState").value = "失敗";
+      logError(error, "通信条件の判別");
+    });
+  });
+  $("scanApply").addEventListener("click", () => { try { applyScanSetting(); } catch (error) { logError(error, "条件の適用"); } });
   $("saveProfile").addEventListener("click", saveProfile);
   $("exportProfile").addEventListener("click", exportProfile);
   $("importProfile").addEventListener("click", () => $("profileImportFile").click());
@@ -3685,6 +3900,7 @@ async function initialize() {
   renderLocker4Table();
   renderLocker2Table();
   for (const view of Object.keys(RECEIVE_MONITORS)) renderReceiveMonitor(view);
+  renderScanResults();
   syncAlarmInfoForm();
   syncPanasonicForm();
   syncPanasonicElevatorForm();
@@ -3714,6 +3930,23 @@ async function initialize() {
       handleInboundControl(packet, consumed);
     }
     autoRespondKey(bytes);
+  });
+  window.serialAPI.onScan((event) => {
+    const entry = {
+      setting: event.setting,
+      bytes: Array.isArray(event.bytes) ? event.bytes : [],
+      error: event.error || null,
+    };
+    entry.hits = entry.error ? [] : evaluateScanBytes(entry.bytes);
+    state.scanResults.push(entry);
+    $("scanState").value = `判別中 ${event.index + 1}/${event.total}`;
+    const best = entry.hits[0];
+    addLog(best && best.verified > 0 ? "info" : "warn", "SCAN", entry.bytes.length ? entry.bytes.slice(0, 32) : null,
+      `${linkSettingLabel(entry.setting)}: ${entry.error ? `開けません（${entry.error}）`
+        : entry.bytes.length === 0 ? "受信なし"
+          : best && best.verified > 0 ? `${best.label}のフレームを${best.verified}件読み取り`
+            : `${entry.bytes.length}byte受信したが解釈できず`}`);
+    renderScanResults();
   });
   window.serialAPI.onError((message) => logError(new Error(message), "シリアル"));
   applyConnectionState(await window.serialAPI.status());

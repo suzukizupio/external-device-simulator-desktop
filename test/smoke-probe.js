@@ -30,7 +30,7 @@ const PROBE_SCRIPT = `
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -1047,6 +1047,34 @@ async function run({ window, app, sendToRenderer }) {
         pana.remote.scheduledHidden || pana.remote.propertyHidden ||
         !pana.remote.propertyDrawn || !pana.remote.scheduledDrawn) {
       throw new Error(`panasonic remote form failed: ${JSON.stringify(pana.remote)}`);
+    }
+
+    // 通信条件の判別UI。COMポート未選択のまま押しても、理由を出して止まること。
+    const scan = await window.webContents.executeJavaScript(`
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        document.querySelector('[data-view="settings"]').click();
+        const initial = { state: $("scanState").value, rows: $("scanResults").textContent.trim(), applyDisabled: $("scanApply").disabled };
+        const scopes = Array.from($("scanScope").options).map((option) => option.value);
+        $("scanStart").click();
+        return { initial, scopes, dwell: $("scanDwell").value };
+      })()
+    `);
+    if (scan.initial.state !== "未実行" || scan.initial.rows !== "未実行" || !scan.initial.applyDisabled) {
+      throw new Error(`link scan initial state failed: ${JSON.stringify(scan.initial)}`);
+    }
+    if (scan.scopes.join(",") !== "known,wide" || scan.dwell !== "3000") {
+      throw new Error(`link scan options failed: ${JSON.stringify(scan)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const scanBlocked = await window.webContents.executeJavaScript(`({
+      state: document.getElementById("scanState").value,
+      startDisabled: document.getElementById("scanStart").disabled,
+      log: document.getElementById("communicationLog").textContent.includes("COMポートを選択してください"),
+    })`);
+    // ポート未選択なら失敗として扱い、ボタンは押せる状態へ戻す。
+    if (!scanBlocked.log || scanBlocked.startDisabled) {
+      throw new Error(`link scan without port failed: ${JSON.stringify(scanBlocked)}`);
     }
 
     const pev = await window.webContents.executeJavaScript(PANASONIC_ELEVATOR_UI_SCRIPT);

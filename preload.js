@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("serialAPI", Object.freeze({
     return ipcRenderer.invoke("serial:write", { bytes: payload });
   },
   close: () => ipcRenderer.invoke("serial:close"),
+  scan: (options) => ipcRenderer.invoke("serial:scan", options),
+  onScan: (callback) => subscribe("serial:scan", callback),
   getSignals: () => ipcRenderer.invoke("serial:signals:get"),
   setSignals: (signals) => ipcRenderer.invoke("serial:signals:set", signals),
   flush: () => ipcRenderer.invoke("serial:flush"),

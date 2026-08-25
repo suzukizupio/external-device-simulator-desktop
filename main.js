@@ -117,9 +117,76 @@ function createWindow() {
 }
 
 serialSession.on("status", (state) => sendToRenderer("serial:status", state));
-serialSession.on("data", (event) => sendToRenderer("serial:data", event));
+serialSession.on("data", (event) => {
+  if (scanState.active) {
+    // スキャン中は通常の受信処理へ渡さず、その条件で観測できたバイトとして貯める。
+    for (const byte of event.bytes) {
+      if (scanState.bytes.length < SCAN_MAX_BYTES) scanState.bytes.push(byte);
+    }
+    return;
+  }
+  sendToRenderer("serial:data", event);
+});
 serialSession.on("write", (event) => sendToRenderer("serial:tx", event));
 serialSession.on("serial-error", (event) => sendToRenderer("serial:error", event));
+
+// 通信条件の総当たり。相手が送ってきたデータを条件ごとに集め、
+// どの条件で意味のあるフレームになるかは画面側（プロトコルモジュール）で判定する。
+const scanState = { active: false, bytes: [] };
+const SCAN_MAX_BYTES = 4096;
+const SCAN_MIN_DWELL_MS = 500;
+const SCAN_MAX_DWELL_MS = 15_000;
+const SCAN_MAX_SETTINGS = 40;
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function scanLink(rawOptions) {
+  if (scanState.active) throw new Error("通信条件の判別を実行中です");
+  const options = rawOptions && typeof rawOptions === "object" ? rawOptions : {};
+  const path = String(options.path || "");
+  if (!path) throw new Error("COMポートを指定してください");
+  const settings = Array.isArray(options.settings) ? options.settings : [];
+  if (settings.length === 0 || settings.length > SCAN_MAX_SETTINGS) {
+    throw new Error(`試す通信条件は1～${SCAN_MAX_SETTINGS}件で指定してください`);
+  }
+  const dwellMs = Math.min(Math.max(Number(options.dwellMs) || 3000, SCAN_MIN_DWELL_MS), SCAN_MAX_DWELL_MS);
+
+  // 判別中は通常の接続を手放す。終わっても開き直さず、画面側の操作に任せる。
+  await serialSession.close().catch(() => undefined);
+  scanState.active = true;
+  const results = [];
+  try {
+    for (let index = 0; index < settings.length; index += 1) {
+      const setting = settings[index] && typeof settings[index] === "object" ? settings[index] : {};
+      scanState.bytes = [];
+      let error = null;
+      try {
+        await serialSession.open({
+          path,
+          baudRate: setting.baudRate,
+          dataBits: setting.dataBits == null ? 8 : setting.dataBits,
+          stopBits: setting.stopBits == null ? 1 : setting.stopBits,
+          parity: setting.parity == null ? "none" : setting.parity,
+          flowControl: setting.flowControl == null ? "none" : setting.flowControl,
+        });
+        await delay(dwellMs);
+      } catch (openError) {
+        error = String(openError && openError.message || openError);
+      }
+      const bytes = scanState.bytes.slice();
+      await serialSession.close().catch(() => undefined);
+      const result = { index, total: settings.length, setting, bytes, error };
+      results.push(result);
+      sendToRenderer("serial:scan", result);
+    }
+  } finally {
+    scanState.active = false;
+    scanState.bytes = [];
+  }
+  return { results };
+}
 
 function registerTrustedHandler(channel, handler) {
   ipcMain.handle(channel, (event, ...args) => {
@@ -133,6 +200,7 @@ function registerTrustedHandler(channel, handler) {
 }
 
 registerTrustedHandler("app:info", () => appInfo());
+registerTrustedHandler("serial:scan", (options) => scanLink(options));
 registerTrustedHandler("serial:list", () => serialSession.list());
 registerTrustedHandler("serial:status", () => serialSession.snapshot());
 registerTrustedHandler("serial:open", (options) => serialSession.open(options));

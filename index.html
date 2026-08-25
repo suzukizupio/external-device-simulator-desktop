@@ -544,6 +544,20 @@
           <div class="preview"><span>モデム状態</span><code id="signalState">—</code></div>
         </article>
         <article class="card form-card">
+          <div class="card-title"><div><h2>通信条件の判別</h2><p>相手のボーレート・パリティが分からないときに、条件を順に試して受信できる設定を探します</p></div></div>
+          <div class="form-grid cols-3">
+            <label>試す範囲<select id="scanScope"><option value="known">対応機器の条件のみ（8通り・約30秒）</option><option value="wide">標準ボーレート全て（16通り・約60秒）</option></select></label>
+            <label>1条件あたりの待ち時間 ms<input id="scanDwell" type="number" min="500" max="15000" step="500" value="3000"></label>
+            <label>判別中の状態<input id="scanState" value="未実行" readonly></label>
+          </div>
+          <p class="callout">判別中は接続を切り、条件を切り替えながら相手からの送信を待ちます。相手が自発的に送信する状態（警報の発生など）にしてから実行してください。受信が1件もない条件は判定できません。</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>通信条件</th><th>受信</th><th>成立したフレーム</th><th>判定</th></tr></thead>
+            <tbody id="scanResults"><tr class="receive-empty"><td colspan="4">未実行</td></tr></tbody>
+          </table></div>
+          <div class="actions"><button id="scanStart" class="primary">通信条件を判別する</button><button id="scanApply" class="secondary" disabled>見つかった条件を適用</button></div>
+        </article>
+        <article class="card form-card">
           <div class="card-title"><div><h2>設定プロファイル</h2><p>全画面の入力値・機種・通信条件・異常条件を保存／共有</p></div></div>
           <input id="profileImportFile" type="file" accept="application/json,.json" hidden>
           <div class="actions"><button id="saveProfile" class="primary">このPCへ保存</button><button id="exportProfile" class="secondary">JSON書き出し</button><button id="importProfile" class="secondary">JSON読み込み</button><button id="resetProfile" class="danger">保存設定を削除</button></div>
@@ -575,6 +589,7 @@
   <script src="protocol/panasonic-alarm.js"></script>
   <script src="protocol/panasonic-elevator.js"></script>
   <script src="protocol/alarm-identifier.js"></script>
+  <script src="protocol/link-analyzer.js"></script>
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
   <script src="protocol/auto-responder.js"></script>
