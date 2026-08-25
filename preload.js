@@ -26,6 +26,22 @@ contextBridge.exposeInMainWorld("bridgeAPI", Object.freeze({
   onError: (callback) => subscribe("bridge:error", (event) => callback(event.message, event)),
 }));
 
+// 3本目の回線。宅配と非接触キーを同時に中継するとき、2台目の装置を受ける。
+contextBridge.exposeInMainWorld("auxAPI", Object.freeze({
+  status: () => ipcRenderer.invoke("aux:status"),
+  open: (options) => ipcRenderer.invoke("aux:open", options),
+  write: (bytes) => {
+    const payload = Array.from(bytes);
+    if (payload.length === 0 || payload.length > MAX_WRITE_BYTES) throw new RangeError(`送信データは1～${MAX_WRITE_BYTES}byteで指定してください`);
+    return ipcRenderer.invoke("aux:write", { bytes: payload });
+  },
+  close: () => ipcRenderer.invoke("aux:close"),
+  onData: (callback) => subscribe("aux:data", (event) => callback(event.bytes, event)),
+  onWrite: (callback) => subscribe("aux:tx", callback),
+  onStatus: (callback) => subscribe("aux:status", callback),
+  onError: (callback) => subscribe("aux:error", (event) => callback(event.message, event)),
+}));
+
 contextBridge.exposeInMainWorld("appAPI", Object.freeze({
   info: () => ipcRenderer.invoke("app:info"),
 }));

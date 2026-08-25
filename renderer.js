@@ -58,6 +58,10 @@ const state = {
   bridgeResult: null,
   bridgePort: null,
   bridgeReader: null,
+  // 受信ポート2（2台目の装置）。
+  auxPort: null,
+  auxReader: null,
+  auxReaderDevice: null,
 };
 
 // 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
@@ -2778,17 +2782,20 @@ async function refreshBridgePorts() {
   if (!window.serialAPI) return;
   try {
     const ports = await window.serialAPI.list();
-    const select = $("bridgePort");
-    const previous = select.value;
-    const options = [Object.assign(document.createElement("option"), { value: "", textContent: "COMポートを選択" })];
-    for (const port of ports) {
-      const option = document.createElement("option");
-      option.value = port.path;
-      option.textContent = port.friendlyName ? `${port.path} — ${port.friendlyName}` : port.path;
-      options.push(option);
+    // 送信ポートと受信ポート2で同じ一覧を使う。
+    for (const id of ["bridgePort", "bridgeAuxPort"]) {
+      const select = $(id);
+      const previous = select.value;
+      const options = [Object.assign(document.createElement("option"), { value: "", textContent: "COMポートを選択" })];
+      for (const port of ports) {
+        const option = document.createElement("option");
+        option.value = port.path;
+        option.textContent = port.friendlyName ? `${port.path} — ${port.friendlyName}` : port.path;
+        options.push(option);
+      }
+      select.replaceChildren(...options);
+      if (options.some((option) => option.value === previous)) select.value = previous;
     }
-    select.replaceChildren(...options);
-    if (options.some((option) => option.value === previous)) select.value = previous;
   } catch (error) {
     logError(error, "送信ポート一覧");
   }
@@ -2827,6 +2834,82 @@ function deviceBridgeOptions() {
     from: $("bridgeDeviceFrom").value,
     version: Number($("bridgeMcVersion").value),
   };
+}
+
+// ---- 受信ポート2（2台目の装置）----
+// 実際の集合インターホンは宅配ボックスと非接触キーの両方を収容し、
+// どちらの情報もマンションコントローラへ流す。それを再現するため、
+// 受信ポート1で選ばなかったほうの装置を、もう1本の回線で受ける。
+
+function auxDeviceFrom() {
+  return $("bridgeDeviceFrom").value === "locker4" ? "key" : "locker4";
+}
+
+// 装置ごとに通信条件が違う（宅配4線式は4800、非接触キーは9600が既定）。
+function auxDeviceSerial(device) {
+  return device === "key"
+    ? { baudRate: 9600, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" }
+    : { baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" };
+}
+
+function auxEnabled() {
+  return bridgeMode() === "device" && $("bridgeAuxEnable").checked;
+}
+
+function auxPortOptions() {
+  const path = $("bridgeAuxPort").value;
+  if (!path) throw new RangeError("受信ポート2のCOMポートを選択してください");
+  return Object.assign({ path }, auxDeviceSerial(auxDeviceFrom()));
+}
+
+function applyAuxPortState(snapshot) {
+  const open = snapshot && snapshot.status === "open";
+  state.auxPort = open ? snapshot : null;
+  const dot = $("bridgeAuxDot");
+  const text = $("bridgeAuxText");
+  if (dot) dot.className = open ? "open" : snapshot && snapshot.status === "error" ? "error" : "";
+  if (text) {
+    text.textContent = open
+      ? `受信ポート2 ${snapshot.options.path} ${presetLabel(snapshot.options)}`
+      : snapshot && snapshot.error ? `受信ポート2エラー: ${snapshot.error}` : "受信ポート2未接続";
+  }
+  const enabled = auxEnabled();
+  $("bridgeAuxConnect").disabled = open || !enabled;
+  $("bridgeAuxDisconnect").disabled = !open;
+  $("bridgeAuxPort").disabled = open || !enabled;
+}
+
+function syncAuxFields() {
+  const device = auxDeviceFrom();
+  const label = requireApi("DeviceBridge").SOURCE_LABEL[device];
+  $("bridgeAuxDevice").value = auxEnabled() ? label : "（使用しません）";
+  $("bridgeAuxCondition").value = auxEnabled() ? presetLabel(auxDeviceSerial(device)) : "—";
+  applyAuxPortState(state.auxPort);
+}
+
+async function connectAuxPort() {
+  if (!window.auxAPI) throw new Error("受信ポート2のAPIを利用できません");
+  const options = auxPortOptions();
+  await window.auxAPI.open(options);
+  addLog("info", "BRIDGE", null, `受信ポート2 ${options.path} を ${presetLabel(options)} で開きました`
+    + `（${requireApi("DeviceBridge").SOURCE_LABEL[auxDeviceFrom()]}）`);
+}
+
+async function disconnectAuxPort() {
+  if (!window.auxAPI) return;
+  await window.auxAPI.close();
+  addLog("info", "BRIDGE", null, "受信ポート2を切断しました");
+}
+
+// 受信ポート2は装置が固定されるため、その装置専用のリーダーで切り出す。
+function auxPortReader() {
+  const device = auxDeviceFrom();
+  if (!state.auxReader || state.auxReaderDevice !== device) {
+    const Reader = requireApi("FrameReader");
+    state.auxReader = new Reader(device, { validateCommand: false });
+    state.auxReaderDevice = device;
+  }
+  return state.auxReader;
 }
 
 function bridgeUsesAiphone() {
@@ -2996,9 +3079,10 @@ function renderDeviceMapping() {
   $("bridgeMapping").replaceChildren(fragment);
 }
 
-function convertDeviceFrame(frame) {
+function convertDeviceFrame(frame, sourceOverride) {
   const api = deviceBridgeApi();
   const options = deviceBridgeOptions();
+  if (sourceOverride) options.from = sourceOverride;
   try {
     const result = api.convert(frame, options);
     state.bridgeResult = {
@@ -3015,14 +3099,20 @@ function convertDeviceFrame(frame) {
       roomNo: null,
       restore: false,
       summary: result.summary,
-      direction: { label: "受信ポート→送信ポート", reverse: false },
+      direction: {
+        label: sourceOverride ? "受信ポート2→送信ポート" : "受信ポート→送信ポート",
+        reverse: false,
+      },
     };
     addLog("info", "BRIDGE", null, `${result.fromLabel} → Q48-008I：${result.summary}`);
   } catch (error) {
     state.bridgeResult = {
       error: String(error && error.message || error),
       sourceFrame: Array.from(frame), frames: [], device: true,
-      direction: { label: "受信ポート→送信ポート", reverse: false },
+      direction: {
+        label: sourceOverride ? "受信ポート2→送信ポート" : "受信ポート→送信ポート",
+        reverse: false,
+      },
     };
     addLog("warn", "BRIDGE", frame, `変換できません: ${state.bridgeResult.error}`);
   }
@@ -3039,9 +3129,12 @@ function syncBridgeForm() {
   $("bridgeModeNote").textContent = device
     ? "Q48-008Iの6.7 宅配ボックス制御／6.8 非接触キー制御に対応する枠があるため、仕様の定義に沿って読み替えます。対応する状態がないもの（集荷預り・食配着荷など）は送れないため、下の対応表と変換結果で確認してください。"
     : "この対応付けは通信仕様書には規定がありません。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。";
+  $("bridgeAuxSection").hidden = !device;
   if (device) {
     const api = deviceBridgeApi();
-    $("bridgeSpecBadge").textContent = `${api.SOURCE_LABEL[$("bridgeDeviceFrom").value]} → MC`;
+    const both = auxEnabled() ? `＋${api.SOURCE_LABEL[auxDeviceFrom()]}` : "";
+    $("bridgeSpecBadge").textContent = `${api.SOURCE_LABEL[$("bridgeDeviceFrom").value]}${both} → MC`;
+    syncAuxFields();
     renderBridgeMapping();
     renderBridgeResult();
     syncBridgePortFields();
@@ -3127,8 +3220,24 @@ function bridgePortReader() {
   return state.bridgeReader;
 }
 
+// 受信ポート2は必ず「装置→MC」で、送信先は送信ポートに固定される。
+function handleAuxDeviceFrame(frame) {
+  const device = auxDeviceFrom();
+  state.bridgeLastFrame = { bytes: Array.from(frame), direction: "forward", source: device };
+  const result = convertDeviceFrame(frame, device);
+  if (!$("bridgeAuto").checked || result.error || result.frames.length === 0) return;
+  scheduleAutoResponse("警報変換の送信", async () => {
+    await sendBridgeVia("forward", result.frames);
+    addLog("info", "BRIDGE", null, `受信ポート2から変換した${result.frames.length}電文を送信しました`);
+  });
+}
+
 function convertLatestReceive() {
   if (!state.bridgeLastFrame) throw new Error("変換できる受信電文がありません");
+  if (state.bridgeLastFrame.source) {
+    convertDeviceFrame(state.bridgeLastFrame.bytes, state.bridgeLastFrame.source);
+    return;
+  }
   convertBridgeFrame(state.bridgeLastFrame.bytes, state.bridgeLastFrame.direction);
 }
 
@@ -4409,6 +4518,13 @@ function bindEvents() {
     disconnectBridgePort().catch((error) => logError(error, "送信ポート切断"));
   });
   $("bridgePortRefresh").addEventListener("click", () => { refreshBridgePorts(); });
+  $("bridgeAuxEnable").addEventListener("change", () => { try { syncBridgeForm(); } catch (error) { logError(error, "受信ポート2"); } });
+  $("bridgeAuxConnect").addEventListener("click", () => {
+    connectAuxPort().catch((error) => logError(error, "受信ポート2接続"));
+  });
+  $("bridgeAuxDisconnect").addEventListener("click", () => {
+    disconnectAuxPort().catch((error) => logError(error, "受信ポート2切断"));
+  });
   $("bridgePortPreset").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信ポート条件"); } });
   ["bridgeMode", "bridgeDeviceFrom", "bridgeMcVersion"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
@@ -4491,6 +4607,23 @@ async function initialize() {
     }
     autoRespondKey(bytes);
   });
+  if (window.auxAPI) {
+    window.auxAPI.onStatus(applyAuxPortState);
+    window.auxAPI.onError((message) => logError(new Error(message), "受信ポート2"));
+    window.auxAPI.onData((bytes, event) => {
+      state.rxCount += 1;
+      updateMetrics();
+      addLog("rx", "RX3", bytes, `受信ポート2 seq=${event.sequence}`, event.timestamp);
+      if (!auxEnabled()) return;
+      try {
+        for (const item of auxPortReader().push(bytes)) {
+          if (item.type === "frame") handleAuxDeviceFrame(item.bytes);
+        }
+      } catch (error) {
+        logError(error, "受信ポート2の受信解析");
+      }
+    });
+  }
   if (window.bridgeAPI) {
     window.bridgeAPI.onStatus(applyBridgePortState);
     window.bridgeAPI.onWrite((event) => {
@@ -4540,6 +4673,7 @@ async function initialize() {
   await refreshPorts();
   await refreshBridgePorts();
   if (window.bridgeAPI) applyBridgePortState(await window.bridgeAPI.status());
+  if (window.auxAPI) applyAuxPortState(await window.auxAPI.status());
   updateMetrics();
   addLog("info", "READY", null, state.appInfo
     ? `${versionSummary(state.appInfo)} を初期化しました`

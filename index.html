@@ -264,7 +264,7 @@
             <li>宅配4線式は「荷物なし→取出し状態」「荷物あり→着荷状態」だけが対応します。集荷預り・食配着荷・書留着荷・宅配ロボには対応する状態がないため送れません</li>
             <li>装置からMCへの一方向です。MCから装置へ状態を書き込む電文は仕様上ありません</li>
           </ul>
-          <p class="callout"><strong>回線は受信1つ・送信1つです。</strong>宅配ボックスと非接触キーを同時には扱えず、変換元で選んだどちらか一方になります。実際の集合インターホンのように両方を1台のマンションコントローラへ中継するには、宅配用・キー用・MC用で計3回線が必要です（未対応）。</p>
+          <p class="callout">実際の集合インターホンのように<strong>宅配ボックスと非接触キーを同時に中継できます</strong>。「2台目の装置も同時に中継する」を有効にすると、受信ポート1で選ばなかったほうの装置を受信ポート2で受けます。回線は受信2つ＋送信1つの計3つで、通信条件は装置ごと（宅配4800,E,8,1／非接触キー9600,E,8,1／MC 4800,E,8,1）に開きます。同じCOMポートを複数の回線には使えません。</p>
         </article>
 
         <article class="card help-section" id="help-faults">
@@ -787,6 +787,17 @@
           </div>
           <p class="callout" id="bridgePortHint">—</p>
           <div class="actions"><button id="bridgePortConnect" class="primary">送信ポートへ接続</button><button id="bridgePortDisconnect" class="secondary" disabled>切断</button><button id="bridgePortRefresh" class="secondary">ポート一覧を更新</button></div>
+
+          <div id="bridgeAuxSection">
+            <div class="card-title"><div><h3 class="receive-subtitle">受信ポート2（2台目の装置）</h3><p>宅配ボックスと非接触キーを同時に1台のマンションコントローラへ中継するときに使います</p></div><span class="connection-state"><i id="bridgeAuxDot"></i><span id="bridgeAuxText">受信ポート2未接続</span></span></div>
+            <div class="inline-options"><label><input id="bridgeAuxEnable" type="checkbox"> 2台目の装置も同時に中継する</label></div>
+            <div class="form-grid cols-3">
+              <label>受信ポート2の装置<input id="bridgeAuxDevice" value="—" readonly></label>
+              <label>COMポート<select id="bridgeAuxPort"><option value="">COMポートを選択</option></select></label>
+              <label>通信条件<input id="bridgeAuxCondition" value="—" readonly></label>
+            </div>
+            <div class="actions"><button id="bridgeAuxConnect" class="primary" disabled>受信ポート2へ接続</button><button id="bridgeAuxDisconnect" class="secondary" disabled>切断</button></div>
+          </div>
           <div class="preview"><span>変換後</span><code id="bridgePreview">—</code></div>
           <div class="actions"><button class="secondary" id="bridgeConvertButton">最新の受信を変換</button><button class="primary requires-connection" id="bridgeSendButton" disabled>変換結果を送信</button><button class="danger" id="bridgeClearButton">変換結果を消去</button></div>
         </article>

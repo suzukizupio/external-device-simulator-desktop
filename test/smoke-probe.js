@@ -722,6 +722,41 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     throw new Error(`device bridge form failed: ${JSON.stringify(device)}`);
   }
 
+  // 受信ポート2：宅配を受信ポート1にすると、残る非接触キーが2台目になる。
+  const aux = await window.webContents.executeJavaScript(`
+    (() => {
+      const $ = (id) => document.getElementById(id);
+      const before = { hidden: $("bridgeAuxSection").hidden, device: $("bridgeAuxDevice").value, connectDisabled: $("bridgeAuxConnect").disabled };
+      $("bridgeAuxEnable").checked = true;
+      $("bridgeAuxEnable").dispatchEvent(new Event("change"));
+      const enabled = {
+        device: $("bridgeAuxDevice").value,
+        condition: $("bridgeAuxCondition").value,
+        badge: $("bridgeSpecBadge").textContent,
+        portDisabled: $("bridgeAuxPort").disabled,
+      };
+      $("bridgeAuxConnect").click();
+      return { before, enabled };
+    })()
+  `);
+  // 使わないうちは接続できず、装置名も出さない。
+  if (aux.before.hidden || aux.before.device !== "（使用しません）" || !aux.before.connectDisabled) {
+    throw new Error(`aux port initial state failed: ${JSON.stringify(aux.before)}`);
+  }
+  // 有効にすると、受信ポート1で選ばなかった装置とその通信条件が入る。
+  if (aux.enabled.device !== "非接触キー" || aux.enabled.condition !== "9600,E,8,1"
+      || aux.enabled.badge !== "宅配ボックス 4線式(B方式)＋非接触キー → MC" || aux.enabled.portDisabled) {
+    throw new Error(`aux port enable failed: ${JSON.stringify(aux.enabled)}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const auxError = await window.webContents.executeJavaScript(
+    `document.getElementById("communicationLog").textContent.includes("受信ポート2のCOMポートを選択してください")`
+  );
+  if (!auxError) throw new Error("aux port without selection did not report a reason");
+  await window.webContents.executeJavaScript(`
+    (() => { const c = document.getElementById("bridgeAuxEnable"); c.checked = false; c.dispatchEvent(new Event("change")); })()
+  `);
+
   // 非接触キーはゲート・住戸・個人番号がそのままキー情報へ載る。
   await window.webContents.executeJavaScript(
     `(() => { const s = document.getElementById("bridgeDeviceFrom"); s.value = "key"; s.dispatchEvent(new Event("change")); })()`

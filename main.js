@@ -18,9 +18,16 @@ const serialSession = new SerialSession({
   listPorts: () => SerialPort.list(),
 });
 
-// 警報変換で使う2本目の回線。受信側（serialSession）とは別のCOMポートを開き、
-// 変換した電文を相手メーカーの通信条件で送るために使う。
+// 電文変換で使う2本目の回線。受信側（serialSession）とは別のCOMポートを開き、
+// 変換した電文を相手の通信条件で送るために使う。
 const bridgeSession = new SerialSession({
+  SerialPortCtor: SerialPort,
+  listPorts: () => SerialPort.list(),
+});
+
+// 3本目の回線。宅配ボックスと非接触キーの両方を1台のマンションコントローラへ
+// 中継するとき、2台目の装置を受けるために使う（通信条件も装置ごとに違う）。
+const auxSession = new SerialSession({
   SerialPortCtor: SerialPort,
   listPorts: () => SerialPort.list(),
 });
@@ -70,7 +77,7 @@ function blockReloadKeys(webContents) {
 // 接続したままの終了は試験の中断を意味するため、明示的に確認する。
 function confirmCloseWhileConnected(event) {
   if (smokeMode || quitAfterSerialClose) return;
-  if (serialSession.status !== "open" && bridgeSession.status !== "open") return;
+  if (serialSession.status !== "open" && bridgeSession.status !== "open" && auxSession.status !== "open") return;
   const choice = dialog.showMessageBoxSync(mainWindow, {
     type: "warning",
     buttons: ["終了する", "キャンセル"],
@@ -142,6 +149,11 @@ bridgeSession.on("data", (event) => sendToRenderer("bridge:data", event));
 bridgeSession.on("write", (event) => sendToRenderer("bridge:tx", event));
 bridgeSession.on("serial-error", (event) => sendToRenderer("bridge:error", event));
 
+auxSession.on("status", (state) => sendToRenderer("aux:status", state));
+auxSession.on("data", (event) => sendToRenderer("aux:data", event));
+auxSession.on("write", (event) => sendToRenderer("aux:tx", event));
+auxSession.on("serial-error", (event) => sendToRenderer("aux:error", event));
+
 // 通信条件の総当たり。相手が送ってきたデータを条件ごとに集め、
 // どの条件で意味のあるフレームになるかは画面側（プロトコルモジュール）で判定する。
 const scanState = { active: false, bytes: [] };
@@ -168,6 +180,7 @@ async function scanLink(rawOptions) {
   // 判別中は通常の接続を手放す。終わっても開き直さず、画面側の操作に任せる。
   await serialSession.close().catch(() => undefined);
   await bridgeSession.close().catch(() => undefined);
+  await auxSession.close().catch(() => undefined);
   scanState.active = true;
   const results = [];
   try {
@@ -216,7 +229,11 @@ registerTrustedHandler("app:info", () => appInfo());
 registerTrustedHandler("serial:scan", (options) => scanLink(options));
 registerTrustedHandler("serial:list", () => serialSession.list());
 registerTrustedHandler("serial:status", () => serialSession.snapshot());
-registerTrustedHandler("serial:open", (options) => serialSession.open(options));
+registerTrustedHandler("serial:open", (options) => {
+  const path = options && typeof options === "object" ? String(options.path || "") : "";
+  assertPortAvailable(path, "serial");
+  return serialSession.open(options);
+});
 registerTrustedHandler("serial:write", (payload) => {
   const bytes = payload && !Array.isArray(payload) && payload.bytes ? payload.bytes : payload;
   return serialSession.write(bytes);
@@ -226,14 +243,26 @@ registerTrustedHandler("serial:signals:get", () => serialSession.getSignals());
 registerTrustedHandler("serial:signals:set", (signals) => serialSession.setSignals(signals));
 registerTrustedHandler("serial:flush", () => serialSession.flush());
 
+// 同じCOMポートを複数の回線で開くことはできない。開こうとしている先が
+// 他の回線で使われていないかを、共通の入口で確かめる。
+const SESSION_LABELS = Object.freeze({ serial: "受信ポート", bridge: "送信ポート", aux: "受信ポート2" });
+
+function assertPortAvailable(path, exclude) {
+  if (!path) return;
+  const sessions = { serial: serialSession, bridge: bridgeSession, aux: auxSession };
+  for (const [name, session] of Object.entries(sessions)) {
+    if (name === exclude) continue;
+    const snapshot = session.snapshot();
+    if (session.status === "open" && snapshot.options && snapshot.options.path === path) {
+      throw new Error(`${SESSION_LABELS[name]}が同じCOMポート（${path}）を使用中です`);
+    }
+  }
+}
+
 registerTrustedHandler("bridge:status", () => bridgeSession.snapshot());
 registerTrustedHandler("bridge:open", (options) => {
   const path = options && typeof options === "object" ? String(options.path || "") : "";
-  // 同じポートを2本のセッションで開くことはできない。
-  if (path && serialSession.status === "open" && serialSession.snapshot().options
-      && serialSession.snapshot().options.path === path) {
-    throw new Error("受信ポートと同じCOMポートは開けません");
-  }
+  assertPortAvailable(path, "bridge");
   return bridgeSession.open(options);
 });
 registerTrustedHandler("bridge:write", (payload) => {
@@ -241,6 +270,18 @@ registerTrustedHandler("bridge:write", (payload) => {
   return bridgeSession.write(bytes);
 });
 registerTrustedHandler("bridge:close", () => bridgeSession.close());
+
+registerTrustedHandler("aux:status", () => auxSession.snapshot());
+registerTrustedHandler("aux:open", (options) => {
+  const path = options && typeof options === "object" ? String(options.path || "") : "";
+  assertPortAvailable(path, "aux");
+  return auxSession.open(options);
+});
+registerTrustedHandler("aux:write", (payload) => {
+  const bytes = payload && !Array.isArray(payload) && payload.bytes ? payload.bytes : payload;
+  return auxSession.write(bytes);
+});
+registerTrustedHandler("aux:close", () => auxSession.close());
 
 // 既定メニューを外すと Ctrl+R / Ctrl+Shift+R のアクセラレータも無効になる。
 Menu.setApplicationMenu(null);
@@ -258,7 +299,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   quitAfterSerialClose = true;
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("serial close timed out")), 5_000));
-  Promise.race([Promise.all([serialSession.close(), bridgeSession.close()]), timeout])
+  Promise.race([Promise.all([serialSession.close(), bridgeSession.close(), auxSession.close()]), timeout])
     .catch((error) => console.error(`serial close on quit: ${error && error.message || error}`))
     .finally(() => app.exit(0));
 });
