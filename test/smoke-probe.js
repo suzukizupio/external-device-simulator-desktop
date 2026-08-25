@@ -7,6 +7,7 @@ const Telegram2 = require("../protocol/locker2");
 const Telegram4 = require("../protocol/locker4");
 const NoncontactKey = require("../protocol/noncontact-key");
 const PanasonicAlarm = require("../protocol/panasonic-alarm");
+const { version: packageVersion } = require("../package.json");
 
 // 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
 // LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
@@ -19,6 +20,12 @@ const PROBE_SCRIPT = `
       views: document.querySelectorAll(".view").length,
       scripts: Array.from(document.scripts).length,
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
+      versionLine: document.getElementById("appVersionLine").textContent,
+      versionBadge: document.getElementById("appVersionBadge").textContent,
+      versionValue: document.getElementById("appVersionValue").textContent,
+      buildValue: document.getElementById("appBuildValue").textContent,
+      runtimeValue: document.getElementById("appRuntimeValue").textContent,
+      readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
       modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
@@ -733,6 +740,16 @@ const PANASONIC_UI_SCRIPT = `
 async function run({ window, app, sendToRenderer }) {
   try {
     const initial = await window.webContents.executeJavaScript(PROBE_SCRIPT);
+    // 配布EXEの版を画面から特定できること。開発実行ではその旨が出る。
+    if (!initial.versionLine.includes(`v${packageVersion}`) || initial.versionBadge !== `v${packageVersion}` ||
+        !initial.versionValue.includes(`v${packageVersion}`) || !initial.readyLog) {
+      throw new Error(`app version was not surfaced: ${JSON.stringify({
+        line: initial.versionLine, badge: initial.versionBadge, value: initial.versionValue, readyLog: initial.readyLog,
+      })}`);
+    }
+    if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
+      throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
+    }
     if (initial.title !== "外部疑似装置 Next" || initial.views !== 11 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }

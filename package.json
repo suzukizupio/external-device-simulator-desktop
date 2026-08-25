@@ -1,6 +1,6 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "main": "main.js",
   "license": "UNLICENSED",
@@ -9,8 +9,9 @@
     "test": "node test/run-all.js",
     "test:smoke": "node test/electron-smoke.js",
     "icons": "node tools/build-icons.js",
-    "pack": "electron-builder --dir",
-    "dist:win": "electron-builder --win portable --x64"
+    "stamp": "node tools/build-stamp.js",
+    "pack": "npm run stamp && electron-builder --dir",
+    "dist:win": "npm run stamp && electron-builder --win portable --x64"
   },
   "dependencies": {
     "serialport": "^12.0.0"
@@ -34,6 +35,7 @@
       "index.html",
       "styles.css",
       "build/icon.png",
+      "build-stamp.json",
       "protocol/**/*",
       "lib/**/*",
       "package.json"

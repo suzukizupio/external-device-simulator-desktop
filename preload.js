@@ -10,6 +10,10 @@ function subscribe(channel, callback) {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
+contextBridge.exposeInMainWorld("appAPI", Object.freeze({
+  info: () => ipcRenderer.invoke("app:info"),
+}));
+
 contextBridge.exposeInMainWorld("serialAPI", Object.freeze({
   list: () => ipcRenderer.invoke("serial:list"),
   status: () => ipcRenderer.invoke("serial:status"),

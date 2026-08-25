@@ -11,7 +11,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">EXT</span>
-      <div><strong>外部疑似装置 Next</strong><small>通信仕様準拠シミュレータ</small></div>
+      <div><strong>外部疑似装置 Next</strong><small id="appVersionLine" title="バージョン情報">通信仕様準拠シミュレータ</small></div>
     </div>
     <div class="connection-strip">
       <select id="serialPort" aria-label="COMポート"><option value="">COMポートを選択</option></select>
@@ -81,6 +81,17 @@
           <article class="card"><h2>設計上の安全策</h2><ul class="check-list"><li>COMポートの読み取りはメインプロセス1か所だけ</li><li>送信を直列化し、ACK待ちとの競合を防止</li><li>BCC・長さ・文字範囲を検証後に応答</li><li>桁超過や不正HEXを黙って補正しない</li></ul></article>
           <article class="card"><h2>クイック開始</h2><ol class="steps"><li>上部でCOMポートを選び接続</li><li>左側から対象装置を選択</li><li>プレビューを確認して送信</li><li>右側ログでHEX・ASCII・解析結果を確認</li></ol></article>
         </div>
+        <article class="card">
+          <div class="card-title"><div><h2>バージョン情報</h2><p>不具合の報告時は、この内容を添えてください</p></div><span class="spec-badge" id="appVersionBadge">—</span></div>
+          <div class="table-wrap"><table>
+            <tbody id="appVersionTable">
+              <tr><td>バージョン</td><td id="appVersionValue">取得中…</td></tr>
+              <tr><td>ビルド</td><td id="appBuildValue">取得中…</td></tr>
+              <tr><td>実行環境</td><td id="appRuntimeValue">取得中…</td></tr>
+            </tbody>
+          </table></div>
+          <div class="actions"><button class="secondary" id="copyVersionButton">バージョン情報をコピー</button></div>
+        </article>
       </section>
 
       <section class="view" id="view-terminal">

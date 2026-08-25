@@ -71,7 +71,21 @@ npm run test:smoke
 npm run dist:win
 ```
 
-配布ファイルは `dist/external-device-simulator-next-1.0.0-x64.exe` に生成されます。
+配布ファイルは `dist/external-device-simulator-next-<version>-x64.exe` に生成されます。
+
+### バージョンの確認
+
+画面左上のアプリ名の下と、「概要」画面の「バージョン情報」にバージョンが出ます。
+配布版ではビルド日時とコミットも表示され、起動時の通信ログ（READY行）にも同じ内容が残ります。
+不具合の報告時は「バージョン情報をコピー」で以下の形式を取得できます。
+
+```
+external-device-simulator-next v1.1.0 / 2026-08-25 09:45:04（55e2206） / Electron 43.4.0 / Chromium 150.0.7871.224 / Node 24.18.1 / win32-x64
+```
+
+ビルド日時とコミットは `npm run stamp`（`pack` と `dist:win` が自動で実行）が `build-stamp.json`
+へ書き出し、electron-builder がEXEへ同梱します。開発実行（`npm start`）では生成されないため、
+ビルド欄は「開発実行」と表示されます。コミットに `+` が付く場合は、未コミットの変更を含むビルドです。
 
 ### アプリアイコン
 

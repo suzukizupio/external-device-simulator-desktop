@@ -6,6 +6,7 @@ const DEFAULT_LOG_LIMIT = 20000;
 const PROFILE_STORAGE_KEY = "external-device-simulator-next.profile.v1";
 
 const state = {
+  appInfo: null,
   connected: false,
   sessionId: 0,
   currentView: "overview",
@@ -92,6 +93,43 @@ function requireApi(name) {
   const api = window[name];
   if (!api) throw new Error(`${name} のプロトコルモジュールを読み込めません`);
   return api;
+}
+
+// ---------------------------------------------------------------- バージョン
+// 試験の記録と不具合報告で「どの版で起きたか」を特定できるようにする。
+// ビルド情報は tools/build-stamp.js がビルド時に埋め込むため、
+// 開発実行ではその旨を表示する。
+function formatBuildStamp(info) {
+  if (!info.packaged) return "開発実行（npm start）";
+  const at = info.builtAt && Number.isFinite(Date.parse(info.builtAt))
+    ? `${formatDate(Date.parse(info.builtAt))} ${formatTime(Date.parse(info.builtAt)).slice(0, 8)}`
+    : "ビルド日時不明";
+  return info.commit ? `${at}（${info.commit}）` : at;
+}
+
+function versionSummary(info) {
+  return `${info.name} v${info.version} / ${formatBuildStamp(info)}`
+    + ` / Electron ${info.electron} / Chromium ${info.chrome} / Node ${info.node} / ${info.platform}`;
+}
+
+async function applyAppVersion() {
+  const line = $("appVersionLine");
+  if (!window.appAPI) {
+    line.textContent = "通信仕様準拠シミュレータ（バージョン取得不可）";
+    $("appVersionValue").textContent = "取得できません";
+    $("appBuildValue").textContent = "—";
+    $("appRuntimeValue").textContent = "—";
+    return null;
+  }
+  const info = await window.appAPI.info();
+  state.appInfo = info;
+  line.textContent = `通信仕様準拠シミュレータ v${info.version}`;
+  line.title = versionSummary(info);
+  $("appVersionBadge").textContent = `v${info.version}`;
+  $("appVersionValue").textContent = `${info.name} v${info.version}`;
+  $("appBuildValue").textContent = formatBuildStamp(info);
+  $("appRuntimeValue").textContent = `Electron ${info.electron} / Chromium ${info.chrome} / Node ${info.node} / ${info.platform}`;
+  return info;
 }
 
 function toHex(bytes) {
@@ -3236,6 +3274,15 @@ function bindEvents() {
   $("applySignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.setSignals({ dtr: $("signalDtr").checked, rts: $("signalRts").checked })); } catch (error) { logError(error, "信号線設定"); } });
   $("readSignals").addEventListener("click", async () => { try { $("signalState").textContent = JSON.stringify(await window.serialAPI.getSignals()); } catch (error) { logError(error, "信号線取得"); } });
   $("flushSerial").addEventListener("click", async () => { try { await window.serialAPI.flush(); addLog("warn", "FLUSH", null, "入出力バッファを破棄"); } catch (error) { logError(error, "バッファ破棄"); } });
+  $("copyVersionButton").addEventListener("click", async () => {
+    if (!state.appInfo) { toast("バージョン情報をまだ取得できていません", true); return; }
+    try {
+      await navigator.clipboard.writeText(versionSummary(state.appInfo));
+      toast("バージョン情報をコピーしました");
+    } catch (error) {
+      logError(error, "バージョン情報のコピー");
+    }
+  });
   $("saveProfile").addEventListener("click", saveProfile);
   $("exportProfile").addEventListener("click", exportProfile);
   $("importProfile").addEventListener("click", () => $("profileImportFile").click());
@@ -3253,6 +3300,8 @@ async function initialize() {
   state.locker4Rows = createLocker4Rows(DEFAULT_LOCKER_COUNT);
   state.locker2Rows = createLocker2Rows(DEFAULT_LOCKER2_COUNT);
   bindEvents();
+  // 版の表示はシリアル初期化を待たせない。取得できなくても起動は続ける。
+  await applyAppVersion().catch((error) => logError(error, "バージョン取得"));
   const profileLoaded = loadSavedProfile();
   if (!profileLoaded) syncKeyForm();
   applyLogLimit();
@@ -3296,7 +3345,9 @@ async function initialize() {
   }
   await refreshPorts();
   updateMetrics();
-  addLog("info", "READY", null, "外部疑似装置 Next を初期化しました");
+  addLog("info", "READY", null, state.appInfo
+    ? `${versionSummary(state.appInfo)} を初期化しました`
+    : "外部疑似装置 Next を初期化しました");
 }
 
 initialize().catch((error) => logError(error, "初期化"));

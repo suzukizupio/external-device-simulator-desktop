@@ -4,6 +4,7 @@ node_modules/
 # ビルド成果物
 dist/
 out/
+build-stamp.json
 
 # Electronビルド素材（アイコンのみ追跡）
 build/*

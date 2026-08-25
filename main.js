@@ -1,6 +1,7 @@
 "use strict";
 
 const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { SerialPort } = require("serialport");
@@ -19,6 +20,35 @@ const serialSession = new SerialSession({
 
 function sendToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+// 配布EXEがどの版かを画面から特定できるようにする。build-stamp.json は
+// tools/build-stamp.js がビルド時に生成するため、開発実行では存在しない。
+function readBuildStamp() {
+  try {
+    const stamp = JSON.parse(fs.readFileSync(path.join(__dirname, "build-stamp.json"), "utf8"));
+    return {
+      builtAt: typeof stamp.builtAt === "string" ? stamp.builtAt : null,
+      commit: typeof stamp.commit === "string" ? stamp.commit : null,
+    };
+  } catch (_error) {
+    return { builtAt: null, commit: null };
+  }
+}
+
+function appInfo() {
+  const stamp = readBuildStamp();
+  return {
+    name: app.getName(),
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    builtAt: stamp.builtAt,
+    commit: stamp.commit,
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: `${process.platform}-${process.arch}`,
+  };
 }
 
 // 試験中の誤操作で通信ログを失わないよう、リロード系のキーを無効化する。
@@ -102,6 +132,7 @@ function registerTrustedHandler(channel, handler) {
   });
 }
 
+registerTrustedHandler("app:info", () => appInfo());
 registerTrustedHandler("serial:list", () => serialSession.list());
 registerTrustedHandler("serial:status", () => serialSession.snapshot());
 registerTrustedHandler("serial:open", (options) => serialSession.open(options));
