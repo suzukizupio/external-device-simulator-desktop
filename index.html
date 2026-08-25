@@ -46,7 +46,7 @@
       <button class="nav-item" data-view="panasonicElevator"><span>V</span>エレベータ（パナソニック）</button>
       <button class="nav-item" data-view="alarm"><span>A</span>警報（アイホン）</button>
       <button class="nav-item" data-view="panasonic"><span>P</span>警報（パナソニック）</button>
-      <button class="nav-item" data-view="bridge"><span>⇄</span>警報変換</button>
+      <button class="nav-item" data-view="bridge"><span>⇄</span>電文変換</button>
       <p>試験</p>
       <button class="nav-item" data-view="faults"><span>!</span>異常注入</button>
       <button class="nav-item" data-view="settings"><span>⚙</span>通信設定</button>
@@ -514,15 +514,23 @@
       </section>
 
       <section class="view" id="view-bridge">
-        <div class="page-heading"><div><h1>警報変換（メーカー間ブリッジ）</h1><p>受信した警報を、別メーカーの形式へ読み替えて送信します</p></div><span class="spec-badge" id="bridgeSpecBadge">—</span></div>
+        <div class="page-heading"><div><h1>電文変換（ブリッジ）</h1><p>受信した電文を、別メーカー・別装置の形式へ読み替えて送信します</p></div><span class="spec-badge" id="bridgeSpecBadge">—</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
+            <label>変換の種類<select id="bridgeMode"><option value="alarm">警報（メーカー間）</option><option value="device">宅配・非接触キー → マンションコントローラ</option></select></label>
+          </div>
+          <div class="form-grid cols-3" id="bridgeAlarmForm">
             <label>変換元<select id="bridgeFrom"></select></label>
             <label>変換先<select id="bridgeTo"></select></label>
             <label id="bridgePatternField">アイホンのビット割付<select id="bridgePattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
           </div>
-          <div class="inline-options"><label><input id="bridgeAuto" type="checkbox"> 受信したら自動で変換して送信する</label><label><input id="bridgeReverse" type="checkbox" checked> 送信ポートで受けた電文も逆向きに変換して中継する</label></div>
-          <p class="callout">この対応付けは<strong>通信仕様書には規定がありません</strong>。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。</p>
+          <div class="form-grid cols-3" id="bridgeDeviceForm">
+            <label>変換元<select id="bridgeDeviceFrom"><option value="locker4">宅配ボックス 4線式(B方式) Q48-005F</option><option value="key">非接触キー Q48-006F</option></select></label>
+            <label>変換先<input id="bridgeDeviceTo" value="マンションコントローラ Q48-008I" readonly></label>
+            <label>MCの仕様Version<select id="bridgeMcVersion"><option value="1">Ver.1</option><option value="2">Ver.2</option><option value="3" selected>Ver.3</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="bridgeAuto" type="checkbox"> 受信したら自動で変換して送信する</label><label id="bridgeReverseField"><input id="bridgeReverse" type="checkbox" checked> 送信ポートで受けた電文も逆向きに変換して中継する</label></div>
+          <p class="callout" id="bridgeModeNote">—</p>
         </article>
 
         <article class="card form-card">
@@ -558,7 +566,7 @@
           <div class="card-title"><div><h2>変換表</h2><p id="bridgeTableNote">—</p></div></div>
           <div class="receive-table-wrap">
             <table class="receive-table">
-              <thead><tr><th>警報</th><th>変換元の桁</th><th>変換先の桁</th></tr></thead>
+              <thead><tr><th id="bridgeMappingHead1">警報</th><th id="bridgeMappingHead2">変換元の桁</th><th id="bridgeMappingHead3">変換先の桁</th></tr></thead>
               <tbody id="bridgeMapping"><tr class="receive-empty"><td colspan="3">—</td></tr></tbody>
             </table>
           </div>
@@ -644,6 +652,7 @@
   <script src="protocol/alarm-identifier.js"></script>
   <script src="protocol/link-analyzer.js"></script>
   <script src="protocol/alarm-bridge.js"></script>
+  <script src="protocol/device-bridge.js"></script>
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
   <script src="protocol/auto-responder.js"></script>

@@ -30,7 +30,7 @@ const PROBE_SCRIPT = `
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "AlarmBridge", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "AlarmBridge", "DeviceBridge", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -683,6 +683,66 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   if (!mapping.note.includes("HPC → アイホン") || !/項目は変換先に枠がありません/.test(mapping.note) || mapping.rows < 5) {
     throw new Error(`alarm bridge mapping table failed: ${JSON.stringify(mapping)}`);
   }
+  // 宅配4線式 → マンションコントローラ。仕様の枠に沿って読み替えられること。
+  await window.webContents.executeJavaScript(`
+    (() => {
+      const set = (id, value) => { const s = document.getElementById(id); s.value = value; s.dispatchEvent(new Event("change")); };
+      set("bridgeMode", "device");
+      set("bridgeDeviceFrom", "locker4");
+      set("bridgeMcVersion", "3");
+    })()
+  `);
+  await send(Telegram4.buildResponseTelegram({
+    packageNo: 0, modelNo: 1,
+    lockers: [
+      { state: Telegram4.STATE.PARCEL, lockerNo: 5, buildingNo: 1, roomNo: 101 },
+      { state: 0x32, lockerNo: 7, buildingNo: 1, roomNo: 103 },
+    ],
+  }));
+  await wait(120);
+  const device = await window.webContents.executeJavaScript(`({
+    verdict: ${$("bridgeVerdict")}.textContent,
+    summary: ${$("bridgeSummary")}.textContent,
+    preview: ${$("bridgePreview")}.textContent,
+    notes: Array.from(document.querySelectorAll("#bridgeNotes .receive-note")).map((node) => node.textContent),
+    badge: ${$("bridgeSpecBadge")}.textContent,
+    reverseHidden: ${$("bridgeReverseField")}.hidden,
+    mappingNote: ${$("bridgeTableNote")}.textContent,
+  })`);
+  // 荷物あり(31H)は着荷状態へ、集荷預り(32H)は対応がないため落ちる。
+  if (!device.summary.includes("ICボックス情報 1件（1件は送れません）")
+      || !device.notes.some((note) => note.includes("ロッカー007の「集荷預かり」は送れません"))) {
+    throw new Error(`device bridge conversion failed: ${JSON.stringify(device)}`);
+  }
+  if (device.verdict !== "変換OK（一部を送れません）" || !device.preview.startsWith("02 31 37 36 43 30 30 30 30 31 31")) {
+    throw new Error(`device bridge frame failed: ${JSON.stringify(device)}`);
+  }
+  // 装置→MCは一方向のため、逆向き中継の選択は隠す。
+  if (!device.reverseHidden || !device.mappingNote.includes("宅配ボックス 4線式(B方式) → マンションコントローラ")) {
+    throw new Error(`device bridge form failed: ${JSON.stringify(device)}`);
+  }
+
+  // 非接触キーはゲート・住戸・個人番号がそのままキー情報へ載る。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = document.getElementById("bridgeDeviceFrom"); s.value = "key"; s.dispatchEvent(new Event("change")); })()`
+  );
+  await send(NoncontactKey.buildTelegram({
+    format: NoncontactKey.FORMAT.WITH_PERSON, gateNo: 2, buildingNo: 1, roomNo: 101, personNo: 3,
+  }));
+  await wait(120);
+  const keyDevice = await window.webContents.executeJavaScript(`({
+    verdict: ${$("bridgeVerdict")}.textContent,
+    summary: ${$("bridgeSummary")}.textContent,
+  })`);
+  if (keyDevice.verdict !== "変換OK" || !keyDevice.summary.includes("ICキー情報-2（ゲート02 / B1B101 / 個人003）")) {
+    throw new Error(`device bridge key conversion failed: ${JSON.stringify(keyDevice)}`);
+  }
+
+  // 警報モードへ戻す。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = document.getElementById("bridgeMode"); s.value = "alarm"; s.dispatchEvent(new Event("change")); })()`
+  );
+
   // 送信ポートは受信ポートとは別に開く。未接続のまま送ろうとしたら理由を出す。
   const bridgePort = await window.webContents.executeJavaScript(`
     (() => {

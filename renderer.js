@@ -2608,8 +2608,10 @@ function frameReaderProfile() {
   // 警報は選択中のプロトコルと違う形式の電文も受信して判定するため、
   // STX形式・レコード形式の両方を読める共通リーダーを使う。
   if (state.currentView === "panasonic") return "panasonicAlarm";
-  // 変換画面は変換元が何であれ受け取れるよう、同じ共通リーダーを使う。
-  if (state.currentView === "bridge") return "panasonicAlarm";
+  // 変換画面は変換元に合わせて切り出す。警報は形式をまたぐため共通リーダーを使う。
+  if (state.currentView === "bridge") {
+    return bridgeMode() === "device" ? $("bridgeDeviceFrom").value : "panasonicAlarm";
+  }
   return state.currentView;
 }
 
@@ -2645,6 +2647,10 @@ function bridgeApi() {
 // 両メーカーの通信条件は違うことが多いため、回線ごとに条件を持つ。
 
 function bridgeTargetSerial(id) {
+  if (bridgeMode() === "device") {
+    // Q48-008I マンションコントローラは4800,E,8,1。
+    return { baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" };
+  }
   const identifier = requireApi("AlarmIdentifier");
   const target = identifier.findTarget(id);
   if (!target) return null;
@@ -2750,9 +2756,26 @@ async function disconnectBridgePort() {
   addLog("info", "BRIDGE", null, "送信ポートを切断しました");
 }
 
+function bridgeMode() {
+  return $("bridgeMode").value === "device" ? "device" : "alarm";
+}
+
 function bridgeSpec(which) {
   const id = $(which === "from" ? "bridgeFrom" : "bridgeTo").value;
   return { id, pattern: $("bridgePattern").value };
+}
+
+// 宅配・非接触キーからマンションコントローラへの変換は、Q48-008I側に
+// 対応するコマンド（6.7 宅配ボックス制御／6.8 非接触キー制御）が定義されている。
+function deviceBridgeApi() {
+  return requireApi("DeviceBridge");
+}
+
+function deviceBridgeOptions() {
+  return {
+    from: $("bridgeDeviceFrom").value,
+    version: Number($("bridgeMcVersion").value),
+  };
 }
 
 function bridgeUsesAiphone() {
@@ -2776,6 +2799,10 @@ function refreshBridgeTargets() {
 }
 
 function renderBridgeMapping() {
+  if (bridgeMode() === "device") return renderDeviceMapping();
+  $("bridgeMappingHead1").textContent = "警報";
+  $("bridgeMappingHead2").textContent = "変換元の桁";
+  $("bridgeMappingHead3").textContent = "変換先の桁";
   const body = $("bridgeMapping");
   const from = bridgeSpec("from");
   const to = bridgeSpec("to");
@@ -2813,6 +2840,7 @@ function renderBridgeMapping() {
 
 function bridgeFrameText(frame) {
   // レコード形式はASCIIで読めたほうが桁を追いやすい。
+  if (bridgeMode() === "device") return toHex(frame);
   if (frame[0] === 0x02) return toHex(frame);
   const ascii = requireApi("PanasonicAlarm").toAscii(frame)
     .replace(/[\x00-\x1F]/g, (character) => `<${panasonicHexByte(character.charCodeAt(0))}>`);
@@ -2853,8 +2881,10 @@ function renderBridgeResult() {
   verdict.className = `receive-verdict ${tone}`;
   const terms = result.terms.map((item) => item.label).join("＋") || "警報なし（復旧）";
   const way = result.direction ? `${result.direction.label}／` : "";
-  $("bridgeSummary").textContent = `${way}${result.from.short} → ${result.to.short}／${terms}／`
-    + `${result.buildingNo}棟 ${result.roomNo == null ? "----" : String(result.roomNo).padStart(4, "0")}号室`;
+  $("bridgeSummary").textContent = result.device
+    ? `${way}${result.from.short} → ${result.to.short}／${result.summary}`
+    : `${way}${result.from.short} → ${result.to.short}／${terms}／`
+      + `${result.buildingNo}棟 ${result.roomNo == null ? "----" : String(result.roomNo).padStart(4, "0")}号室`;
   $("bridgePreview").textContent = result.frames.length ? result.frames.map(bridgeFrameText).join("\n") : "—";
 
   const badgeFragment = document.createDocumentFragment();
@@ -2892,7 +2922,82 @@ function renderBridgeResult() {
   body.replaceChildren(fragment);
 }
 
+// 装置→MCの対応表は仕様書の枠に基づくため、対応の有無をそのまま並べる。
+function renderDeviceMapping() {
+  $("bridgeMappingHead1").textContent = "変換元（装置）";
+  $("bridgeMappingHead2").textContent = "変換先（Q48-008I）";
+  $("bridgeMappingHead3").textContent = "備考";
+  const api = deviceBridgeApi();
+  const rows = api.mappingTable($("bridgeDeviceFrom").value);
+  const source = api.SOURCE_LABEL[$("bridgeDeviceFrom").value];
+  $("bridgeTableNote").textContent = `${source} → マンションコントローラ Q48-008I`;
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = row.to.startsWith("（") ? "receive-row warn" : "receive-row ok";
+    for (const text of [row.from, row.to, row.note || "—"]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      tr.append(cell);
+    }
+    fragment.append(tr);
+  }
+  $("bridgeMapping").replaceChildren(fragment);
+}
+
+function convertDeviceFrame(frame) {
+  const api = deviceBridgeApi();
+  const options = deviceBridgeOptions();
+  try {
+    const result = api.convert(frame, options);
+    state.bridgeResult = {
+      sourceFrame: Array.from(frame),
+      device: true,
+      from: { short: result.fromLabel },
+      to: { short: "マンションコントローラ" },
+      terms: result.records.map((record) => ({ label: record.label })),
+      dropped: result.dropped.map((item) => ({ label: `ロッカー${String(item.lockerNo).padStart(3, "0")} ${item.label}` })),
+      frames: result.frames,
+      notes: result.notes,
+      complete: result.complete,
+      buildingNo: null,
+      roomNo: null,
+      restore: false,
+      summary: result.summary,
+      direction: { label: "受信ポート→送信ポート", reverse: false },
+    };
+    addLog("info", "BRIDGE", null, `${result.fromLabel} → Q48-008I：${result.summary}`);
+  } catch (error) {
+    state.bridgeResult = {
+      error: String(error && error.message || error),
+      sourceFrame: Array.from(frame), frames: [], device: true,
+      direction: { label: "受信ポート→送信ポート", reverse: false },
+    };
+    addLog("warn", "BRIDGE", frame, `変換できません: ${state.bridgeResult.error}`);
+  }
+  renderBridgeResult();
+  return state.bridgeResult;
+}
+
 function syncBridgeForm() {
+  const device = bridgeMode() === "device";
+  $("bridgeAlarmForm").hidden = device;
+  $("bridgeDeviceForm").hidden = !device;
+  // 装置→MCは一方向のため、逆向き中継の選択は隠す。
+  $("bridgeReverseField").hidden = device;
+  $("bridgeModeNote").textContent = device
+    ? "Q48-008Iの6.7 宅配ボックス制御／6.8 非接触キー制御に対応する枠があるため、仕様の定義に沿って読み替えます。対応する状態がないもの（集荷預り・食配着荷など）は送れないため、下の対応表と変換結果で確認してください。"
+    : "この対応付けは通信仕様書には規定がありません。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。";
+  if (device) {
+    const api = deviceBridgeApi();
+    $("bridgeSpecBadge").textContent = `${api.SOURCE_LABEL[$("bridgeDeviceFrom").value]} → MC`;
+    renderBridgeMapping();
+    renderBridgeResult();
+    syncBridgePortFields();
+    applyBridgePortState(state.bridgePort);
+    if (state.currentView === "bridge") updatePresetWarning();
+    return;
+  }
   refreshBridgeTargets();
   // ビット割付はアイホンが絡むときだけ効く。
   $("bridgePatternField").hidden = !bridgeUsesAiphone();
@@ -2931,6 +3036,7 @@ async function sendBridgeVia(direction, frames) {
 }
 
 function convertBridgeFrame(frame, direction) {
+  if (bridgeMode() === "device") return convertDeviceFrame(frame);
   const spec = bridgeDirectionSpec(direction);
   try {
     const result = bridgeApi().convert(frame, spec.source, spec.target);
@@ -4253,6 +4359,9 @@ function bindEvents() {
   });
   $("bridgePortRefresh").addEventListener("click", () => { refreshBridgePorts(); });
   $("bridgePortPreset").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信ポート条件"); } });
+  ["bridgeMode", "bridgeDeviceFrom", "bridgeMcVersion"].forEach((id) => $(id).addEventListener("change", () => {
+    try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
+  }));
   ["bridgeFrom", "bridgeTo", "bridgePattern"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
@@ -4343,7 +4452,7 @@ async function initialize() {
       updateMetrics();
       addLog("rx", "RX2", bytes, `送信ポート seq=${event.sequence}`, event.timestamp);
       // 逆向きの中継は、送信ポートで受けた電文を変換元の形式へ戻して受信ポートへ送る。
-      if (!$("bridgeReverse").checked) return;
+      if (bridgeMode() === "device" || !$("bridgeReverse").checked) return;
       try {
         for (const item of bridgePortReader().push(bytes)) {
           if (item.type === "frame") handleBridgeFrame(item.bytes, "reverse");
