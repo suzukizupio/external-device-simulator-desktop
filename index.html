@@ -42,7 +42,7 @@
       <p>設備連動</p>
       <button class="nav-item" data-view="mansion"><span>M</span>マンション制御</button>
       <button class="nav-item" data-view="elevator"><span>E</span>エレベータ</button>
-      <button class="nav-item" data-view="alarm"><span>A</span>警報発信装置</button>
+      <button class="nav-item" data-view="alarm"><span>A</span>警報（アイホン）</button>
       <button class="nav-item" data-view="panasonic"><span>P</span>警報（パナソニック）</button>
       <p>試験</p>
       <button class="nav-item" data-view="faults"><span>!</span>異常注入</button>
@@ -68,9 +68,9 @@
               <tr><td>非接触キー</td><td>Q48-006F Ver.1.15</td><td>1200–19200,E,8,1</td><td><span class="ok">10/13byte・ACK/NAK</span></td></tr>
               <tr><td>マンションコントローラ</td><td>Q48-008I Ver.3.12</td><td>4800,E,8,1</td><td><span class="ok">全110 CMD台帳・Ver/方向制約</span></td></tr>
               <tr><td>エレベータ連動</td><td>Q46-005J Ver.1.25</td><td>1200–19200,E,8,1</td><td><span class="ok">21byte・制御手順</span></td></tr>
-              <tr><td>警報発信装置</td><td>Q49-023G Ver.1.22</td><td>1200–9600,E,8,1</td><td><span class="ok">11byte・履歴</span></td></tr>
-              <tr><td>警報 ＨＰＣ（パナソニック）</td><td>ＨＰＣプロトコル 2012-01-10</td><td>1200,E,8,1</td><td><span class="ok">発信種別7種・ヒストリー15件</span></td></tr>
-              <tr><td>警報 新ＴＳＳ（パナソニック）</td><td>新ＴＳＳプロトコル 2012-03-26</td><td>1200,E,8,1</td><td><span class="ok">発信種別5種・ビット割付</span></td></tr>
+              <tr><td>警報（アイホン）</td><td>Q49-023G Ver.1.22</td><td>1200–9600,E,8,1</td><td><span class="ok">11byte・履歴</span></td></tr>
+              <tr><td>警報 HPC（パナソニック）</td><td>HPCプロトコル 2012-01-10</td><td>1200,E,8,1</td><td><span class="ok">発信種別7種・ヒストリー15件</span></td></tr>
+              <tr><td>警報 TSS（パナソニック）</td><td>新TSSプロトコル 2012-03-26</td><td>1200,E,8,1</td><td><span class="ok">発信種別5種・ビット割付</span></td></tr>
               <tr><td>警報 大興（パナソニック）</td><td>大興プロトコル 2018-01-09</td><td>1200,N,8,1</td><td><span class="ok">警報No.28種・最大10レコード</span></td></tr>
               <tr><td>警報 リモート（パナソニック）</td><td>リモートプロトコル 2012-01-10</td><td>1200,N,8,1</td><td><span class="ok">警報No.29種・定時送信</span></td></tr>
               <tr><td>旧外部疑似装置の独自機能</td><td>0.84.22</td><td>プロファイル依存</td><td><span class="warn">汎用／拡張プロファイル</span></td></tr>
@@ -355,7 +355,7 @@
       </section>
 
       <section class="view" id="view-alarm">
-        <div class="page-heading"><div><h1>警報発信装置</h1><p>Q49-023G：11byte固定、加算BCC、履歴番号</p></div><span class="spec-badge">1200–9600,E,8,1</span></div>
+        <div class="page-heading"><div><h1>警報（アイホン）</h1><p>Q49-023G：11byte固定、加算BCC、履歴番号</p></div><span class="spec-badge">1200–9600,E,8,1</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
             <label>動作側<select id="alarmRole"><option value="intercom">集合インターホン（優先局）</option><option value="alarm">警報発信装置（非優先局）</option></select></label>
@@ -393,7 +393,7 @@
         <div class="page-heading"><div><h1>警報（パナソニック）</h1><p id="panaSpecNote">ﾊﾟﾅｿﾆｯｸIFU→他社通報機の警報プロトコル4種</p></div><span class="spec-badge" id="panaSpecBadge">1200,E,8,1</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
-            <label>プロトコル<select id="panaProtocol"><option value="hpc">ＨＰＣ</option><option value="tss">新ＴＳＳ</option><option value="daiko">大興</option><option value="remote">リモート</option></select></label>
+            <label>プロトコル<select id="panaProtocol"><option value="hpc">HPC</option><option value="tss">TSS</option><option value="daiko">大興</option><option value="remote">リモート</option></select></label>
             <label>動作側<select id="panaRole"><option value="ifu">ﾊﾟﾅｿﾆｯｸIFU（送信側）</option><option value="peer">他社通報機（受信側）</option></select></label>
             <label>送信方式<select id="panaTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
           </div>
@@ -426,7 +426,7 @@
 
           <div id="panaRecordForm">
             <div class="form-grid cols-3">
-              <label>モード<select id="panaMode"><option value="N">Ｎ（異常発生）</option><option value="F">Ｆ（異常復旧）</option></select></label>
+              <label>モード<select id="panaMode"><option value="N">N（異常発生）</option><option value="F">F（異常復旧）</option></select></label>
               <label>警報No.<select id="panaAlarmNo"></select></label>
               <label>棟番号（00～99）<input id="panaRecordBuilding" type="number" min="0" max="99" value="1"></label>
               <label>住戸番号（0000～9999）<input id="panaRecordRoom" inputmode="numeric" pattern="[0-9]{1,4}" value="0101" maxlength="4"></label>

@@ -209,7 +209,7 @@ const rHpc = Inspector.inspect("panasonic",
   Panasonic.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [0, 1], buildingNo: 1, roomNo: 101 }),
   { protocol: "hpc" });
 assert.strictEqual(rHpc.valid, true);
-assert.match(rHpc.title, /ＨＰＣ/);
+assert.match(rHpc.title, /HPC/);
 assert.match(rHpc.summary, /警報情報１ \/ 1棟 0101号室 \/ 火災＋非常/);
 assert.strictEqual(rHpc.expectedResponse, "ACK");
 assert.strictEqual(fieldOf(rHpc, "データ長").value, "37H（データ部7バイト）");
@@ -221,7 +221,7 @@ const rHpcHistory = Inspector.inspect("panasonic",
   { protocol: "hpc" });
 assert.match(fieldOf(rHpcHistory, "住戸番号").value, /ヒストリー3の応答/);
 
-// 同じ電文でも新TSSの割付で読むと意味が変わり、ヒストリー種別は仕様違反になる。
+// 同じ電文でもTSSの割付で読むと意味が変わり、ヒストリー種別は仕様違反になる。
 const rTssMisread = Inspector.inspect("panasonic",
   Panasonic.buildFrame({ protocol: "hpc", type: 0x01, infoBits: [7], buildingNo: 2, roomNo: 1201, historyNumber: 3 }),
   { protocol: "tss" });

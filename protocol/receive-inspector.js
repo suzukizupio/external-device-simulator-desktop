@@ -526,7 +526,7 @@
       : inspectPanasonicRecord(result, bytes, protocolName, info);
   }
 
-  // HPC／新TSS：STX＋データ長37H＋データ7バイト＋ETX＋BCCの11バイト固定。
+  // HPC／TSS：STX＋データ長37H＋データ7バイト＋ETX＋BCCの11バイト固定。
   function inspectPanasonicBlock(result, bytes, protocolName, info) {
     const length = bytes.length;
     const expected = PanasonicAlarm.BLOCK_LENGTH;

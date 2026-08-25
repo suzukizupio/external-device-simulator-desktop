@@ -474,7 +474,7 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     throw new Error(`panasonic HPC receive decode failed: ${JSON.stringify(panaHpc)}`);
   }
 
-  // 受信履歴はバイト列で保持しているため、新TSSへ切り替えると同じ電文を別の割付で読み直す。
+  // 受信履歴はバイト列で保持しているため、TSSへ切り替えると同じ電文を別の割付で読み直す。
   await window.webContents.executeJavaScript(
     `(() => { const s = ${$("panaProtocol")}; s.value = "tss"; s.dispatchEvent(new Event("change")); })()`
   );
@@ -669,7 +669,7 @@ const PANASONIC_UI_SCRIPT = `
     const hpcHex = $("panaInfo").value;
     const hpcPreview = preview();
 
-    // 新TSSは同じ00Hでもbit3以降の割付が違う。
+    // TSSは同じ00Hでもbit3以降の割付が違う。
     change($("panaProtocol"), "tss");
     const tss = {
       labels: labels(),
@@ -849,7 +849,7 @@ async function run({ window, app, sendToRenderer }) {
     if (pana.hpcHex !== "01" || pana.hpcPreview !== "02 37 00 01 01 00 01 00 01 03 3E") {
       throw new Error(`panasonic bit-to-hex sync failed: ${JSON.stringify(pana)}`);
     }
-    // 新TSSでは同じbit3が「水漏れ」、bit4が「コール」に分かれ、ヒストリーもない。
+    // TSSでは同じbit3が「水漏れ」、bit4が「コール」に分かれ、ヒストリーもない。
     if (pana.tss.labels[3] !== "bit3 水漏れ" || pana.tss.labels[4] !== "bit4 コール" || !pana.tss.historyHidden || pana.tss.historyDrawn) {
       throw new Error(`panasonic TSS bit labels failed: ${JSON.stringify(pana.tss)}`);
     }

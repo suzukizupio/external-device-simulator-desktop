@@ -1,6 +1,6 @@
 // パナソニック集合住宅システム（ﾊﾟﾅｿﾆｯｸIFU）→他社通報機の警報プロトコル4種を扱う。
-//   HPC      … 通信仕様書（ＨＰＣプロトコル）      2012年 1月10日
-//   新TSS    … 通信仕様書（新ＴＳＳプロトコル）    2012年 3月26日
+//   HPC      … 通信仕様書（HPCプロトコル）      2012年 1月10日
+//   TSS    … 通信仕様書（新TSSプロトコル）    2012年 3月26日
 //   大興     … 通信仕様書（大興プロトコル）        2018年 1月 9日
 //   リモート … 通信仕様書（リモートプロトコル）    2012年 1月10日
 // HPC／TSSはSTXで始まる11byte固定電文、大興／リモートは"SND"で始まるASCIIレコード列で、
@@ -34,7 +34,7 @@
   // パリティビットを持たずチェックサムだけで誤りを検出する。
   const PROTOCOL_INFO = Object.freeze({
     [PROTOCOL.HPC]: Object.freeze({
-      label: "ＨＰＣ", style: STYLE.BLOCK, document: "通信仕様書（ＨＰＣプロトコル）",
+      label: "HPC", style: STYLE.BLOCK, document: "通信仕様書（HPCプロトコル）",
       serial: Object.freeze({ baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even" }),
       history: true, dwellingRequest: true, scheduled: false,
       // ・ENQに対する応答待ちは1秒／テキストに対する応答待ちは1秒／テキスト待ちは1秒
@@ -43,7 +43,7 @@
       ifuRetries: 256, peerRetries: 5,
     }),
     [PROTOCOL.TSS]: Object.freeze({
-      label: "新ＴＳＳ", style: STYLE.BLOCK, document: "通信仕様書（新ＴＳＳプロトコル）",
+      label: "TSS", style: STYLE.BLOCK, document: "通信仕様書（新TSSプロトコル）",
       serial: Object.freeze({ baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even" }),
       history: false, dwellingRequest: false, scheduled: false,
       // ENQ応答がACK以外はMAX5回、ENQ応答タイムアウトはMAX256回、テキストNAKはMAX5回。
@@ -132,7 +132,7 @@
   }
 
   // ------------------------------------------------------------------
-  // HPC／新TSS：発信種別と警報情報のビット割付
+  // HPC／TSS：発信種別と警報情報のビット割付
   // ------------------------------------------------------------------
 
   // 仕様書のビット表はbit0がLSB。予備はlabel=nullで持ち、HEX直接入力で
@@ -155,7 +155,7 @@
         code: 0x00, name: "alarm1", label: "警報情報１",
         // 水漏れ／コールは機能設定でどちらか一方だけを送る（両方「有」なら送信しない）。
         bits: bitRow([bit("火災"), bit("非常"), bit("ガス"), bit("水漏れ／コール"),
-          bit("火災回路断"), bit("ガス機器異常"), bit("ＣＯ"), bit("防犯(代表)")]),
+          bit("火災回路断"), bit("ガス機器異常"), bit("CO"), bit("防犯(代表)")]),
       }),
       Object.freeze({
         code: 0x01, name: "alarm2", label: "警報情報２",
@@ -191,7 +191,7 @@
       }),
       Object.freeze({
         code: 0x01, name: "alarm2", label: "警報情報２",
-        bits: bitRow([bit("ＣＯ"), RESERVED, RESERVED, bit("住戸電源断"),
+        bits: bitRow([bit("CO"), RESERVED, RESERVED, bit("住戸電源断"),
           bit("ﾜｲﾔﾚｽ電池切れ"), bit("ﾜｲﾔﾚｽ機器異常"), RESERVED, RESERVED]),
       }),
       Object.freeze({
@@ -284,7 +284,7 @@
   }
 
   // ------------------------------------------------------------------
-  // HPC／新TSS：棟番号・住戸番号・BCC・電文
+  // HPC／TSS：棟番号・住戸番号・BCC・電文
   // ------------------------------------------------------------------
 
   // 棟番号は00H=単独棟設定:有り、01H=1棟…63H=99棟のバイナリ。64H以降は予備。
@@ -425,7 +425,7 @@
   const ALARM_NUMBERS = Object.freeze({
     [PROTOCOL.DAIKO]: Object.freeze([
       alarmNo(1, "火災"), alarmNo(2, "ガス漏れ"), alarmNo(3, "非常"), alarmNo(4, "防犯(代表)"),
-      alarmNo(5, "ＣＯ"), alarmNo(6, "コール"), alarmNo(7, "水漏れ"),
+      alarmNo(5, "CO"), alarmNo(6, "コール"), alarmNo(7, "水漏れ"),
       alarmNo(8, "防犯１"), alarmNo(9, "防犯２"), alarmNo(10, "防犯３"),
       alarmNo(11, "火災回路断"), alarmNo(12, "ガス機器異常"), alarmNo(13, "住戸通信異常"), alarmNo(14, "防犯４"),
       alarmNo(30, "防犯(代表)ｾｯﾄ/ﾘｾｯﾄ"), alarmNo(31, "防犯１ｾｯﾄ/ﾘｾｯﾄ"), alarmNo(32, "防犯２ｾｯﾄ/ﾘｾｯﾄ"),
@@ -436,7 +436,7 @@
     ]),
     [PROTOCOL.REMOTE]: Object.freeze([
       alarmNo(1, "火災"), alarmNo(2, "ガス漏れ"), alarmNo(3, "防犯(代表)"), alarmNo(4, "非常"),
-      alarmNo(5, "ＣＯ"), alarmNo(6, "コール"), alarmNo(7, "水漏れ"),
+      alarmNo(5, "CO"), alarmNo(6, "コール"), alarmNo(7, "水漏れ"),
       alarmNo(8, "防犯１"), alarmNo(9, "防犯２"), alarmNo(10, "防犯３"),
       alarmNo(11, "火災回路断"), alarmNo(12, "ガス機器異常"), alarmNo(13, "住戸通信異常"), alarmNo(14, "防犯４"),
       alarmNo(30, "防犯(代表)ｾｯﾄ/ﾘｾｯﾄ"), alarmNo(31, "防犯１ｾｯﾄ/ﾘｾｯﾄ"), alarmNo(32, "防犯２ｾｯﾄ/ﾘｾｯﾄ"),

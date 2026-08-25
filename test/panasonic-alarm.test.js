@@ -32,7 +32,7 @@ test("UMDがブラウザ相当のコンテキストでPanasonicAlarmを公開す
 
 test("4プロトコルの形式と通信条件が仕様どおり", function () {
   assert.deepEqual(P.PROTOCOL_NAMES.slice(), ["hpc", "tss", "daiko", "remote"]);
-  // HPC／新TSSは偶数パリティ＋BCC、大興／リモートはパリティなし＋チェックサム。
+  // HPC／TSSは偶数パリティ＋BCC、大興／リモートはパリティなし＋チェックサム。
   assert.equal(P.styleOf("hpc"), P.STYLE.BLOCK);
   assert.equal(P.styleOf("tss"), P.STYLE.BLOCK);
   assert.equal(P.styleOf("daiko"), P.STYLE.RECORD);
@@ -53,14 +53,14 @@ test("4プロトコルの形式と通信条件が仕様どおり", function () {
   assert.throws(() => P.protocolInfo("unknown"), /未知のプロトコル/);
 });
 
-// ---------------------------------------------------------------- HPC／新TSS
+// ---------------------------------------------------------------- HPC／TSS
 
-test("HPCの発信種別は7種、新TSSは5種", function () {
+test("HPCの発信種別は7種、TSSは5種", function () {
   assert.deepEqual(P.blockTypes("hpc").map((entry) => entry.code), [0x00, 0x01, 0x02, 0x04, 0x05, 0x10, 0x30]);
   assert.deepEqual(P.blockTypes("tss").map((entry) => entry.code), [0x00, 0x01, 0x02, 0x04, 0x44]);
-  // 新TSSに05H(汎用警報情報)・10H(住戸情報要求)・30H(ヒストリー要求)はない。
-  assert.throws(() => P.findBlockType("tss", 0x05), /新ＴＳＳに発信種別 05H はありません/);
-  assert.throws(() => P.findBlockType("tss", 0x30), /新ＴＳＳに発信種別 30H はありません/);
+  // TSSに05H(汎用警報情報)・10H(住戸情報要求)・30H(ヒストリー要求)はない。
+  assert.throws(() => P.findBlockType("tss", 0x05), /TSSに発信種別 05H はありません/);
+  assert.throws(() => P.findBlockType("tss", 0x30), /TSSに発信種別 30H はありません/);
   // 大興／リモートは発信種別を持たない。
   assert.throws(() => P.blockTypes("daiko"), /発信種別を持ちません/);
 });
@@ -68,7 +68,7 @@ test("HPCの発信種別は7種、新TSSは5種", function () {
 test("HPCの警報情報ビット割付が仕様の表と一致する", function () {
   const label = (protocol, type) => P.bitAssignments(protocol, type).map((cell) => cell.label);
   assert.deepEqual(label("hpc", 0x00),
-    ["火災", "非常", "ガス", "水漏れ／コール", "火災回路断", "ガス機器異常", "ＣＯ", "防犯(代表)"]);
+    ["火災", "非常", "ガス", "水漏れ／コール", "火災回路断", "ガス機器異常", "CO", "防犯(代表)"]);
   assert.deepEqual(label("hpc", 0x01),
     ["防犯１", "防犯２", "防犯３", "防犯(代表)ｾｯﾄ/ﾘｾｯﾄ", "防犯１ｾｯﾄ/ﾘｾｯﾄ", "防犯２ｾｯﾄ/ﾘｾｯﾄ", "防犯３ｾｯﾄ/ﾘｾｯﾄ", "住戸電源断"]);
   assert.deepEqual(label("hpc", 0x02),
@@ -82,16 +82,16 @@ test("HPCの警報情報ビット割付が仕様の表と一致する", function
   assert.equal(P.bitAssignments("hpc", 0x30), null);
 });
 
-test("新TSSの警報情報ビット割付が仕様の表と一致する", function () {
+test("TSSの警報情報ビット割付が仕様の表と一致する", function () {
   const label = (type) => P.bitAssignments("tss", type).map((cell) => cell.label);
   assert.deepEqual(label(0x00),
     ["火災", "非常", "ガス漏れ", "水漏れ", "コール", "防犯(代表)", "火災断線", "ガス機器異常"]);
   assert.deepEqual(label(0x01),
-    ["ＣＯ", null, null, "住戸電源断", "ﾜｲﾔﾚｽ電池切れ", "ﾜｲﾔﾚｽ機器異常", null, null]);
+    ["CO", null, null, "住戸電源断", "ﾜｲﾔﾚｽ電池切れ", "ﾜｲﾔﾚｽ機器異常", null, null]);
   assert.deepEqual(label(0x02), ["コール１", "コール２", "コール３", null, null, null, null, null]);
   assert.deepEqual(label(0x04), ["防犯ｾｯﾄ", null, null, null, null, null, null, null]);
   assert.deepEqual(label(0x44), ["防犯ﾘｾｯﾄ", null, null, null, null, null, null, null]);
-  // 同じ00Hでも割付が違うため、HPCと新TSSでbit3の意味が入れ替わる。
+  // 同じ00Hでも割付が違うため、HPCとTSSでbit3の意味が入れ替わる。
   assert.equal(P.describeInfo("hpc", 0x00, 0x08).summary, "水漏れ／コール");
   assert.equal(P.describeInfo("tss", 0x00, 0x08).summary, "水漏れ");
 });
@@ -185,7 +185,7 @@ test("ヒストリー番号はHPCの警報電文でだけ使える", function ()
   assert.equal(P.parse(frame, { protocol: "hpc" }).historyNumber, 3);
   assert.throws(() => P.buildFrame({ protocol: "tss", type: 0x00, historyNumber: 1 }), /ヒストリー応答はありません/);
   assert.throws(() => P.buildFrame({ protocol: "hpc", type: 0x30, historyNumber: 1 }), /要求電文にヒストリー番号は設定できません/);
-  // 新TSSでヒストリー種別付きの電文を受けたら仕様違反として扱う。
+  // TSSでヒストリー種別付きの電文を受けたら仕様違反として扱う。
   assert.throws(() => P.parse(frame, { protocol: "tss" }), /ヒストリー応答はありません/);
 });
 

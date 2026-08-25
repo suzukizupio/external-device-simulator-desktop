@@ -73,7 +73,7 @@
     // 警報電文は発報元と履歴番号が生バイトのため、電文中に02Hが現れる。
     // 固定長で読み切り、STXでの再同期は行わない。
     alarm: { length: () => 11, resyncOnStx: false },
-    // パナソニックHPC／新TSSも住戸番号とBCCが生バイトで02Hを取りうる11byte固定。
+    // パナソニックHPC／TSSも住戸番号とBCCが生バイトで02Hを取りうる11byte固定。
     panasonicBlock: { length: () => 11, resyncOnStx: false },
     panasonicRecord: { start: isRecordStart, length: recordLength, resyncOnStx: false },
   });

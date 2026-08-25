@@ -356,7 +356,7 @@ const VIEW_PRESETS = Object.freeze({
   alarm: "alarm",
 });
 
-// パナソニックだけは1画面で4プロトコルを扱い、HPC／新TSSが1200,E,8,1、
+// パナソニックだけは1画面で4プロトコルを扱い、HPC／TSSが1200,E,8,1、
 // 大興／リモートが1200,N,8,1と条件が分かれるため、選択中の値から引く。
 function viewPreset(view) {
   if (view !== "panasonic") return VIEW_PRESETS[view] || null;
@@ -573,7 +573,7 @@ function rejectControlWaiters(error) {
 }
 
 function viewUsesHandshake(view) {
-  // パナソニックはHPC／新TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
+  // パナソニックはHPC／TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
   // 大興／リモートのアンサーバックは伝送制御コードではなく電文で返す。
   if (view === "panasonic") return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK;
   return ["locker4", "mansion", "elevator", "alarm"].includes(view);
@@ -591,7 +591,7 @@ function resetLocker4Inbound() {
 
 function receiveTimeoutFor(view, stage) {
   if (view === "locker4") return stage === "link" ? 5_000 : 60_000;
-  // パナソニックはテキスト待ち（HPC 1秒／新TSS 2秒）と
+  // パナソニックはテキスト待ち（HPC 1秒／TSS 2秒）と
   // アンサーバック待ち（大興・リモート 5秒）を仕様値どおりに使う。
   if (view === "panasonic") {
     const info = panasonicInfo();
@@ -1391,7 +1391,7 @@ function handleAlarmRequest(frame) {
 }
 
 // ------------------------------------------------------- 警報（パナソニック）
-// 1画面で4プロトコルを切り替える。HPC／新TSSはSTX形式でENQ–ACK–TEXT–ACKの
+// 1画面で4プロトコルを切り替える。HPC／TSSはSTX形式でENQ–ACK–TEXT–ACKの
 // 手順を持ち、大興／リモートはASCIIレコードを送ってアンサーバック電文を待つ。
 
 function panasonicApi() {
@@ -3171,7 +3171,7 @@ function bindEvents() {
     }); } catch (error) { logError(error, "EV送信"); }
   });
   $("alarmSendButton").addEventListener("click", async () => {
-    try { await withTransaction("警報発信装置", async () => {
+    try { await withTransaction("警報（アイホン）", async () => {
       const frame = await preview("alarmPreview", buildAlarmFrame);
       if ($("alarmTransport").value === "direct") await transmit(frame, "frame");
       else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", maxRetries: 255, priority: $("alarmRole").value === "intercom" });
