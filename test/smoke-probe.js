@@ -7,13 +7,14 @@ const Telegram2 = require("../protocol/locker2");
 const Telegram4 = require("../protocol/locker4");
 const NoncontactKey = require("../protocol/noncontact-key");
 const PanasonicAlarm = require("../protocol/panasonic-alarm");
+const PanasonicElevator = require("../protocol/panasonic-elevator");
 const { version: packageVersion } = require("../package.json");
 
 // 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
 // LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
 const PROBE_SCRIPT = `
   new Promise((resolve) => setTimeout(() => {
-    const buttons = ["keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton", "panaPreviewButton"];
+    const buttons = ["keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton", "panaPreviewButton", "pevPreviewButton"];
     buttons.forEach((id) => document.getElementById(id).click());
     setTimeout(() => resolve({
       title: document.title,
@@ -26,9 +27,9 @@ const PROBE_SCRIPT = `
       buildValue: document.getElementById("appBuildValue").textContent,
       runtimeValue: document.getElementById("appRuntimeValue").textContent,
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
-      previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview"]
+      previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -512,6 +513,53 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   await click("panaRecordClear");
   await click("panaRxClear");
 
+  // ------------------------- パナソニックEV：18byte電文と付加コードの意味づけ
+  await navigate("panasonicElevator");
+  // 自動応答は未接続では送れないため、ここでは受信解析だけを見る。
+  await window.webContents.executeJavaScript(`${$("pevAutoResponse")}.checked = false`);
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("pevDirection")}; s.value = "fromElevator"; s.dispatchEvent(new Event("change")); })()`
+  );
+  const pevFrame = PanasonicElevator.buildFrame({ command: "IK", lbNo: 3, extraCode: "01" });
+  // 分割で届いても1件として解析されること。
+  await send(pevFrame.slice(0, 7));
+  await send(pevFrame.slice(7));
+  const pevRx = await monitorOf("pevRx");
+  if (pevRx.verdict !== "検証OK" || pevRx.fields["CMD"] !== "IK 共同玄関解錠"
+      || pevRx.fields["付加コード"] !== "01 管理室による共同玄関解錠"
+      || pevRx.fields["LB番号"] !== "03番" || !pevRx.fields["BCC"].includes("一致")) {
+    throw new Error(`panasonic elevator receive decode failed: ${JSON.stringify(pevRx)}`);
+  }
+
+  // 使えない桁に値が入っていれば仕様違反として示す。
+  const pevBadRoom = pevFrame.slice();
+  pevBadRoom[10] = "1".charCodeAt(0);
+  pevBadRoom.splice(16, 2, ...PanasonicElevator.calculateBCC(pevBadRoom.slice(0, 16)));
+  await send(pevBadRoom);
+  const pevViolation = await monitorOf("pevRx");
+  if (pevViolation.verdict !== "検証NG" || !pevViolation.notes.some((note) => note.includes("住戸番号は0000固定"))) {
+    throw new Error(`panasonic elevator fixed-field check failed: ${JSON.stringify(pevViolation)}`);
+  }
+
+  // 受信内容を送信フォームへ取り込むと、動作側とコマンドまで揃う。
+  await window.webContents.executeJavaScript(`${$("pevRxFollow")}.checked = false`);
+  await window.webContents.executeJavaScript(
+    `Array.from(document.querySelectorAll("#pevRxHistory .receive-history-item")).pop().click()`
+  );
+  await click("pevRxApply");
+  await wait(60);
+  const pevForm = await window.webContents.executeJavaScript(`({
+    direction: ${$("pevDirection")}.value,
+    command: ${$("pevCommand")}.value,
+    extra: ${$("pevExtra")}.value,
+    lb: ${$("pevLb")}.value,
+  })`);
+  if (pevForm.direction !== "toElevator" || pevForm.command !== "IK" || pevForm.extra !== "01" || pevForm.lb !== "3") {
+    throw new Error(`panasonic elevator apply failed: ${JSON.stringify(pevForm)}`);
+  }
+  await window.webContents.executeJavaScript(`${$("pevRxFollow")}.checked = true`);
+  await click("pevRxClear");
+
   // ------------------------------------- フレーム不成立でも受信内容を残す
   await navigate("key");
   // 先の履歴選択で追従を切っているため、最新表示へ戻してから受信させる。
@@ -541,6 +589,8 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     panasonic: panaHpc.summary,
     panasonicReread: panaReread.verdict,
     panasonicDaiko: panaDaiko.summary,
+    panasonicElevator: pevRx.summary,
+    panasonicElevatorViolation: pevViolation.verdict,
     frameError: keyError.badges,
     cleared: cleared.verdict,
   };
@@ -737,6 +787,65 @@ const PANASONIC_UI_SCRIPT = `
   })()
 `;
 
+// パナソニックのエレベータ連動は、付加コードによって使える桁が変わる。
+// 実DOM上でコマンドを往復させ、入力欄の有効・無効まで確かめる。
+const PANASONIC_ELEVATOR_UI_SCRIPT = `
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    const change = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new Event("change"));
+    };
+    const preview = () => { $("pevPreviewButton").click(); return $("pevPreview").textContent; };
+    const usage = () => ({
+      building: !$("pevBuilding").disabled,
+      room: !$("pevRoom").disabled,
+      lb: !$("pevLb").disabled,
+      hint: $("pevHint").textContent,
+    });
+
+    document.querySelector('[data-view="panasonicElevator"]').click();
+    const badge = document.querySelector("#view-panasonicElevator .spec-badge").textContent;
+
+    // IFU→エレベータでは4コマンド、エレベータ→IFUはヘルスチェック応答だけ。
+    change($("pevDirection"), "toElevator");
+    const toElevator = Array.from($("pevCommand").options).map((option) => option.value);
+    change($("pevDirection"), "fromElevator");
+    const fromElevator = Array.from($("pevCommand").options).map((option) => option.value);
+    const health = { extras: Array.from($("pevExtra").options).map((option) => option.textContent), usage: usage() };
+
+    // 住戸でのエレベータコールは棟・住戸だけを使う。
+    change($("pevDirection"), "toElevator");
+    change($("pevCommand"), "IE");
+    $("pevBuilding").value = "1";
+    $("pevRoom").value = "0101";
+    const call = { usage: usage(), preview: preview() };
+
+    // 共同玄関解錠は付加コードで住戸を特定できるかが変わる。
+    change($("pevCommand"), "IK");
+    change($("pevExtra"), "00");
+    $("pevLb").value = "3";
+    const unlockByRoom = { usage: usage(), preview: preview() };
+    change($("pevExtra"), "01");
+    const unlockByAdmin = { usage: usage(), preview: preview() };
+
+    // ヘルスチェックは全桁が固定値。
+    change($("pevCommand"), "IH");
+    const healthRequest = { usage: usage(), preview: preview() };
+
+    // 非接触キーID情報は付加コードの規定がないため直接入力になる。
+    change($("pevCommand"), "SB");
+    const keyInfo = {
+      extraFreeHidden: $("pevExtraFreeField").hidden,
+      extraFreeDrawn: $("pevExtraFreeField").offsetHeight > 0,
+      usage: usage(),
+    };
+
+    change($("pevCommand"), "IE");
+    return { badge, toElevator, fromElevator, health, call, unlockByRoom, unlockByAdmin, healthRequest, keyInfo };
+  })()
+`;
+
 async function run({ window, app, sendToRenderer }) {
   try {
     const initial = await window.webContents.executeJavaScript(PROBE_SCRIPT);
@@ -750,7 +859,7 @@ async function run({ window, app, sendToRenderer }) {
     if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
       throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
     }
-    if (initial.title !== "外部疑似装置 Next" || initial.views !== 11 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
+    if (initial.title !== "外部疑似装置 Next" || initial.views !== 12 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 
@@ -873,6 +982,40 @@ async function run({ window, app, sendToRenderer }) {
         pana.remote.scheduledHidden || pana.remote.propertyHidden ||
         !pana.remote.propertyDrawn || !pana.remote.scheduledDrawn) {
       throw new Error(`panasonic remote form failed: ${JSON.stringify(pana.remote)}`);
+    }
+
+    const pev = await window.webContents.executeJavaScript(PANASONIC_ELEVATOR_UI_SCRIPT);
+    if (pev.badge !== "9600,E,8,1" || pev.toElevator.join(",") !== "IE,IK,IH,SB" || pev.fromElevator.join(",") !== "SH") {
+      throw new Error(`panasonic elevator command table failed: ${JSON.stringify(pev)}`);
+    }
+    // ヘルスチェック応答の付加コードは運行状態を表す。
+    if (pev.health.extras.join(" / ") !== "00 正常運行中 / 01 点検中") {
+      throw new Error(`panasonic elevator health extras failed: ${JSON.stringify(pev.health)}`);
+    }
+    // 住戸でのエレベータコールは棟・住戸だけを使い、LB番号は00固定。
+    if (!pev.call.usage.building || !pev.call.usage.room || pev.call.usage.lb ||
+        !pev.call.preview.startsWith("02 49 45 20 4E 30 31 30 31 30 31 30 30 30 30 03 45 32")) {
+      throw new Error(`panasonic elevator call failed: ${JSON.stringify(pev.call)}`);
+    }
+    // 付加コード00は住戸を特定でき、01（管理室）では棟・住戸が固定値になる。
+    if (!pev.unlockByRoom.usage.room || !pev.unlockByRoom.usage.lb) {
+      throw new Error(`panasonic elevator unlock-by-room failed: ${JSON.stringify(pev.unlockByRoom)}`);
+    }
+    if (pev.unlockByAdmin.usage.building || pev.unlockByAdmin.usage.room || !pev.unlockByAdmin.usage.lb ||
+        !pev.unlockByAdmin.usage.hint.includes("棟番号00・住戸番号0000")) {
+      throw new Error(`panasonic elevator unlock-by-admin failed: ${JSON.stringify(pev.unlockByAdmin)}`);
+    }
+    // 管理室解錠でも棟・住戸は0で送る。
+    if (!pev.unlockByAdmin.preview.startsWith("02 49 4B 20 4E 30 30 30 30 30 30 30 33 30 31 03")) {
+      throw new Error(`panasonic elevator unlock-by-admin telegram failed: ${JSON.stringify(pev.unlockByAdmin.preview)}`);
+    }
+    if (pev.healthRequest.usage.building || pev.healthRequest.usage.room || pev.healthRequest.usage.lb ||
+        !pev.healthRequest.preview.startsWith("02 49 48 20 4E 30 30 30 30 30 30 30 30 30 30 03 45 32")) {
+      throw new Error(`panasonic elevator health request failed: ${JSON.stringify(pev.healthRequest)}`);
+    }
+    // 付加コードの規定がないSBだけ、2桁の直接入力欄が出る。
+    if (pev.keyInfo.extraFreeHidden || !pev.keyInfo.extraFreeDrawn || !pev.keyInfo.usage.lb) {
+      throw new Error(`panasonic elevator key-info form failed: ${JSON.stringify(pev.keyInfo)}`);
     }
 
     // 接続したまま画面を移ったときに通信条件の食い違いを警告するか。

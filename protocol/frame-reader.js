@@ -17,6 +17,8 @@
   const STX = 0x02;
   const ETX = 0x03;
   const TRANSPORT_CONTROLS = new Set([0x04, 0x05, 0x06, 0x15]);
+  // パナソニックのエレベータ連動だけ正常応答が10H／30Hで、NAKを持たない。
+  const PANASONIC_ELEVATOR_CONTROLS = new Set([0x04, 0x05, 0x10, 0x30]);
   const MAX_BUFFER = 1100;
   const MANSION = "mansion";
 
@@ -76,6 +78,9 @@
     // パナソニックHPC／TSSも住戸番号とBCCが生バイトで02Hを取りうる11byte固定。
     panasonicBlock: { length: () => 11, resyncOnStx: false },
     panasonicRecord: { start: isRecordStart, length: recordLength, resyncOnStx: false },
+    // パナソニックのエレベータ連動は18byte固定で、正常応答が10H／30Hの2種類。
+    // 30Hは'0'と同値のため、フレームの外側でだけ制御コードとして扱う。
+    panasonicElevator: { length: () => 18, resyncOnStx: false, controls: PANASONIC_ELEVATOR_CONTROLS },
   });
 
   function controlEvent(code) {
@@ -120,7 +125,7 @@
       if (this.decoder) return this.decoder.push(bytes).map(fromDecoderEvent);
       const events = [];
       if (!this.rule) {
-        for (const byte of bytes) if (TRANSPORT_CONTROLS.has(byte)) events.push(controlEvent(byte));
+        for (const byte of bytes) if (this._isControl(byte)) events.push(controlEvent(byte));
         return events;
       }
       for (const byte of bytes) this._consume(byte, events);
@@ -146,10 +151,16 @@
       return this.rule.start ? this.rule.start(byte) : byte === STX;
     }
 
+    // 伝送制御コードも機種で違う。フレームの外側でだけ判定する。
+    _isControl(byte) {
+      const controls = this.rule && this.rule.controls ? this.rule.controls : TRANSPORT_CONTROLS;
+      return controls.has(byte);
+    }
+
     _consume(byte, events) {
       if (this.buffer.length === 0) {
         if (this._isStart(byte)) this.buffer.push(byte);
-        else if (TRANSPORT_CONTROLS.has(byte)) events.push(controlEvent(byte));
+        else if (this._isControl(byte)) events.push(controlEvent(byte));
         return;
       }
 

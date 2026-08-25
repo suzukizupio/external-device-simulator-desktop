@@ -9,7 +9,7 @@ const Key = require("../protocol/noncontact-key");
 const fieldOf = (result, label) => result.fields.find((field) => field.label === label);
 
 // ---------------------------------------------------------------- 対象範囲
-assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4", "panasonic"]);
+assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4", "panasonic", "panasonicElevator"]);
 assert.strictEqual(Inspector.supports("locker4"), true);
 assert.strictEqual(Inspector.supports("mansion"), false);
 const unsupported = Inspector.inspect("mansion", [0x02, 0x03]);
@@ -271,6 +271,55 @@ badSum[badSum.length - 2] = "0".charCodeAt(0);
 const rBadSum = Inspector.inspect("panasonic", badSum, { protocol: "daiko" });
 assert.strictEqual(rBadSum.valid, false);
 assert.ok(rBadSum.problems.some((problem) => /チェックサムが一致しません/.test(problem)));
+
+// --------------------------------------- エレベータ連動（パナソニック）
+const PanasonicElevator = require("../protocol/panasonic-elevator.js");
+
+const rPev = Inspector.inspect("panasonicElevator",
+  PanasonicElevator.buildFrame({ command: "IE", buildingNo: 1, roomNo: 101 }), { direction: "toElevator" });
+assert.strictEqual(rPev.valid, true);
+assert.match(rPev.title, /エレベータ連動（パナソニック）/);
+assert.match(rPev.summary, /住戸でのエレベータコール \/ 1棟 0101号室/);
+assert.strictEqual(fieldOf(rPev, "CMD").value, "IE 住戸でのエレベータコール");
+assert.strictEqual(fieldOf(rPev, "予備").value, "20H（スペース）");
+assert.strictEqual(fieldOf(rPev, "モード").value, "N");
+assert.strictEqual(fieldOf(rPev, "住戸番号").value, "0101（101号室）");
+assert.match(fieldOf(rPev, "BCC").value, /一致$/);
+assert.strictEqual(rPev.expectedResponse, "ACK");
+
+// 付加コードで住戸を特定できるかが変わる。
+const rPevAdmin = Inspector.inspect("panasonicElevator",
+  PanasonicElevator.buildFrame({ command: "IK", lbNo: 3, extraCode: "01" }), { direction: "toElevator" });
+assert.strictEqual(rPevAdmin.valid, true);
+assert.strictEqual(fieldOf(rPevAdmin, "付加コード").value, "01 管理室による共同玄関解錠");
+assert.strictEqual(fieldOf(rPevAdmin, "LB番号").value, "03番");
+assert.strictEqual(fieldOf(rPevAdmin, "住戸番号").value, "0000（指定なし）");
+
+// 固定値の桁に値が入っていれば仕様違反として示し、桁自体は読める。
+const pevViolation = PanasonicElevator.buildFrame({ command: "IK", lbNo: 3, extraCode: "01" });
+pevViolation[10] = "1".charCodeAt(0);
+pevViolation.splice(16, 2, ...PanasonicElevator.calculateBCC(pevViolation.slice(0, 16)));
+const rPevViolation = Inspector.inspect("panasonicElevator", pevViolation, {});
+assert.strictEqual(rPevViolation.valid, false);
+assert.ok(rPevViolation.problems.some((problem) => /住戸番号は0000固定です/.test(problem)));
+assert.strictEqual(fieldOf(rPevViolation, "LB番号").value, "03番");
+// NAKを持たない機種なので、異常時の応答は無応答になる。
+assert.match(rPevViolation.expectedResponse, /無応答/);
+
+// 方向の食い違いは注意として示し、電文自体は正常扱い。
+const rPevDirection = Inspector.inspect("panasonicElevator",
+  PanasonicElevator.buildFrame({ command: "SH", extraCode: "01" }), { direction: "toElevator" });
+assert.strictEqual(rPevDirection.valid, true);
+assert.strictEqual(fieldOf(rPevDirection, "付加コード").value, "01 点検中");
+assert.ok(rPevDirection.warnings.some((warning) => /エレベータ→IFUの電文です/.test(warning)));
+
+// BCC異常でも各桁は読み取れる。
+const pevBadBcc = PanasonicElevator.buildFrame({ command: "IE", buildingNo: 1, roomNo: 101 });
+pevBadBcc[pevBadBcc.length - 1] ^= 0x01;
+const rPevBadBcc = Inspector.inspect("panasonicElevator", pevBadBcc, {});
+assert.strictEqual(rPevBadBcc.valid, false);
+assert.strictEqual(fieldOf(rPevBadBcc, "住戸番号").value, "0101（101号室）");
+assert.strictEqual(fieldOf(rPevBadBcc, "BCC").status, Inspector.STATUS.ERROR);
 
 // ------------------------------------------------------------- 入力検査
 assert.throws(() => Inspector.inspect("key", [0x02, 300]), /0～255/);

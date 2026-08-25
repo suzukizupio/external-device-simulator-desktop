@@ -60,6 +60,7 @@ const RECEIVE_MONITORS = Object.freeze({
   locker2: { prefix: "locker2Rx", historyLimit: 100 },
   key: { prefix: "keyRx", historyLimit: 100 },
   panasonic: { prefix: "panaRx", historyLimit: 100 },
+  panasonicElevator: { prefix: "pevRx", historyLimit: 100 },
 });
 
 // Q55-001D 2.基本機能：住戸アドレスはMAX800（登録数の上限）。
@@ -344,6 +345,7 @@ const SERIAL_PRESETS = Object.freeze({
   alarm: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
   // 大興／リモートはパリティビットを持たず、チェックサムだけで誤りを検出する。
   panasonicRecord: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" },
+  panasonicElevator: { baudRate: 9600, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
 });
 
 // 画面ごとに通信仕様が定める条件が違うため、対応するプリセットを引けるようにする。
@@ -354,6 +356,7 @@ const VIEW_PRESETS = Object.freeze({
   key: "key",
   elevator: "elevator",
   alarm: "alarm",
+  panasonicElevator: "panasonicElevator",
 });
 
 // パナソニックだけは1画面で4プロトコルを扱い、HPC／TSSが1200,E,8,1、
@@ -576,7 +579,7 @@ function viewUsesHandshake(view) {
   // パナソニックはHPC／TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
   // 大興／リモートのアンサーバックは伝送制御コードではなく電文で返す。
   if (view === "panasonic") return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK;
-  return ["locker4", "mansion", "elevator", "alarm"].includes(view);
+  return ["locker4", "mansion", "elevator", "alarm", "panasonicElevator"].includes(view);
 }
 
 function clearReceiveTimer() {
@@ -597,6 +600,8 @@ function receiveTimeoutFor(view, stage) {
     const info = panasonicInfo();
     return info.style === requireApi("PanasonicAlarm").STYLE.BLOCK ? info.textWaitMs : info.answerbackTimeoutMs;
   }
+  // パナソニックのエレベータ連動は、ACK送出後5秒でEOT／次データが来なければ相手の送信終了とみなす。
+  if (view === "panasonicElevator") return requireApi("PanasonicElevator").TIMING.idleAfterAckMs;
   if (["mansion", "elevator", "alarm"].includes(view)) return 6_000;
   return null;
 }
@@ -620,6 +625,25 @@ function armReceiveTimer(view, stage = "frame") {
   }, timeoutMs);
 }
 
+// 伝送制御コードは機種で違う。パナソニックのエレベータ連動は正常応答が10H／30Hで、
+// NAKに相当する応答を持たないため、異常時は無応答のまま相手の再送を待つ。
+function transportCodes(view) {
+  if (view !== "panasonicElevator") return { ack: 0x06, nak: 0x15 };
+  return { ack: panasonicElevatorAckCode(), nak: null };
+}
+
+function isTransportAck(view, control) {
+  if (control == null) return false;
+  if (view === "panasonicElevator") return requireApi("PanasonicElevator").isAck(control);
+  return control === transportCodes(view).ack;
+}
+
+// 30Hは'0'と同値のため、ログのASCII表示では制御コード名にしない（CONTROL_NAMESへ入れない）。
+function controlName(view, code) {
+  if (view === "panasonicElevator" && window.PanasonicElevator && window.PanasonicElevator.isAck(code)) return "ACK";
+  return CONTROL_NAMES[code] || `${Number(code).toString(16).toUpperCase().padStart(2, "0")}H`;
+}
+
 async function sendAutomaticResponse(valid, stage) {
   const mode = $("autoTransportResponse").value;
   if (mode === "manual") return null;
@@ -630,9 +654,15 @@ async function sendAutomaticResponse(valid, stage) {
   const delay = Number($("autoResponseDelay").value);
   if (!Number.isFinite(delay) || delay < 0 || delay > 60000) throw new RangeError("自動応答遅延は0～60000msで指定してください");
   if (delay) await sleep(delay);
-  const control = mode === "ack" ? 0x06 : mode === "nak" ? 0x15 : (valid ? 0x06 : 0x15);
+  const view = state.currentView;
+  const codes = transportCodes(view);
+  const control = mode === "ack" ? codes.ack : mode === "nak" ? codes.nak : (valid ? codes.ack : codes.nak);
+  if (control == null) {
+    addLog("warn", "AUTO", null, `${stage}へ応答しません（この機種にNAKはなく、相手の再送を待ちます）`);
+    return null;
+  }
   await transmit([control], "response");
-  addLog(control === 0x06 ? "info" : "warn", "AUTO", [control], `${stage}へ${CONTROL_NAMES[control]}`);
+  addLog(isTransportAck(view, control) ? "info" : "warn", "AUTO", [control], `${stage}へ${controlName(view, control)}`);
   return control;
 }
 
@@ -649,6 +679,13 @@ function handleInboundControl(bytes, consumedBySender) {
     setSequence(completed ? "EOT受信・完了" : "EOT受信・パケット不足");
     return;
   }
+  if (bytes[0] === 0x04 && state.currentView === "panasonicElevator") {
+    clearReceiveTimer();
+    state.inboundLink = false;
+    addLog("info", "EOT", bytes, "相手装置の送信終了");
+    setSequence("EOT受信・完了");
+    return;
+  }
   if (bytes[0] !== 0x05) return;
   state.inboundLink = false;
   if ($("autoTransportResponse").value === "manual") {
@@ -657,8 +694,8 @@ function handleInboundControl(bytes, consumedBySender) {
     return;
   }
   sendAutomaticResponse(true, "ENQ").then((control) => {
-    state.inboundLink = control === 0x06;
-    if (control === 0x06) {
+    state.inboundLink = isTransportAck(state.currentView, control);
+    if (state.inboundLink) {
       armReceiveTimer(state.currentView, "link");
       setSequence("受信電文待ち");
     }
@@ -681,7 +718,7 @@ function handleCompletedInboundFrame(valid) {
       armReceiveTimer("locker4", "link");
       setSequence(state.locker4Inbound.expectedPackage < 0 ? "ACK送信・EOT待ち" : `ACK送信・package ${state.locker4Inbound.expectedPackage}待ち`);
     } else {
-      setSequence(control === 0x06 ? "受信完了" : control === 0x15 ? "受信異常" : "応答なし");
+      setSequence(isTransportAck(state.currentView, control) ? "受信完了" : control == null ? "応答なし" : "受信異常");
     }
     return control;
   }).catch((error) => {
@@ -1370,10 +1407,11 @@ function handleApplicationFrame(view, frame, transportResponse, valid) {
     try { handlePanasonicRecordFrame(frame, valid); } catch (error) { logError(error, "アンサーバック処理"); }
     return;
   }
-  if (transportResponse !== 0x06) return;
+  if (!isTransportAck(view, transportResponse)) return;
   try {
     if (view === "alarm") handleAlarmRequest(frame);
     else if (view === "panasonic") handlePanasonicRequest(frame);
+    else if (view === "panasonicElevator") handlePanasonicElevatorRequest(frame);
     else if (view === "locker4") handleLocker4Request(frame);
     else if (view === "mansion") handleMansionRequest(frame);
     else if (view === "elevator") handleElevatorRequest(frame);
@@ -1903,6 +1941,241 @@ function syncPanasonicForm() {
   renderReceiveMonitor("panasonic");
 }
 
+// ------------------------------------------- エレベータ連動（パナソニック）
+// 18byte固定・ENQ–ACK–DATA–ACK–EOT。正常応答が10H／30Hの2種類で、NAKに相当する
+// 応答がないため、異常時は無応答のまま相手の再送を待つ点がアイホンQ46-005Jと違う。
+
+function panasonicElevatorApi() {
+  return requireApi("PanasonicElevator");
+}
+
+function panasonicElevatorDirection() {
+  return $("pevDirection").value;
+}
+
+function panasonicElevatorAckCode() {
+  const value = Number($("pevAckCode").value);
+  return panasonicElevatorApi().isAck(value) ? value : panasonicElevatorApi().CODE.ACK;
+}
+
+function panasonicElevatorCommand() {
+  return panasonicElevatorApi().findCommand($("pevCommand").value);
+}
+
+// 付加コードが規定されているコマンドは選択、規定のないSBは2桁を直接入力させる。
+function panasonicElevatorExtraCode() {
+  const entry = panasonicElevatorCommand();
+  if (entry.extras) return $("pevExtra").value;
+  const text = String($("pevExtraFree").value).trim();
+  if (!/^\d{2}$/.test(text)) throw new RangeError("付加コードは2桁の数字で指定してください");
+  return text;
+}
+
+function refreshPanasonicElevatorCommands() {
+  const api = panasonicElevatorApi();
+  const select = $("pevCommand");
+  const previous = select.value;
+  const options = api.commands(panasonicElevatorDirection()).map((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.code;
+    option.textContent = `${entry.code} ${entry.label}`;
+    return option;
+  });
+  select.replaceChildren(...options);
+  if (options.some((option) => option.value === previous)) select.value = previous;
+}
+
+function refreshPanasonicElevatorExtras() {
+  const entry = panasonicElevatorCommand();
+  const select = $("pevExtra");
+  const previous = select.value;
+  const options = (entry.extras || []).map((item) => {
+    const option = document.createElement("option");
+    option.value = item.code;
+    option.textContent = `${item.code} ${item.label}`;
+    return option;
+  });
+  select.replaceChildren(...options);
+  if (options.some((option) => option.value === previous)) select.value = previous;
+  select.disabled = options.length <= 1;
+}
+
+// 付加コードで住戸を特定できるかが変わるため、使えない桁は入力させない。
+function syncPanasonicElevatorForm() {
+  const api = panasonicElevatorApi();
+  refreshPanasonicElevatorCommands();
+  refreshPanasonicElevatorExtras();
+  const entry = panasonicElevatorCommand();
+  const hasExtraTable = Boolean(entry.extras);
+  $("pevExtraFreeField").hidden = hasExtraTable;
+
+  let extraCode = null;
+  try { extraCode = panasonicElevatorExtraCode(); } catch (_error) { extraCode = null; }
+  const usage = api.fieldUsage(entry, extraCode);
+  const matched = api.findExtra(entry, extraCode);
+  $("pevBuilding").disabled = !usage.building;
+  $("pevRoom").disabled = !usage.room;
+  $("pevLb").disabled = !usage.lb;
+
+  const fixed = [];
+  if (!usage.building) fixed.push("棟番号00");
+  if (!usage.room) fixed.push("住戸番号0000");
+  if (!usage.lb) fixed.push("LB番号00");
+  const label = matched && entry.extras && entry.extras.length > 1 ? `${entry.label}／${matched.label}` : entry.label;
+  $("pevHint").textContent = fixed.length
+    ? `${label}：${fixed.join("・")}が仕様上の固定値です`
+    : `${label}：棟番号・住戸番号・LB番号を指定します`;
+
+  if (state.currentView === "panasonicElevator") updatePresetWarning();
+  renderReceiveMonitor("panasonicElevator");
+}
+
+function buildPanasonicElevatorFrame() {
+  const api = panasonicElevatorApi();
+  const entry = panasonicElevatorCommand();
+  if (entry.direction !== panasonicElevatorDirection()) {
+    throw new Error(`${entry.code}は${entry.direction === api.DIRECTION.TO_ELEVATOR ? "ﾊﾟﾅｿﾆｯｸIFU" : "エレベータ"}側から送信します`);
+  }
+  const extraCode = panasonicElevatorExtraCode();
+  const usage = api.fieldUsage(entry, extraCode);
+  return api.buildFrame({
+    command: entry.code,
+    extraCode,
+    buildingNo: usage.building ? integerValue("pevBuilding", "棟番号", 0, 99) : 0,
+    roomNo: usage.room ? panasonicRoomValue("pevRoom") : 0,
+    lbNo: usage.lb ? integerValue("pevLb", "LB番号", 0, 99) : 0,
+  });
+}
+
+function previewPanasonicElevator() {
+  try {
+    const frame = buildPanasonicElevatorFrame();
+    $("pevPreview").textContent = `${toHex(frame)}    [${panasonicElevatorApi().toAscii(frame).replace(/[\x00-\x1F]/g, (character) => `<${Number(character.charCodeAt(0)).toString(16).toUpperCase().padStart(2, "0")}>`)}]`;
+    return frame;
+  } catch (error) {
+    $("pevPreview").textContent = `ERROR: ${error.message}`;
+    throw error;
+  }
+}
+
+// ENQ→ACK→DATA→ACK→EOT を1回分行う。成立すればイベントを返し、
+// 再送が要るときはnullを返して呼び出し側の試行ループへ戻る。
+async function panasonicElevatorExchange(frame, attempt, attempts) {
+  const api = panasonicElevatorApi();
+  const accepted = [api.CODE.ENQ].concat(api.ACK_CODES);
+  const timeout = api.TIMING.ackTimeoutMs;
+
+  setSequence(`ENQ送信 ${attempt}/${attempts}`);
+  const linkWaiter = createControlWaiter(timeout, accepted);
+  try {
+    await transmit([api.CODE.ENQ], "enq");
+  } catch (error) {
+    linkWaiter.cancel();
+    throw error;
+  }
+  linkWaiter.arm();
+  let control;
+  try {
+    control = await linkWaiter.promise;
+  } catch (error) {
+    linkWaiter.cancel();
+    if (!/ACK待ちタイムアウト/.test(String(error.message))) throw error;
+    addLog("warn", "RETRY", null, `ENQへの応答がありません（${timeout}ms） / ${attempt}/${attempts}`);
+    return null;
+  }
+
+  // ENQ衝突。仕様どおり自分のENQを捨て、相手へ送信権を渡してから待ち時間を空ける。
+  // 待ち時間はエレベータ1秒・パナソニック2秒と差をつけ、再送時の衝突を避ける。
+  if (control === api.CODE.ENQ) {
+    const backoff = api.TIMING.collisionBackoffMs[panasonicElevatorDirection()];
+    state.inboundLink = true;
+    armReceiveTimer("panasonicElevator", "link");
+    await transmit([panasonicElevatorAckCode()], "response");
+    addLog("warn", "COLLISION", [api.CODE.ENQ], `ENQ衝突。送信権を相手へ渡し、${backoff}ms後に再送します`);
+    setSequence("衝突・受信へ譲渡");
+    await sleep(backoff);
+    return null;
+  }
+
+  setSequence(`電文ACK待ち ${attempt}/${attempts}`);
+  const textWaiter = createControlWaiter(timeout, accepted);
+  try {
+    await transmit(frame, "frame");
+  } catch (error) {
+    textWaiter.cancel();
+    throw error;
+  }
+  textWaiter.arm();
+  try {
+    const answer = await textWaiter.promise;
+    if (!api.isAck(answer)) {
+      addLog("warn", "RETRY", null, `電文への応答が${controlName("panasonicElevator", answer)}でした / ${attempt}/${attempts}`);
+      return null;
+    }
+  } catch (error) {
+    textWaiter.cancel();
+    if (!/ACK待ちタイムアウト/.test(String(error.message))) throw error;
+    addLog("warn", "RETRY", null, `電文への応答がありません（${timeout}ms） / ${attempt}/${attempts}`);
+    return null;
+  }
+
+  setSequence("EOT送信");
+  await transmit([api.CODE.EOT], "eot");
+  setSequence("完了");
+  addLog("info", "SEQ", null, `正常完了 / 送信${attempt}回`);
+  return { type: "complete", attempts: attempt };
+}
+
+async function sendPanasonicElevatorFrame(frame, forceHandshake = false) {
+  const api = panasonicElevatorApi();
+  if (!forceHandshake && $("pevTransport").value === "direct") return transmit(frame, "frame");
+  const attempts = api.TIMING.sendAttempts;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await panasonicElevatorExchange(frame, attempt, attempts);
+    if (result) return result;
+  }
+  setSequence("失敗");
+  throw new Error(`ACKを受信できず、リトライ上限（計${attempts}回）に達しました`);
+}
+
+async function sendPanasonicElevator() {
+  const frame = previewPanasonicElevator();
+  return sendPanasonicElevatorFrame(frame);
+}
+
+// ヘルスチェック(IH)へは、エレベータ側として運行状態を載せた応答(SH)を返す。
+function handlePanasonicElevatorRequest(frame) {
+  if (!$("pevAutoResponse").checked) return;
+  const api = panasonicElevatorApi();
+  if (panasonicElevatorDirection() !== api.DIRECTION.FROM_ELEVATOR) return;
+  const response = api.healthResponse(frame, { inspection: $("pevCarState").value === "inspection" });
+  if (!response) return;
+  scheduleAutoResponse("ヘルスチェック応答", () => sendPanasonicElevatorFrame(response, true));
+}
+
+function applyReceivedPanasonicElevator(result) {
+  const parsed = result.parsed;
+  if (!parsed || !parsed.command) throw new Error("コマンドを読み取れませんでした");
+  // 受信電文と同じ向きへ送信側を合わせないと、そのコマンドを選べない。
+  $("pevDirection").value = parsed.direction;
+  refreshPanasonicElevatorCommands();
+  $("pevCommand").value = parsed.command;
+  refreshPanasonicElevatorExtras();
+  const entry = panasonicElevatorCommand();
+  if (entry.extras) {
+    if (Array.from($("pevExtra").options).some((option) => option.value === parsed.extraCode)) {
+      $("pevExtra").value = parsed.extraCode;
+    }
+  } else {
+    $("pevExtraFree").value = parsed.extraCode;
+  }
+  if (parsed.buildingNo != null) $("pevBuilding").value = String(parsed.buildingNo);
+  if (parsed.roomNo != null) $("pevRoom").value = String(parsed.roomNo).padStart(4, "0");
+  if (parsed.lbNo != null) $("pevLb").value = String(parsed.lbNo);
+  syncPanasonicElevatorForm();
+  toast("受信電文を送信フォームへ取り込みました");
+}
+
 // Q48-005F：宅配側として動作しているときだけ、情報要求へ現在のロッカーデータで応答する。
 function handleLocker4Request(frame) {
   if (!$("locker4AutoResponse").checked || $("locker4Action").value !== "response") return;
@@ -2348,6 +2621,10 @@ function receiveInspectOptions(view) {
   if (view === "panasonic") {
     return { protocol: $("panaProtocol").value };
   }
+  if (view === "panasonicElevator") {
+    // 電文の向きは電文自身が決めるため、選択中の動作側は注意の判定にだけ使う。
+    return { direction: $("pevDirection").value === "toElevator" ? "fromElevator" : "toElevator" };
+  }
   return {};
 }
 
@@ -2761,6 +3038,7 @@ function applyReceiveMonitor(view) {
   if (view === "locker2") return applyReceivedLocker2(result);
   if (view === "key") return applyReceivedKey(result);
   if (view === "panasonic") return applyReceivedPanasonic(result);
+  if (view === "panasonicElevator") return applyReceivedPanasonicElevator(result);
   throw new Error("この画面には反映機能がありません");
 }
 
@@ -2836,6 +3114,15 @@ function describeFrame(view, frame) {
       .map((record) => `${record.mode}${String(record.buildingNo).padStart(2, "0")}-${String(record.roomNo).padStart(4, "0")}:${String(record.alarmNo).padStart(2, "0")}${record.alarmLabel ? `(${record.alarmLabel})` : ""}`)
       .join(" ");
     return `パナソニック${label} 警報データ ${value.recordCount}件 ${records}`;
+  }
+  if (view === "panasonicElevator") {
+    const api = panasonicElevatorApi();
+    const value = api.parseFrame(frame);
+    const extra = value.extraLabel ? `（${value.extraLabel}）` : "";
+    const room = value.usage.room ? ` 住戸=${String(value.roomNo).padStart(4, "0")}` : "";
+    const building = value.usage.building ? ` 棟=${value.buildingNo}` : "";
+    const lb = value.usage.lb ? ` LB=${String(value.lbNo).padStart(2, "0")}` : "";
+    return `パナソニックEV ${value.command} ${value.commandLabel}${extra}${building}${room}${lb}`;
   }
   if (view === "mansion") {
     const api = requireApi("MansionController");
@@ -2997,6 +3284,7 @@ function applyProfile(profile) {
   syncKeyForm();
   syncAlarmInfoForm();
   syncPanasonicForm();
+  syncPanasonicElevatorForm();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -3255,6 +3543,39 @@ function bindEvents() {
     }).catch((error) => logError(error, "アンサーバック送信"));
   });
 
+  // エレベータ連動（パナソニック）
+  $("pevDirection").addEventListener("change", () => { try { syncPanasonicElevatorForm(); } catch (error) { logError(error, "動作側の切替"); } });
+  $("pevCommand").addEventListener("change", () => { try { syncPanasonicElevatorForm(); } catch (error) { logError(error, "コマンド切替"); } });
+  $("pevExtra").addEventListener("change", () => { try { syncPanasonicElevatorForm(); } catch (error) { logError(error, "付加コード切替"); } });
+  $("pevExtraFree").addEventListener("input", () => { try { syncPanasonicElevatorForm(); } catch (error) { logError(error, "付加コード入力"); } });
+  $("pevPreviewButton").addEventListener("click", () => { try { previewPanasonicElevator(); } catch (error) { logError(error, "プレビュー"); } });
+  $("pevSendButton").addEventListener("click", () => {
+    withTransaction("エレベータ（パナソニック）", sendPanasonicElevator).catch((error) => logError(error, "パナソニックEV送信"));
+  });
+  $("pevHealthButton").addEventListener("click", () => {
+    withTransaction("ヘルスチェック", async () => {
+      const api = panasonicElevatorApi();
+      if (panasonicElevatorDirection() !== api.DIRECTION.TO_ELEVATOR) throw new Error("ヘルスチェックはﾊﾟﾅｿﾆｯｸIFU側から送信します");
+      const frame = api.healthRequest();
+      $("pevPreview").textContent = toHex(frame);
+      await sendPanasonicElevatorFrame(frame);
+    }).catch((error) => logError(error, "ヘルスチェック送信"));
+  });
+  $("pevAckButton").addEventListener("click", () => {
+    withTransaction("ACK送出", async () => {
+      const code = panasonicElevatorAckCode();
+      await transmit([code], "response");
+      addLog("info", "PEV", [code], `ACK(${code.toString(16).toUpperCase().padStart(2, "0")}H)を手動送出`);
+    }).catch((error) => logError(error, "ACK送出"));
+  });
+  $("pevEotButton").addEventListener("click", () => {
+    withTransaction("EOT送出", async () => {
+      const code = panasonicElevatorApi().CODE.EOT;
+      await transmit([code], "eot");
+      addLog("info", "PEV", [code], "EOTを手動送出");
+    }).catch((error) => logError(error, "EOT送出"));
+  });
+
   // 受信モニタ：反映・消去は機種ごとに同じ操作体系でそろえる。
   for (const [view, config] of Object.entries(RECEIVE_MONITORS)) {
     $(`${config.prefix}Apply`).addEventListener("click", () => {
@@ -3310,6 +3631,7 @@ async function initialize() {
   for (const view of Object.keys(RECEIVE_MONITORS)) renderReceiveMonitor(view);
   syncAlarmInfoForm();
   syncPanasonicForm();
+  syncPanasonicElevatorForm();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

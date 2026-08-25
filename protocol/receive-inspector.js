@@ -13,16 +13,17 @@
       require("./locker2.js"),
       require("./locker4.js"),
       require("./noncontact-key.js"),
-      require("./panasonic-alarm.js")
+      require("./panasonic-alarm.js"),
+      require("./panasonic-elevator.js")
     );
   } else {
-    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm);
+    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator);
   }
-})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm) {
+})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator) {
   "use strict";
 
-  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm) {
-    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey and PanasonicAlarm");
+  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator) {
+    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm and PanasonicElevator");
   }
 
   const STX = 0x02;
@@ -37,6 +38,7 @@
     locker2: "宅配ボックス 2線式",
     key: "非接触キー",
     panasonic: "警報（パナソニック）",
+    panasonicElevator: "エレベータ連動（パナソニック）",
   });
 
   function toBytes(input) {
@@ -703,11 +705,137 @@
     return finished;
   }
 
+  // パナソニックのエレベータ連動：18byte固定。付加コードによって住戸を特定できるかが
+  // 変わり、使えない桁は仕様上0固定なので、値が入っていれば仕様違反として示す。
+  function inspectPanasonicElevator(bytes, options) {
+    const P = PanasonicElevator;
+    const result = baseResult("panasonicElevator", bytes);
+    const length = bytes.length;
+    if (length !== P.FRAME_LENGTH) result.problems.push(`電文長が${P.FRAME_LENGTH}バイトではありません（${length}バイト）`);
+
+    result.fields.push(makeField("STX", P.FIELD.STX.offset, 1, bytes,
+      bytes[0] === P.CODE.STX ? "電文開始 02H" : `${hexByte(bytes[0])}（STXではありません）`,
+      bytes[0] === P.CODE.STX ? STATUS.OK : STATUS.ERROR));
+    if (length >= 1 && bytes[0] !== P.CODE.STX) result.problems.push("先頭がSTX(02H)ではありません");
+
+    const commandText = printable(bytes.slice(P.FIELD.COMMAND.offset, P.FIELD.COMMAND.offset + P.FIELD.COMMAND.length));
+    let entry = null;
+    try { entry = P.findCommand(commandText); } catch (_error) { entry = null; }
+    result.fields.push(makeField("CMD", P.FIELD.COMMAND.offset, P.FIELD.COMMAND.length, bytes,
+      entry ? `${entry.code} ${entry.label}` : `${commandText}（コマンド表にありません）`,
+      entry ? STATUS.OK : STATUS.ERROR, "コマンド表"));
+    if (length > P.FIELD.COMMAND.offset && !entry) result.problems.push(`コマンド${commandText}は仕様のコマンド表にありません`);
+
+    const spare = bytes[P.FIELD.SPARE.offset];
+    result.fields.push(makeField("予備", P.FIELD.SPARE.offset, 1, bytes,
+      spare === P.CODE.SPACE ? "20H（スペース）" : `${hexByte(spare)}（20Hではありません）`,
+      spare === P.CODE.SPACE ? STATUS.OK : STATUS.ERROR, "20H固定"));
+    if (length > P.FIELD.SPARE.offset && spare !== P.CODE.SPACE) result.problems.push("予備が20H（スペース）ではありません");
+
+    const mode = printable(bytes.slice(P.FIELD.MODE.offset, P.FIELD.MODE.offset + 1));
+    result.fields.push(makeField("モード", P.FIELD.MODE.offset, 1, bytes,
+      mode === P.MODE ? P.MODE : `${mode}（${P.MODE}ではありません）`,
+      mode === P.MODE ? STATUS.OK : STATUS.ERROR, `${P.MODE}固定`));
+    if (length > P.FIELD.MODE.offset && mode !== P.MODE) result.problems.push(`モードが${P.MODE}ではありません`);
+
+    const extraText = printable(bytes.slice(P.FIELD.EXTRA.offset, P.FIELD.EXTRA.offset + P.FIELD.EXTRA.length));
+    const matchedExtra = entry ? P.findExtra(entry, extraText) : null;
+    const usage = entry ? P.fieldUsage(entry, extraText) : { building: true, room: true, lb: true, extra: null };
+    const usageLabel = matchedExtra ? matchedExtra.label : (entry ? entry.label : "この電文");
+
+    const buildingText = digits(bytes.slice(P.FIELD.BUILDING.offset, P.FIELD.BUILDING.offset + P.FIELD.BUILDING.length));
+    const buildingNo = buildingText == null ? null : Number(buildingText);
+    const buildingUnused = entry != null && !usage.building && buildingNo != null && buildingNo !== 0;
+    result.fields.push(makeField("棟番号", P.FIELD.BUILDING.offset, P.FIELD.BUILDING.length, bytes,
+      buildingText == null ? "2桁の数字ではありません"
+        : buildingUnused ? `${buildingText}（この電文では00固定）`
+          : buildingNo === 0 ? "00（指定なし）" : `${buildingNo}棟`,
+      buildingText == null || buildingUnused ? STATUS.ERROR : STATUS.OK));
+    if (buildingText == null && length >= P.FIELD.BUILDING.offset + P.FIELD.BUILDING.length) {
+      result.problems.push("棟番号が2桁の数字ではありません");
+    }
+    if (buildingUnused) result.problems.push(`${usageLabel}の棟番号は00固定です`);
+
+    const roomText = digits(bytes.slice(P.FIELD.ROOM.offset, P.FIELD.ROOM.offset + P.FIELD.ROOM.length));
+    const roomNo = roomText == null ? null : Number(roomText);
+    const roomUnused = entry != null && !usage.room && roomNo != null && roomNo !== 0;
+    result.fields.push(makeField("住戸番号", P.FIELD.ROOM.offset, P.FIELD.ROOM.length, bytes,
+      roomText == null ? "4桁の数字ではありません"
+        : roomUnused ? `${roomText}（この電文では0000固定）`
+          : roomNo === 0 ? "0000（指定なし）" : `${roomText}（${roomNo}号室）`,
+      roomText == null || roomUnused ? STATUS.ERROR : STATUS.OK));
+    if (roomText == null && length >= P.FIELD.ROOM.offset + P.FIELD.ROOM.length) {
+      result.problems.push("住戸番号が4桁の数字ではありません");
+    }
+    if (roomUnused) result.problems.push(`${usageLabel}の住戸番号は0000固定です`);
+
+    const lbText = digits(bytes.slice(P.FIELD.LB.offset, P.FIELD.LB.offset + P.FIELD.LB.length));
+    const lbNo = lbText == null ? null : Number(lbText);
+    const lbUnused = entry != null && !usage.lb && lbNo != null && lbNo !== 0;
+    result.fields.push(makeField("LB番号", P.FIELD.LB.offset, P.FIELD.LB.length, bytes,
+      lbText == null ? "2桁の数字ではありません"
+        : lbUnused ? `${lbText}（この電文では00固定）`
+          : lbNo === 0 ? "00（指定なし）" : `${lbText}番`,
+      lbText == null || lbUnused ? STATUS.ERROR : STATUS.OK));
+    if (lbText == null && length >= P.FIELD.LB.offset + P.FIELD.LB.length) {
+      result.problems.push("LB番号が2桁の数字ではありません");
+    }
+    if (lbUnused) result.problems.push(`${usageLabel}のLB番号は00固定です`);
+
+    const extraKnown = entry == null || entry.extras == null || matchedExtra != null;
+    result.fields.push(makeField("付加コード", P.FIELD.EXTRA.offset, P.FIELD.EXTRA.length, bytes,
+      matchedExtra ? `${extraText} ${matchedExtra.label}`
+        : extraKnown ? extraText : `${extraText}（${entry.code}にこの付加コードはありません）`,
+      extraKnown ? STATUS.OK : STATUS.ERROR));
+    if (!extraKnown) result.problems.push(`${entry.code}に付加コード${extraText}はありません`);
+
+    result.fields.push(makeField("ETX", P.FIELD.ETX.offset, 1, bytes,
+      bytes[P.FIELD.ETX.offset] === P.CODE.ETX ? "電文終了 03H" : `${hexByte(bytes[P.FIELD.ETX.offset])}（ETXではありません）`,
+      bytes[P.FIELD.ETX.offset] === P.CODE.ETX ? STATUS.OK : STATUS.ERROR));
+    if (length > P.FIELD.ETX.offset && bytes[P.FIELD.ETX.offset] !== P.CODE.ETX) result.problems.push("ETX(03H)の位置が不正です");
+
+    let expectedBcc = null;
+    try { expectedBcc = printable(P.calculateBCC(bytes.slice(0, P.FIELD.BCC.offset))); } catch (_error) { expectedBcc = null; }
+    const bccOk = length === P.FRAME_LENGTH && P.verifyBCC(bytes);
+    const bccText = printable(bytes.slice(P.FIELD.BCC.offset, P.FIELD.BCC.offset + P.FIELD.BCC.length));
+    result.fields.push(makeField("BCC", P.FIELD.BCC.offset, P.FIELD.BCC.length, bytes,
+      bccOk ? `${bccText} 一致` : `${bccText}（計算値 ${expectedBcc == null ? "算出不可" : expectedBcc}）`,
+      bccOk ? STATUS.OK : STATUS.ERROR, "CMDからETXまでの総和を16進2文字で表記"));
+    if (!bccOk) result.problems.push("BCCが一致しません");
+
+    // 方向は電文自身が決める。選択中の動作側と食い違うときは注意として示す。
+    if (entry && options.direction != null && entry.direction !== options.direction) {
+      result.warnings.push(`${entry.code}は${entry.direction === P.DIRECTION.TO_ELEVATOR ? "IFU→エレベータ" : "エレベータ→IFU"}の電文です`);
+    }
+
+    result.parsed = {
+      command: entry ? entry.code : null,
+      commandLabel: entry ? entry.label : null,
+      direction: entry ? entry.direction : null,
+      buildingNo, roomNo, lbNo,
+      extraCode: extraText,
+      extraLabel: matchedExtra ? matchedExtra.label : null,
+    };
+    result.badges.push(badge(entry ? entry.label : "コマンド不明", entry ? STATUS.INFO : STATUS.ERROR));
+    result.badges.push(badge(bccOk ? "BCC一致" : "BCC異常", bccOk ? STATUS.OK : STATUS.ERROR));
+    // 正常応答はACK(10H/30H)だけで、NAKは仕様にない。異常時は無応答で相手の再送を待つ。
+    result.expectedResponse = result.problems.length === 0 ? "ACK" : "無応答（再送待ち）";
+    result.badges.push(badge(`仕様上の応答 ${result.expectedResponse}`, result.problems.length === 0 ? STATUS.OK : STATUS.WARN));
+
+    const finished = finalize(result);
+    finished.summary = `${entry ? entry.label : "不明なコマンド"}`
+      + `${matchedExtra && entry && entry.extras.length > 1 ? ` / ${matchedExtra.label}` : ""}`
+      + ` / ${buildingNo == null ? "--" : `${buildingNo}棟`} ${roomText || "----"}号室`
+      + `${lbNo ? ` / LB${lbText}` : ""} / ${finished.valid ? "検証OK" : "検証NG"}`;
+    return finished;
+  }
+
   const HANDLERS = Object.freeze({
     locker4: inspectLocker4,
     locker2: inspectLocker2,
     key: inspectKey,
     panasonic: inspectPanasonic,
+    panasonicElevator: inspectPanasonicElevator,
   });
 
   function supports(profile) {

@@ -23,6 +23,7 @@
         <option value="elevator">EV 1200,E,8,1</option>
         <option value="alarm">警報 1200,E,8,1</option>
         <option value="panasonicRecord">警報 大興／リモート 1200,N,8,1</option>
+        <option value="panasonicElevator">EV パナソニック 9600,E,8,1</option>
       </select>
       <button id="connectButton" class="primary">接続</button>
       <button id="disconnectButton" class="secondary" disabled>切断</button>
@@ -41,7 +42,8 @@
       <button class="nav-item" data-view="key"><span>K</span>非接触キー</button>
       <p>設備連動</p>
       <button class="nav-item" data-view="mansion"><span>M</span>マンション制御</button>
-      <button class="nav-item" data-view="elevator"><span>E</span>エレベータ</button>
+      <button class="nav-item" data-view="elevator"><span>E</span>エレベータ（アイホン）</button>
+      <button class="nav-item" data-view="panasonicElevator"><span>V</span>エレベータ（パナソニック）</button>
       <button class="nav-item" data-view="alarm"><span>A</span>警報（アイホン）</button>
       <button class="nav-item" data-view="panasonic"><span>P</span>警報（パナソニック）</button>
       <p>試験</p>
@@ -51,7 +53,7 @@
 
     <main class="content">
       <section class="view active" id="view-overview">
-        <div class="page-heading"><div><h1>試験ダッシュボード</h1><p>アイホン・パナソニックの仕様書10冊と旧2アプリの機能を1つの通信基盤で扱います。</p></div><span class="spec-badge">通信仕様書10冊準拠</span></div>
+        <div class="page-heading"><div><h1>試験ダッシュボード</h1><p>アイホン・パナソニックの仕様書11冊と旧2アプリの機能を1つの通信基盤で扱います。</p></div><span class="spec-badge">通信仕様書11冊準拠</span></div>
         <div class="metric-grid">
           <article class="metric"><span>接続</span><strong id="metricConnection">未接続</strong><small id="metricPort">—</small></article>
           <article class="metric"><span>送信</span><strong id="metricTx">0</strong><small>フレーム／制御コード</small></article>
@@ -67,7 +69,8 @@
               <tr><td>宅配ボックス 2線式</td><td>Q55-001D V1.24</td><td>4800,E,8,1</td><td><span class="ok">11byte・5件バースト</span></td></tr>
               <tr><td>非接触キー</td><td>Q48-006F Ver.1.15</td><td>1200–19200,E,8,1</td><td><span class="ok">10/13byte・ACK/NAK</span></td></tr>
               <tr><td>マンションコントローラ</td><td>Q48-008I Ver.3.12</td><td>4800,E,8,1</td><td><span class="ok">全110 CMD台帳・Ver/方向制約</span></td></tr>
-              <tr><td>エレベータ連動</td><td>Q46-005J Ver.1.25</td><td>1200–19200,E,8,1</td><td><span class="ok">21byte・制御手順</span></td></tr>
+              <tr><td>エレベータ連動（アイホン）</td><td>Q46-005J Ver.1.25</td><td>1200–19200,E,8,1</td><td><span class="ok">21byte・制御手順</span></td></tr>
+              <tr><td>エレベータ連動（パナソニック）</td><td>エレベータ連動プロトコル 2012-01-10</td><td>9600,E,8,1</td><td><span class="ok">18byte・全5コマンド・ヘルスチェック</span></td></tr>
               <tr><td>警報（アイホン）</td><td>Q49-023G Ver.1.22</td><td>1200–9600,E,8,1</td><td><span class="ok">11byte・履歴</span></td></tr>
               <tr><td>警報 HPC（パナソニック）</td><td>HPCプロトコル 2012-01-10</td><td>1200,E,8,1</td><td><span class="ok">発信種別7種・ヒストリー15件</span></td></tr>
               <tr><td>警報 TSS（パナソニック）</td><td>新TSSプロトコル 2012-03-26</td><td>1200,E,8,1</td><td><span class="ok">発信種別5種・ビット割付</span></td></tr>
@@ -334,7 +337,7 @@
       </section>
 
       <section class="view" id="view-elevator">
-        <div class="page-heading"><div><h1>エレベータ連動</h1><p>Q46-005J：21byte固定、全13コマンド、ENQ通信</p></div><span class="spec-badge">1200–19200,E,8,1</span></div>
+        <div class="page-heading"><div><h1>エレベータ連動（アイホン）</h1><p>Q46-005J：21byte固定、全13コマンド、ENQ通信</p></div><span class="spec-badge">1200–19200,E,8,1</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
             <label>コマンド<select id="elevatorCommand"><option>ECALL</option><option>HINFO</option><option>GINFO</option><option>KINFO</option><option>COPEN</option><option>CCLSE</option><option>EOPEN</option><option>ECLSE</option><option>INITI</option><option>ESTAT</option><option>ESTOP</option><option>INITE</option><option>CHECK</option></select></label>
@@ -351,6 +354,48 @@
           <div class="inline-options"><label><input id="elevatorAutoResponse" type="checkbox"> EV側動作時、ECALLを受信したらかご状態で自動応答</label></div>
           <div class="preview"><span>プレビュー</span><code id="elevatorPreview">—</code></div>
           <div class="actions"><button class="secondary" id="elevatorPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="elevatorSendButton" disabled>送信</button></div>
+        </article>
+      </section>
+
+      <section class="view" id="view-panasonicElevator">
+        <div class="page-heading"><div><h1>エレベータ連動（パナソニック）</h1><p>通信仕様書（エレベータ連動プロトコル）：18byte固定、ENQ–ACK–DATA–ACK–EOT、ヘルスチェック</p></div><span class="spec-badge">9600,E,8,1</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>動作側<select id="pevDirection"><option value="toElevator">ﾊﾟﾅｿﾆｯｸIFU → エレベータ</option><option value="fromElevator">エレベータ → ﾊﾟﾅｿﾆｯｸIFU</option></select></label>
+            <label>コマンド<select id="pevCommand"></select></label>
+            <label>付加コード<select id="pevExtra"></select></label>
+            <label>棟番号（00～99）<input id="pevBuilding" type="number" min="0" max="99" value="1"></label>
+            <label>住戸番号（0000～9999）<input id="pevRoom" inputmode="numeric" pattern="[0-9]{1,4}" value="0101" maxlength="4"></label>
+            <label>LB番号（00～99）<input id="pevLb" type="number" min="0" max="99" value="0"></label>
+            <label id="pevExtraFreeField">付加コード（2桁を直接指定）<input id="pevExtraFree" inputmode="numeric" pattern="[0-9]{2}" value="00" maxlength="2"></label>
+            <label>送信方式<select id="pevTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
+            <label>ACK送出コード<select id="pevAckCode"><option value="16">10H</option><option value="48">30H</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="pevAutoResponse" type="checkbox" checked> ヘルスチェックを受信したら運行状態で自動応答</label><label>運行状態<select id="pevCarState"><option value="normal">正常運行中（00）</option><option value="inspection">点検中（01）</option></select></label></div>
+          <p class="callout" id="pevHint">—</p>
+          <div class="preview"><span>プレビュー</span><code id="pevPreview">—</code></div>
+          <div class="actions"><button class="secondary" id="pevPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="pevSendButton" disabled>送信</button><button class="secondary requires-connection" id="pevHealthButton" disabled>ヘルスチェック送信</button><button class="secondary requires-connection" id="pevAckButton" disabled>ACK送出</button><button class="secondary requires-connection" id="pevEotButton" disabled>EOT送出</button></div>
+        </article>
+
+        <article class="card receive-card">
+          <div class="card-title">
+            <div><h2>受信モニタ</h2><p>受信した18byte電文をコマンド・棟番号・住戸番号・付加コードへ分解して表示</p></div>
+            <span class="receive-verdict" id="pevRxVerdict">未受信</span>
+          </div>
+          <div class="receive-summary" id="pevRxSummary">まだ電文を受信していません。接続して相手装置からの送信を待ってください。</div>
+          <div class="receive-badges" id="pevRxBadges"></div>
+          <div class="receive-notes" id="pevRxNotes"></div>
+          <div class="preview receive-bytes"><span>受信HEX</span><code id="pevRxHex">—</code></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>位置</th><th>項目</th><th>HEX</th><th>意味</th></tr></thead>
+              <tbody id="pevRxFields"><tr class="receive-empty"><td colspan="4">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <div class="inline-options"><label><input id="pevRxFollow" type="checkbox" checked> 受信するたび最新の電文へ表示を切り替える</label></div>
+          <h3 class="receive-subtitle">受信履歴 <small id="pevRxHistoryCount">0件</small></h3>
+          <div class="receive-history" id="pevRxHistory"><p class="receive-empty-text">受信履歴はありません</p></div>
+          <div class="actions"><button class="secondary" id="pevRxApply">受信内容を送信フォームへ取り込む</button><button class="danger" id="pevRxClear">受信履歴を消去</button></div>
         </article>
       </section>
 
@@ -528,6 +573,7 @@
   <script src="protocol/elevator.js"></script>
   <script src="protocol/alarm.js"></script>
   <script src="protocol/panasonic-alarm.js"></script>
+  <script src="protocol/panasonic-elevator.js"></script>
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
   <script src="protocol/auto-responder.js"></script>
