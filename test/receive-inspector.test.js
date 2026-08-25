@@ -9,7 +9,7 @@ const Key = require("../protocol/noncontact-key");
 const fieldOf = (result, label) => result.fields.find((field) => field.label === label);
 
 // ---------------------------------------------------------------- 対象範囲
-assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4"]);
+assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4", "panasonic"]);
 assert.strictEqual(Inspector.supports("locker4"), true);
 assert.strictEqual(Inspector.supports("mansion"), false);
 const unsupported = Inspector.inspect("mansion", [0x02, 0x03]);
@@ -200,6 +200,77 @@ assert.strictEqual(frameError.profile, "key");
 assert.match(frameError.title, /非接触キー/);
 assert.match(frameError.summary, /3バイト/);
 assert.ok(frameError.badges.some((item) => item.label === "フレーム不成立"));
+
+// ------------------------------------------------- 警報（パナソニック）
+const Panasonic = require("../protocol/panasonic-alarm.js");
+
+// HPC：STX形式は9項目へ分解し、住戸番号はヒストリー種別まで読む。
+const rHpc = Inspector.inspect("panasonic",
+  Panasonic.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [0, 1], buildingNo: 1, roomNo: 101 }),
+  { protocol: "hpc" });
+assert.strictEqual(rHpc.valid, true);
+assert.match(rHpc.title, /ＨＰＣ/);
+assert.match(rHpc.summary, /警報情報１ \/ 1棟 0101号室 \/ 火災＋非常/);
+assert.strictEqual(rHpc.expectedResponse, "ACK");
+assert.strictEqual(fieldOf(rHpc, "データ長").value, "37H（データ部7バイト）");
+assert.match(fieldOf(rHpc, "住戸番号").value, /0101号室（イベント通知／要求）/);
+assert.strictEqual(rHpc.parsed.buildingNo, 1);
+
+const rHpcHistory = Inspector.inspect("panasonic",
+  Panasonic.buildFrame({ protocol: "hpc", type: 0x01, infoBits: [7], buildingNo: 2, roomNo: 1201, historyNumber: 3 }),
+  { protocol: "hpc" });
+assert.match(fieldOf(rHpcHistory, "住戸番号").value, /ヒストリー3の応答/);
+
+// 同じ電文でも新TSSの割付で読むと意味が変わり、ヒストリー種別は仕様違反になる。
+const rTssMisread = Inspector.inspect("panasonic",
+  Panasonic.buildFrame({ protocol: "hpc", type: 0x01, infoBits: [7], buildingNo: 2, roomNo: 1201, historyNumber: 3 }),
+  { protocol: "tss" });
+assert.strictEqual(rTssMisread.valid, false);
+assert.ok(rTssMisread.problems.some((problem) => /ヒストリー応答はありません/.test(problem)));
+
+// BCC異常でも読み取れた桁は必ず残す。
+const panaBadBcc = Panasonic.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [0], buildingNo: 1, roomNo: 101 });
+panaBadBcc[panaBadBcc.length - 1] = (panaBadBcc[panaBadBcc.length - 1] + 1) & 0xFF;
+const rBadBcc = Inspector.inspect("panasonic", panaBadBcc, { protocol: "hpc" });
+assert.strictEqual(rBadBcc.valid, false);
+assert.strictEqual(rBadBcc.expectedResponse, "NAK");
+assert.strictEqual(fieldOf(rBadBcc, "棟番号").value, "1棟");
+
+// 予備bitはHEX直接入力で立てられるため、仕様違反ではなく注意にする。
+const rReserved = Inspector.inspect("panasonic",
+  Panasonic.buildFrame({ protocol: "hpc", type: 0x02, info: 0x10, buildingNo: 1, roomNo: 101 }),
+  { protocol: "hpc" });
+assert.strictEqual(rReserved.valid, true);
+assert.ok(rReserved.warnings.some((warning) => /予備です/.test(warning)));
+
+// 大興：レコードは1行ずつ意味付きで並べる。
+const rDaiko = Inspector.inspect("panasonic", Panasonic.buildFrame({
+  protocol: "daiko",
+  records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }, { mode: "F", buildingNo: 1, roomNo: 101, alarmNo: 31 }],
+}), { protocol: "daiko" });
+assert.strictEqual(rDaiko.valid, true);
+assert.match(rDaiko.summary, /警報データ 2件/);
+assert.match(fieldOf(rDaiko, "レコード1").value, /N（異常発生）.*01棟 0101号室.*警報No\.01 火災/);
+assert.match(fieldOf(rDaiko, "レコード2").value, /F（リセット）.*警報No\.31 防犯１ｾｯﾄ\/ﾘｾｯﾄ/);
+assert.strictEqual(fieldOf(rDaiko, "CR").value, "送信データ終了 0DH");
+
+// アンサーバックと定時送信も同じ枠組みで読む。
+const rAck = Inspector.inspect("panasonic", Panasonic.buildAnswerback({ protocol: "daiko" }), { protocol: "daiko" });
+assert.match(rAck.summary, /ACKアンサーバック/);
+assert.strictEqual(rAck.expectedResponse, null);
+const rNak = Inspector.inspect("panasonic", Panasonic.buildAnswerback({ protocol: "daiko", accepted: false }), { protocol: "daiko" });
+assert.match(rNak.summary, /NAKアンサーバック/);
+const rScheduled = Inspector.inspect("panasonic",
+  Panasonic.buildScheduledFrame({ protocol: "remote", propertyCode: "12345" }), { protocol: "remote" });
+assert.strictEqual(rScheduled.parsed.propertyCode, "12345");
+assert.match(fieldOf(rScheduled, "定時送信データ").value, /物件コード「12345」/);
+
+// チェックサム異常は仕様違反として残す。
+const badSum = Panasonic.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }] });
+badSum[badSum.length - 2] = "0".charCodeAt(0);
+const rBadSum = Inspector.inspect("panasonic", badSum, { protocol: "daiko" });
+assert.strictEqual(rBadSum.valid, false);
+assert.ok(rBadSum.problems.some((problem) => /チェックサムが一致しません/.test(problem)));
 
 // ------------------------------------------------------------- 入力検査
 assert.throws(() => Inspector.inspect("key", [0x02, 300]), /0～255/);

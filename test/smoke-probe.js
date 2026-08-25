@@ -6,21 +6,22 @@ const MansionController = require("../protocol/mansion-controller");
 const Telegram2 = require("../protocol/locker2");
 const Telegram4 = require("../protocol/locker4");
 const NoncontactKey = require("../protocol/noncontact-key");
+const PanasonicAlarm = require("../protocol/panasonic-alarm");
 
 // 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
 // LOCKER_UI_SCRIPT で登録操作込みの検査を行う。
 const PROBE_SCRIPT = `
   new Promise((resolve) => setTimeout(() => {
-    const buttons = ["keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton"];
+    const buttons = ["keyPreviewButton", "mcPreviewButton", "elevatorPreviewButton", "alarmPreviewButton", "panaPreviewButton"];
     buttons.forEach((id) => document.getElementById(id).click());
     setTimeout(() => resolve({
       title: document.title,
       views: document.querySelectorAll(".view").length,
       scripts: Array.from(document.scripts).length,
       ready: document.getElementById("communicationLog").textContent.includes("READY"),
-      previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview"]
+      previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -447,6 +448,63 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     throw new Error(`locker2 inbox bulk apply failed: ${JSON.stringify(inboxApplied)}`);
   }
 
+  // ------------------------------- パナソニック：プロトコルを変えて読み直す
+  await navigate("panasonic");
+  // 自動アンサーバックは未接続では送れないので、ここでは受信解析だけを見る。
+  await window.webContents.executeJavaScript(`${$("panaAutoAnswerback")}.checked = false`);
+  await window.webContents.executeJavaScript(`${$("panaAutoResponse")}.checked = false`);
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "hpc"; s.dispatchEvent(new Event("change")); })()`
+  );
+  const hpcFrame = PanasonicAlarm.buildFrame({ protocol: "hpc", type: 0x01, infoBits: [7], buildingNo: 2, roomNo: 1201, historyNumber: 3 });
+  // 分割で届いても1件として解析されること。
+  await send(hpcFrame.slice(0, 4));
+  await send(hpcFrame.slice(4));
+  const panaHpc = await monitorOf("panaRx");
+  if (panaHpc.verdict !== "検証OK" || panaHpc.fields["棟番号"] !== "2棟"
+      || !panaHpc.fields["住戸番号"].includes("1201号室（ヒストリー3の応答）")
+      || !panaHpc.fields["警報情報"].includes("住戸電源断")) {
+    throw new Error(`panasonic HPC receive decode failed: ${JSON.stringify(panaHpc)}`);
+  }
+
+  // 受信履歴はバイト列で保持しているため、新TSSへ切り替えると同じ電文を別の割付で読み直す。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "tss"; s.dispatchEvent(new Event("change")); })()`
+  );
+  await wait(60);
+  const panaReread = await monitorOf("panaRx");
+  if (panaReread.verdict !== "検証NG" || !panaReread.notes.some((note) => note.includes("ヒストリー応答はありません"))) {
+    throw new Error(`panasonic protocol re-read failed: ${JSON.stringify(panaReread)}`);
+  }
+
+  // 大興：レコード列を受信し、1行ずつ意味付きで分解できること。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "daiko"; s.dispatchEvent(new Event("change")); })()`
+  );
+  const daikoFrame = PanasonicAlarm.buildFrame({
+    protocol: "daiko",
+    records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }, { mode: "F", buildingNo: 1, roomNo: 101, alarmNo: 31 }],
+  });
+  await send(daikoFrame);
+  const panaDaiko = await monitorOf("panaRx");
+  if (panaDaiko.verdict !== "検証OK" || !panaDaiko.fields["レコード1"].includes("警報No.01 火災")
+      || !panaDaiko.fields["レコード2"].includes("防犯１ｾｯﾄ/ﾘｾｯﾄ") || !panaDaiko.fields["レコード2"].includes("リセット")) {
+    throw new Error(`panasonic daiko receive decode failed: ${JSON.stringify(panaDaiko)}`);
+  }
+
+  // 受信したレコードを送信フォームへ取り込めること。
+  await click("panaRxApply");
+  await wait(60);
+  const panaApplied = await window.webContents.executeJavaScript(`({
+    state: ${$("panaRecordState")}.textContent,
+    rows: ${$("panaRecordRows")}.querySelectorAll("tr").length,
+  })`);
+  if (panaApplied.state !== "2/10レコード" || panaApplied.rows !== 2) {
+    throw new Error(`panasonic record apply failed: ${JSON.stringify(panaApplied)}`);
+  }
+  await click("panaRecordClear");
+  await click("panaRxClear");
+
   // ------------------------------------- フレーム不成立でも受信内容を残す
   await navigate("key");
   // 先の履歴選択で追従を切っているため、最新表示へ戻してから受信させる。
@@ -473,6 +531,9 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     locker4Applied: l4Rows,
     locker2: l2.summary,
     locker2Applied: l2Row,
+    panasonic: panaHpc.summary,
+    panasonicReread: panaReread.verdict,
+    panasonicDaiko: panaDaiko.summary,
     frameError: keyError.badges,
     cleared: cleared.verdict,
   };
@@ -561,10 +622,118 @@ const ALARM_UI_SCRIPT = `
   })()
 `;
 
+// パナソニックは1画面で電文形式・通信条件・入力欄が入れ替わるため、
+// 実DOM上でプロトコルを往復させて追従を確かめる。
+const PANASONIC_UI_SCRIPT = `
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    const boxes = () => Array.from($("panaInfoBits").querySelectorAll("input[type=checkbox]"));
+    const labels = () => boxes().map((box) => box.closest("label").querySelector("span").textContent);
+    const change = (element, value) => {
+      element.value = value;
+      element.dispatchEvent(new Event("change"));
+    };
+    const preview = () => { $("panaPreviewButton").click(); return $("panaPreview").textContent; };
+
+    document.querySelector('[data-view="panasonic"]').click();
+
+    // HPC：STX形式のフォームと1200,E,8,1。
+    change($("panaProtocol"), "hpc");
+    change($("panaRole"), "ifu");
+    change($("panaType"), "00");
+    const hpc = {
+      blockHidden: $("panaBlockForm").hidden,
+      recordHidden: $("panaRecordForm").hidden,
+      badge: $("panaSpecBadge").textContent,
+      labels: labels(),
+      historyHidden: $("panaHistoryField").hidden,
+      historyDrawn: $("panaHistoryField").offsetHeight > 0,
+      scheduledHidden: $("panaScheduledButton").hidden,
+      scheduledDrawn: $("panaScheduledButton").offsetHeight > 0,
+      typeCount: $("panaType").options.length,
+    };
+
+    // bit0（火災）をONにするとHEXが01Hになる。
+    const fire = boxes()[0];
+    fire.checked = true;
+    fire.dispatchEvent(new Event("change", { bubbles: true }));
+    $("panaBuilding").value = "1";
+    $("panaRoom").value = "0101";
+    const hpcHex = $("panaInfo").value;
+    const hpcPreview = preview();
+
+    // 新TSSは同じ00Hでもbit3以降の割付が違う。
+    change($("panaProtocol"), "tss");
+    const tss = {
+      labels: labels(),
+      types: Array.from($("panaType").options).map((option) => option.value),
+      historyHidden: $("panaHistoryField").hidden,
+      historyDrawn: $("panaHistoryField").offsetHeight > 0,
+    };
+
+    // HPCのヒストリー要求は警報情報・棟番号・住戸番号が00固定。
+    change($("panaProtocol"), "hpc");
+    change($("panaRole"), "peer");
+    change($("panaType"), "30");
+    const request = {
+      infoValue: $("panaInfo").value,
+      infoDisabled: $("panaInfo").disabled,
+      buildingDisabled: $("panaBuilding").disabled,
+      hint: $("panaInfoHint").textContent,
+      preview: preview(),
+    };
+
+    // 大興：レコード形式へ入れ替わり、パリティなしの1200,N,8,1になる。
+    change($("panaProtocol"), "daiko");
+    change($("panaRole"), "ifu");
+    const daiko = {
+      blockHidden: $("panaBlockForm").hidden,
+      recordHidden: $("panaRecordForm").hidden,
+      badge: $("panaSpecBadge").textContent,
+      alarmCount: $("panaAlarmNo").options.length,
+      third: $("panaAlarmNo").options[2].textContent,
+      scheduledHidden: $("panaScheduledButton").hidden,
+      ackHidden: $("panaAckButton").hidden,
+      propertyDrawn: $("panaPropertyField").offsetHeight > 0,
+    };
+
+    // レコードを2件積んで送信電文を組み立てる。
+    $("panaRecordClear").click();
+    change($("panaMode"), "N");
+    change($("panaAlarmNo"), "01");
+    $("panaRecordBuilding").value = "1";
+    $("panaRecordRoom").value = "0101";
+    $("panaRecordAdd").click();
+    change($("panaMode"), "F");
+    $("panaRecordAdd").click();
+    const record = {
+      rows: $("panaRecordRows").querySelectorAll("tr").length,
+      state: $("panaRecordState").textContent,
+      preview: preview(),
+    };
+
+    // リモート：警報No.が29件になり、定時送信が使える。03/04は大興と入れ替わる。
+    change($("panaProtocol"), "remote");
+    const remote = {
+      alarmCount: $("panaAlarmNo").options.length,
+      third: $("panaAlarmNo").options[2].textContent,
+      hasDelivery: Array.from($("panaAlarmNo").options).some((option) => option.value === "40"),
+      scheduledHidden: $("panaScheduledButton").hidden,
+      propertyHidden: $("panaPropertyField").hidden,
+      propertyDrawn: $("panaPropertyField").offsetHeight > 0,
+      scheduledDrawn: $("panaScheduledButton").offsetHeight > 0,
+    };
+
+    $("panaRecordClear").click();
+    change($("panaProtocol"), "hpc");
+    return { hpc, hpcHex, hpcPreview, tss, request, daiko, record, remote };
+  })()
+`;
+
 async function run({ window, app, sendToRenderer }) {
   try {
     const initial = await window.webContents.executeJavaScript(PROBE_SCRIPT);
-    if (initial.title !== "外部疑似装置 Next" || initial.views !== 10 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
+    if (initial.title !== "外部疑似装置 Next" || initial.views !== 11 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 
@@ -647,6 +816,46 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (alarm.layout.boxWidth > 30 || alarm.layout.labelHeight > 40) {
       throw new Error(`alarm bit checkbox layout collapsed: ${JSON.stringify(alarm.layout)}`);
+    }
+
+    const pana = await window.webContents.executeJavaScript(PANASONIC_UI_SCRIPT);
+    if (pana.hpc.blockHidden || !pana.hpc.recordHidden || pana.hpc.badge !== "1200,E,8,1" || pana.hpc.typeCount !== 7) {
+      throw new Error(`panasonic HPC form failed: ${JSON.stringify(pana.hpc)}`);
+    }
+    if (pana.hpc.labels[0] !== "bit0 火災" || pana.hpc.labels[3] !== "bit3 水漏れ／コール" || pana.hpc.labels[7] !== "bit7 防犯(代表)") {
+      throw new Error(`panasonic HPC bit labels failed: ${JSON.stringify(pana.hpc.labels)}`);
+    }
+    // hidden属性だけでなく、実際に描画から消えているかまで確かめる。
+    if (pana.hpc.historyHidden || !pana.hpc.historyDrawn || !pana.hpc.scheduledHidden || pana.hpc.scheduledDrawn) {
+      throw new Error(`panasonic HPC optional controls failed: ${JSON.stringify(pana.hpc)}`);
+    }
+    if (pana.hpcHex !== "01" || pana.hpcPreview !== "02 37 00 01 01 00 01 00 01 03 3E") {
+      throw new Error(`panasonic bit-to-hex sync failed: ${JSON.stringify(pana)}`);
+    }
+    // 新TSSでは同じbit3が「水漏れ」、bit4が「コール」に分かれ、ヒストリーもない。
+    if (pana.tss.labels[3] !== "bit3 水漏れ" || pana.tss.labels[4] !== "bit4 コール" || !pana.tss.historyHidden || pana.tss.historyDrawn) {
+      throw new Error(`panasonic TSS bit labels failed: ${JSON.stringify(pana.tss)}`);
+    }
+    if (pana.tss.types.join(",") !== "00,01,02,04,44") {
+      throw new Error(`panasonic TSS transmission types failed: ${JSON.stringify(pana.tss.types)}`);
+    }
+    if (pana.request.infoValue !== "00" || !pana.request.infoDisabled || !pana.request.buildingDisabled ||
+        pana.request.preview !== "02 37 30 00 00 00 00 00 00 03 6A") {
+      throw new Error(`panasonic history-request lockout failed: ${JSON.stringify(pana.request)}`);
+    }
+    if (!pana.daiko.blockHidden || pana.daiko.recordHidden || pana.daiko.badge !== "1200,N,8,1" ||
+        pana.daiko.alarmCount !== 28 || pana.daiko.third !== "03 非常" || !pana.daiko.scheduledHidden ||
+        pana.daiko.ackHidden || pana.daiko.propertyDrawn) {
+      throw new Error(`panasonic daiko form failed: ${JSON.stringify(pana.daiko)}`);
+    }
+    if (pana.record.rows !== 2 || pana.record.state !== "2/10レコード" ||
+        !pana.record.preview.startsWith("SNDN01010101<03>F01010101<03>")) {
+      throw new Error(`panasonic record table failed: ${JSON.stringify(pana.record)}`);
+    }
+    if (pana.remote.alarmCount !== 29 || pana.remote.third !== "03 防犯(代表)" || !pana.remote.hasDelivery ||
+        pana.remote.scheduledHidden || pana.remote.propertyHidden ||
+        !pana.remote.propertyDrawn || !pana.remote.scheduledDrawn) {
+      throw new Error(`panasonic remote form failed: ${JSON.stringify(pana.remote)}`);
     }
 
     // 接続したまま画面を移ったときに通信条件の食い違いを警告するか。

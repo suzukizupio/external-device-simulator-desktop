@@ -12,16 +12,17 @@
     module.exports = factory(
       require("./locker2.js"),
       require("./locker4.js"),
-      require("./noncontact-key.js")
+      require("./noncontact-key.js"),
+      require("./panasonic-alarm.js")
     );
   } else {
-    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey);
+    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm);
   }
-})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey) {
+})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm) {
   "use strict";
 
-  if (!Telegram2 || !Telegram4 || !NoncontactKey) {
-    throw new Error("ReceiveInspector requires Telegram2, Telegram4 and NoncontactKey");
+  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm) {
+    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey and PanasonicAlarm");
   }
 
   const STX = 0x02;
@@ -35,6 +36,7 @@
     locker4: "宅配ボックス 4線式(B方式)",
     locker2: "宅配ボックス 2線式",
     key: "非接触キー",
+    panasonic: "警報（パナソニック）",
   });
 
   function toBytes(input) {
@@ -511,10 +513,201 @@
     return finished;
   }
 
+  // パナソニックは1画面で4プロトコルを切り替えるため、選択中のプロトコルを
+  // 前提に分解する。形式(style)が違うと桁の意味が変わるので入口で振り分ける。
+  function inspectPanasonic(bytes, options) {
+    const protocolName = options.protocol == null ? PanasonicAlarm.PROTOCOL.HPC : String(options.protocol);
+    const info = PanasonicAlarm.protocolInfo(protocolName);
+    const result = baseResult("panasonic", bytes);
+    result.title = `警報（パナソニック ${info.label}）`;
+    result.badges.push(badge(`${info.label}プロトコル`, STATUS.INFO));
+    return info.style === PanasonicAlarm.STYLE.BLOCK
+      ? inspectPanasonicBlock(result, bytes, protocolName, info)
+      : inspectPanasonicRecord(result, bytes, protocolName, info);
+  }
+
+  // HPC／新TSS：STX＋データ長37H＋データ7バイト＋ETX＋BCCの11バイト固定。
+  function inspectPanasonicBlock(result, bytes, protocolName, info) {
+    const length = bytes.length;
+    const expected = PanasonicAlarm.BLOCK_LENGTH;
+    if (length !== expected) result.problems.push(`電文長が${expected}バイトではありません（${length}バイト）`);
+
+    result.fields.push(makeField("STX", 0, 1, bytes,
+      bytes[0] === STX ? "電文開始 02H" : `${hexByte(bytes[0])}（STXではありません）`,
+      bytes[0] === STX ? STATUS.OK : STATUS.ERROR));
+    if (length >= 1 && bytes[0] !== STX) result.problems.push("先頭がSTX(02H)ではありません");
+
+    const sizeOk = bytes[1] === PanasonicAlarm.SIZE;
+    result.fields.push(makeField("データ長", 1, 1, bytes,
+      sizeOk ? "37H（データ部7バイト）" : `${hexByte(bytes[1])}（37Hではありません）`,
+      sizeOk ? STATUS.OK : STATUS.ERROR, "37H固定"));
+    if (length >= 2 && !sizeOk) result.problems.push("データ長が37Hではありません");
+
+    let typeEntry = null;
+    try { typeEntry = PanasonicAlarm.findBlockType(protocolName, bytes[2]); } catch (_error) { typeEntry = null; }
+    result.fields.push(makeField("発信種別", 2, 1, bytes,
+      typeEntry ? `${hexByte(bytes[2])} ${typeEntry.label}` : `${hexByte(bytes[2])}（${info.label}に該当なし）`,
+      typeEntry ? STATUS.OK : STATUS.ERROR, "データ1"));
+    if (length >= 3 && !typeEntry) result.problems.push(`発信種別 ${hexByte(bytes[2])} は${info.label}の一覧にありません`);
+
+    let detail = null;
+    if (typeEntry && length >= 4) {
+      detail = PanasonicAlarm.describeInfo(protocolName, typeEntry.code, bytes[3]);
+      const zeroViolation = detail.fixedZero && bytes[3] !== 0;
+      result.fields.push(makeField("警報情報", 3, 1, bytes,
+        zeroViolation ? `${hexByte(bytes[3])}（${typeEntry.label}は00H固定）` : `${hexByte(bytes[3])} ${detail.summary}`,
+        zeroViolation ? STATUS.ERROR : detail.violations.length ? STATUS.WARN : STATUS.OK, "データ2"));
+      if (zeroViolation) result.problems.push(`${typeEntry.label}の警報情報は00H固定です`);
+      if (detail.violations.length) {
+        result.warnings.push(`bit${detail.violations.join("・")}は${info.label}の${typeEntry.label}では予備です`);
+      }
+    } else {
+      result.fields.push(makeField("警報情報", 3, 1, bytes, hexByte(bytes[3]), STATUS.INFO, "データ2"));
+    }
+
+    let buildingNo = null;
+    const buildingByte = bytes[4];
+    const buildingReserved = buildingByte != null && buildingByte > 0x63;
+    if (buildingByte != null && !buildingReserved) buildingNo = buildingByte;
+    result.fields.push(makeField("棟番号", 4, 1, bytes,
+      buildingByte == null ? "—"
+        : buildingReserved ? `${hexByte(buildingByte)}（64H以降は予備）`
+          : buildingNo === 0 ? "00H（単独棟設定:有り／要求時）" : `${buildingNo}棟`,
+      buildingReserved ? STATUS.ERROR : STATUS.OK, "データ3／00H～63H"));
+    if (buildingReserved) result.problems.push(`棟番号 ${hexByte(buildingByte)} は予備領域です`);
+
+    let dwelling = null;
+    if (length >= 9) {
+      try { dwelling = PanasonicAlarm.decodeDwelling(bytes.slice(5, 9)); } catch (_error) { dwelling = null; }
+    }
+    const historyLabel = dwelling == null ? ""
+      : dwelling.historyNumber === 0 ? "（イベント通知／要求）" : `（ヒストリー${dwelling.historyNumber}の応答）`;
+    result.fields.push(makeField("住戸番号", 5, 4, bytes,
+      dwelling == null ? "BCDとして読み取れません" : `${String(dwelling.roomNo).padStart(4, "0")}号室${historyLabel}`,
+      dwelling == null ? STATUS.ERROR : STATUS.OK, "データ4～7／上位4bitはヒストリー種別"));
+    if (length >= 9 && dwelling == null) result.problems.push("住戸番号がBCDではありません");
+    if (dwelling && dwelling.historyNumber !== 0 && !info.history) {
+      result.problems.push(`${info.label}プロトコルにヒストリー応答はありません`);
+    }
+
+    const etxIndex = expected - 2;
+    result.fields.push(makeField("ETX", etxIndex, 1, bytes,
+      bytes[etxIndex] === ETX ? "電文終了 03H" : `${hexByte(bytes[etxIndex])}（ETXではありません）`,
+      bytes[etxIndex] === ETX ? STATUS.OK : STATUS.ERROR));
+    if (length > etxIndex && bytes[etxIndex] !== ETX) result.problems.push("ETX(03H)の位置が不正です");
+
+    let expectedBcc = null;
+    try { expectedBcc = PanasonicAlarm.calculateBCC(bytes.slice(0, expected - 1)); } catch (_error) { expectedBcc = null; }
+    const bccOk = length === expected && PanasonicAlarm.verifyBCC(bytes);
+    result.fields.push(makeField("BCC", expected - 1, 1, bytes,
+      bccOk ? `${hexByte(bytes[expected - 1])} 一致` : `${hexByte(bytes[expected - 1])}（計算値 ${expectedBcc == null ? "算出不可" : hexByte(expectedBcc)}）`,
+      bccOk ? STATUS.OK : STATUS.ERROR, "STXの次からETXまでの加算"));
+    if (!bccOk) result.problems.push("BCCが一致しません");
+
+    result.parsed = {
+      protocol: protocolName,
+      type: typeEntry ? typeEntry.code : null,
+      typeLabel: typeEntry ? typeEntry.label : null,
+      info: bytes[3] == null ? null : bytes[3],
+      buildingNo,
+      roomNo: dwelling ? dwelling.roomNo : null,
+      historyNumber: dwelling ? dwelling.historyNumber : null,
+    };
+    result.badges.push(badge(bccOk ? "BCC一致" : "BCC異常", bccOk ? STATUS.OK : STATUS.ERROR));
+    if (typeEntry && typeEntry.request) result.badges.push(badge("要求電文", STATUS.INFO));
+    // ENQ–ACK–TEXT–ACKの手順上、受信側は検証結果でACK／NAKを返す。
+    result.expectedResponse = result.problems.length === 0 ? "ACK" : "NAK";
+    result.badges.push(badge(`仕様上の応答 ${result.expectedResponse}`, result.problems.length === 0 ? STATUS.OK : STATUS.WARN));
+
+    const finished = finalize(result);
+    finished.summary = `${typeEntry ? typeEntry.label : "不明な発信種別"} / ${buildingNo == null ? "--" : `${buildingNo}棟`} ${dwelling ? String(dwelling.roomNo).padStart(4, "0") : "----"}号室${detail && !detail.fixedZero ? ` / ${detail.summary}` : ""} / ${finished.valid ? "検証OK" : "検証NG"}`;
+    return finished;
+  }
+
+  // 大興／リモート："SND"／"TRS"／"NG"で始まりCRで終わるASCIIレコード列。
+  function inspectPanasonicRecord(result, bytes, protocolName, info) {
+    const length = bytes.length;
+    const text = printable(bytes);
+    if (length === 0) {
+      result.problems.push("受信データがありません");
+      return finalize(result);
+    }
+
+    const crOk = bytes[length - 1] === PanasonicAlarm.CODE.CR;
+    if (!crOk) result.problems.push("電文がCR(0DH)で終わっていません");
+
+    let parsed = null;
+    let failure = null;
+    try { parsed = PanasonicAlarm.parseRecordFrame(bytes, { protocol: protocolName }); } catch (error) { failure = String(error && error.message || error); }
+    if (failure) result.problems.push(failure);
+
+    const kind = parsed ? parsed.kind : text.startsWith("NG") ? "nak" : text.startsWith("TRS") ? "scheduled" : "alarm";
+    const headLength = kind === "nak" ? 2 : 3;
+    const head = text.slice(0, headLength);
+    const headLabel = kind === "nak" ? "NAKアンサーバック"
+      : kind === "ack" ? `${head} ACKアンサーバック`
+        : kind === "scheduled" ? "TRS 定時送信"
+          : "SND 警報データ";
+    result.fields.push(makeField("ヘッダ", 0, headLength, bytes, `${head}（${headLabel}）`,
+      /^(SND|TRS|NG)$/.test(head) ? STATUS.OK : STATUS.ERROR, "送信スタート信号"));
+    if (!/^(SND|TRS|NG)$/.test(head)) result.problems.push("ヘッダがSND／TRS／NGではありません");
+
+    let offset = headLength;
+    if (kind === "alarm" && parsed) {
+      parsed.records.forEach((record, index) => {
+        const label = `${record.mode}（${record.modeLabel}） / ${String(record.buildingNo).padStart(2, "0")}棟 ${String(record.roomNo).padStart(4, "0")}号室 / 警報No.${String(record.alarmNo).padStart(2, "0")} ${record.alarmLabel || "別表に該当なし"}`;
+        result.fields.push(makeField(`レコード${index + 1}`, offset, PanasonicAlarm.RECORD_LENGTH, bytes, label,
+          record.known ? STATUS.OK : STATUS.WARN, "モード＋棟2桁＋住戸4桁＋警報No.2桁＋ETX"));
+        if (!record.known) result.warnings.push(`警報No.${String(record.alarmNo).padStart(2, "0")}は${info.label}の別表にありません`);
+        offset += PanasonicAlarm.RECORD_LENGTH;
+      });
+    } else if (kind === "ack") {
+      result.fields.push(makeField("応答", offset, 2, bytes, "OK（正常受信）", STATUS.OK));
+      offset += 2;
+    } else if (kind === "scheduled" && parsed) {
+      const payloadLength = 2 + parsed.propertyCode.length + 1;
+      result.fields.push(makeField("定時送信データ", offset, payloadLength, bytes,
+        `${PanasonicAlarm.SCHEDULED_MARK} + 物件コード「${parsed.propertyCode}」+ ETX`, STATUS.OK,
+        "物件コードはリモート送信機で設定。IFUでは使用／参照しない"));
+      offset += payloadLength;
+    } else if (kind !== "nak") {
+      // 解析に失敗しても、読み取れた範囲は必ず残す。
+      const rest = Math.max(length - offset - (crOk ? 1 : 0), 0);
+      if (rest > 0) result.fields.push(makeField("データ", offset, rest, bytes, printable(bytes.slice(offset, offset + rest)), STATUS.WARN, "仕様のレコードへ割り付けられませんでした"));
+      offset += rest;
+    }
+
+    if (kind !== "nak" && parsed) {
+      const received = text.slice(offset, offset + 4);
+      result.fields.push(makeField("チェックサム", offset, 4, bytes, `${received} 一致`, STATUS.OK,
+        kind === "scheduled" ? "［!］～［ETX］のASCII加算" : "モードから最後のETXまでのASCII加算"));
+      offset += 4;
+    }
+
+    if (crOk) result.fields.push(makeField("CR", length - 1, 1, bytes, "送信データ終了 0DH", STATUS.OK));
+
+    result.parsed = parsed;
+    result.badges.push(badge(headLabel, kind === "nak" ? STATUS.WARN : STATUS.INFO));
+    if (parsed && kind === "alarm") result.badges.push(badge(`${parsed.recordCount}／${PanasonicAlarm.MAX_RECORDS}レコード`, STATUS.INFO));
+    // 警報データと定時送信にはアンサーバックを返す。ACK／NAK自体には返さない。
+    if (kind === "alarm" || kind === "scheduled") {
+      result.expectedResponse = result.problems.length === 0 ? "ACK" : "NAK";
+      result.badges.push(badge(`仕様上の応答 ${result.expectedResponse}`, result.problems.length === 0 ? STATUS.OK : STATUS.WARN));
+    }
+
+    const finished = finalize(result);
+    finished.summary = kind === "nak" ? "NAKアンサーバック（再送が必要）"
+      : kind === "ack" ? `${head} ACKアンサーバック（正常受信）`
+        : kind === "scheduled" ? `定時送信 / 物件コード ${parsed ? parsed.propertyCode : "--"} / ${finished.valid ? "検証OK" : "検証NG"}`
+          : `警報データ ${parsed ? parsed.recordCount : 0}件 / ${finished.valid ? "検証OK" : "検証NG"}`;
+    return finished;
+  }
+
   const HANDLERS = Object.freeze({
     locker4: inspectLocker4,
     locker2: inspectLocker2,
     key: inspectKey,
+    panasonic: inspectPanasonic,
   });
 
   function supports(profile) {

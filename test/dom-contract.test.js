@@ -44,7 +44,7 @@ assert.deepStrictEqual(monitorMissing, [], `受信モニタのDOM IDが index.ht
 const scripts = Array.from(html.matchAll(/<script\s+src="([^"]+)"/g), (match) => match[1]);
 for (const source of scripts) assert.strictEqual(fs.existsSync(path.join(root, source)), true, `missing script: ${source}`);
 
-for (const view of ["overview", "terminal", "locker4", "locker2", "key", "mansion", "elevator", "alarm", "faults", "settings"]) {
+for (const view of ["overview", "terminal", "locker4", "locker2", "key", "mansion", "elevator", "alarm", "panasonic", "faults", "settings"]) {
   assert.ok(unique.has(`view-${view}`), `missing view-${view}`);
   assert.ok(html.includes(`data-view="${view}"`), `missing navigation for ${view}`);
 }

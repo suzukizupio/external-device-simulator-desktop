@@ -96,6 +96,8 @@ td { color: #c9d2e1; }
 .form-grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .form-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; }
+/* displayを指定した要素ではhidden属性の既定値が効かないため、明示的に消す。 */
+.form-grid label[hidden], .bit-grid label[hidden], .inline-options label[hidden] { display: none; }
 .form-grid .span-2 { grid-column: span 2; }
 .form-grid .span-3 { grid-column: span 3; }
 .field-note { align-self: end; min-height: 34px; display: flex; align-items: center; padding: 7px 10px; border: 1px solid #293a59; border-radius: 6px; background: #0c1628; color: #a9bddc; font-size: 10px; }

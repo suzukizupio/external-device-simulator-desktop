@@ -27,6 +27,13 @@ const state = {
   receiveTimer: null,
   alarmHistory: null,
   alarmHistoryPending: null,
+  // パナソニックはプロトコルごとにヒストリーを持ち、切り替えても取り違えない。
+  panaHistories: {},
+  panaHistoryPending: null,
+  panaRecords: [],
+  // 大興／リモートのアンサーバックは伝送制御ではなく電文で届くため、
+  // 制御コード待ちとは別の待ち行列で受け取る。
+  panaAnswerWaiters: [],
   activeTransaction: null,
   lastIoAt: 0,
   manualReceiveStage: null,
@@ -51,6 +58,7 @@ const RECEIVE_MONITORS = Object.freeze({
   locker4: { prefix: "locker4Rx", historyLimit: 50 },
   locker2: { prefix: "locker2Rx", historyLimit: 100 },
   key: { prefix: "keyRx", historyLimit: 100 },
+  panasonic: { prefix: "panaRx", historyLimit: 100 },
 });
 
 // Q55-001D 2.基本機能：住戸アドレスはMAX800（登録数の上限）。
@@ -296,6 +304,8 @@ const SERIAL_PRESETS = Object.freeze({
   key: { baudRate: 9600, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
   elevator: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
   alarm: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+  // 大興／リモートはパリティビットを持たず、チェックサムだけで誤りを検出する。
+  panasonicRecord: { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "none", flowControl: "none" },
 });
 
 // 画面ごとに通信仕様が定める条件が違うため、対応するプリセットを引けるようにする。
@@ -307,6 +317,13 @@ const VIEW_PRESETS = Object.freeze({
   elevator: "elevator",
   alarm: "alarm",
 });
+
+// パナソニックだけは1画面で4プロトコルを扱い、HPC／新TSSが1200,E,8,1、
+// 大興／リモートが1200,N,8,1と条件が分かれるため、選択中の値から引く。
+function viewPreset(view) {
+  if (view !== "panasonic") return VIEW_PRESETS[view] || null;
+  return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK ? "alarm" : "panasonicRecord";
+}
 
 function presetLabel(preset) {
   return `${preset.baudRate},${preset.parity === "even" ? "E" : preset.parity === "odd" ? "O" : "N"},${preset.dataBits},${preset.stopBits}`;
@@ -324,7 +341,7 @@ function hidePresetWarning(element) {
 function updatePresetWarning() {
   const element = $("presetWarning");
   if (!element) return;
-  const expected = SERIAL_PRESETS[VIEW_PRESETS[state.currentView]];
+  const expected = SERIAL_PRESETS[viewPreset(state.currentView)];
   const actual = state.connectionOptions;
   if (!state.connected || !expected || !actual) {
     hidePresetWarning(element);
@@ -396,6 +413,7 @@ function applyConnectionState(snapshot) {
   updatePresetWarning();
   if (!state.connected) {
     rejectControlWaiters(new Error("シリアル接続が切断されました"));
+    rejectPanasonicAnswerWaiters(new Error("シリアル接続が切断されました"));
     resetFrameReader();
     state.inboundLink = false;
     state.manualReceiveStage = null;
@@ -517,6 +535,9 @@ function rejectControlWaiters(error) {
 }
 
 function viewUsesHandshake(view) {
+  // パナソニックはHPC／新TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
+  // 大興／リモートのアンサーバックは伝送制御コードではなく電文で返す。
+  if (view === "panasonic") return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK;
   return ["locker4", "mansion", "elevator", "alarm"].includes(view);
 }
 
@@ -532,6 +553,12 @@ function resetLocker4Inbound() {
 
 function receiveTimeoutFor(view, stage) {
   if (view === "locker4") return stage === "link" ? 5_000 : 60_000;
+  // パナソニックはテキスト待ち（HPC 1秒／新TSS 2秒）と
+  // アンサーバック待ち（大興・リモート 5秒）を仕様値どおりに使う。
+  if (view === "panasonic") {
+    const info = panasonicInfo();
+    return info.style === requireApi("PanasonicAlarm").STYLE.BLOCK ? info.textWaitMs : info.answerbackTimeoutMs;
+  }
   if (["mansion", "elevator", "alarm"].includes(view)) return 6_000;
   return null;
 }
@@ -1298,10 +1325,17 @@ function logUnsupportedAutoResponse(result) {
   return true;
 }
 
-function handleApplicationFrame(view, frame, transportResponse) {
+function handleApplicationFrame(view, frame, transportResponse, valid) {
+  // 大興／リモートはACK/NAKを伝送制御ではなく電文で返すため、
+  // 制御コードの送出結果ではなく電文の検証結果で判断する。
+  if (view === "panasonic" && !panasonicIsBlock()) {
+    try { handlePanasonicRecordFrame(frame, valid); } catch (error) { logError(error, "アンサーバック処理"); }
+    return;
+  }
   if (transportResponse !== 0x06) return;
   try {
     if (view === "alarm") handleAlarmRequest(frame);
+    else if (view === "panasonic") handlePanasonicRequest(frame);
     else if (view === "locker4") handleLocker4Request(frame);
     else if (view === "mansion") handleMansionRequest(frame);
     else if (view === "elevator") handleElevatorRequest(frame);
@@ -1316,6 +1350,519 @@ function handleAlarmRequest(frame) {
   const parsed = api.parseFrame(frame);
   if (parsed.type !== api.TYPE.HISTORY_REQUEST || $("alarmRole").value !== "intercom") return;
   scheduleAutoResponse("警報履歴自動応答", () => sendNextAlarmHistory(true));
+}
+
+// ------------------------------------------------------- 警報（パナソニック）
+// 1画面で4プロトコルを切り替える。HPC／新TSSはSTX形式でENQ–ACK–TEXT–ACKの
+// 手順を持ち、大興／リモートはASCIIレコードを送ってアンサーバック電文を待つ。
+
+function panasonicApi() {
+  return requireApi("PanasonicAlarm");
+}
+
+function panasonicProtocol() {
+  return $("panaProtocol").value;
+}
+
+function panasonicInfo() {
+  return panasonicApi().protocolInfo(panasonicProtocol());
+}
+
+function panasonicStyle() {
+  return panasonicInfo().style;
+}
+
+function panasonicIsBlock() {
+  return panasonicStyle() === panasonicApi().STYLE.BLOCK;
+}
+
+// ヒストリーはプロトコルごとに独立させ、切り替えで他方の履歴が混ざらないようにする。
+function panasonicHistory() {
+  const api = panasonicApi();
+  const protocol = panasonicProtocol();
+  if (!api.protocolInfo(protocol).history) return null;
+  if (!state.panaHistories[protocol]) state.panaHistories[protocol] = new api.PanasonicHistory({ protocol });
+  return state.panaHistories[protocol];
+}
+
+function panasonicHexByte(value) {
+  return Number(value).toString(16).toUpperCase().padStart(2, "0");
+}
+
+function panasonicRoomValue(id, name = "住戸番号") {
+  const text = String($(id).value).trim();
+  if (!/^\d{1,4}$/.test(text)) throw new RangeError(`${name}は0～9999の数字で入力してください`);
+  return Number(text);
+}
+
+function panasonicInfoCheckboxes() {
+  return Array.from($("panaInfoBits").querySelectorAll("input[type=checkbox]"));
+}
+
+// 制御コードは画面上で位置が分かるよう<03>の形で見せる。
+function panasonicPreviewText(frame) {
+  if (panasonicIsBlock()) return toHex(frame);
+  const text = panasonicApi().toAscii(frame).replace(/[\x00-\x1F]/g, (character) => `<${panasonicHexByte(character.charCodeAt(0))}>`);
+  return `${text}    ${toHex(frame)}`;
+}
+
+function refreshPanasonicTypes() {
+  if (!panasonicIsBlock()) return;
+  const select = $("panaType");
+  const previous = select.value;
+  const options = panasonicApi().blockTypes(panasonicProtocol()).map((entry) => {
+    const option = document.createElement("option");
+    option.value = panasonicHexByte(entry.code);
+    option.textContent = `${option.value} ${entry.label}`;
+    return option;
+  });
+  select.replaceChildren(...options);
+  if (options.some((option) => option.value === previous)) select.value = previous;
+}
+
+function refreshPanasonicAlarmNumbers() {
+  if (panasonicIsBlock()) return;
+  const select = $("panaAlarmNo");
+  const previous = select.value;
+  const options = panasonicApi().alarmNumbers(panasonicProtocol()).map((entry) => {
+    const option = document.createElement("option");
+    option.value = entry.code;
+    option.textContent = `${entry.code} ${entry.label}`;
+    return option;
+  });
+  select.replaceChildren(...options);
+  if (options.some((option) => option.value === previous)) select.value = previous;
+}
+
+// 警報情報はHEX欄を唯一の値とし、チェックボックスは選択中の割付でそれを読み書きする窓にする。
+function syncPanasonicInfoForm(source = "hex") {
+  const api = panasonicApi();
+  if (!panasonicIsBlock()) return;
+  const protocol = panasonicProtocol();
+  let entry = null;
+  try { entry = api.findBlockType(protocol, parseHexByte($("panaType").value, "発信種別")); } catch (_error) { entry = null; }
+  const boxes = panasonicInfoCheckboxes();
+  const fixedZero = !entry || entry.bits === null;
+
+  if (source === "bits" && !fixedZero) {
+    const checked = boxes.reduce((list, box, index) => (box.checked ? list.concat(index) : list), []);
+    $("panaInfo").value = panasonicHexByte(api.encodeInfo(checked));
+  }
+  if (fixedZero) $("panaInfo").value = "00";
+  $("panaInfo").disabled = fixedZero;
+
+  // 要求電文のうちヒストリー要求は棟番号・住戸番号も00固定。
+  const addressed = !entry || !entry.request || entry.addressed !== false;
+  $("panaBuilding").disabled = !addressed;
+  $("panaRoom").disabled = !addressed;
+  const info = panasonicInfo();
+  $("panaHistoryField").hidden = !info.history;
+  $("panaHistory").disabled = !info.history || (entry ? Boolean(entry.request) : false);
+
+  let detail = null;
+  if (entry && !fixedZero) {
+    try { detail = api.describeInfo(protocol, entry.code, parseHexByte($("panaInfo").value, "警報情報")); } catch (_error) { detail = null; }
+  }
+
+  boxes.forEach((box, index) => {
+    const label = box.closest("label");
+    const text = label.querySelector("span");
+    const cell = detail ? detail.bits[index] : null;
+    if (!cell) {
+      text.textContent = `bit${index}`;
+      box.checked = false;
+      box.disabled = true;
+      label.classList.add("bit-unassigned");
+      return;
+    }
+    text.textContent = cell.label == null ? `bit${index}（予備）` : `bit${index} ${cell.label}`;
+    box.checked = cell.on;
+    // 予備bitはチェックさせない。HEX欄からは送れるので注意として残す。
+    box.disabled = cell.reserved;
+    label.classList.toggle("bit-unassigned", cell.reserved);
+  });
+
+  const hint = $("panaInfoHint");
+  if (!entry) hint.textContent = "発信種別を選び直してください";
+  else if (fixedZero) hint.textContent = `${entry.label}の警報情報は00H固定です${entry.addressed === false ? "（棟番号・住戸番号も00）" : "（棟番号・住戸番号で対象を指定します）"}`;
+  else if (!detail) hint.textContent = "警報情報は2桁HEXで入力してください";
+  else {
+    const violation = detail.violations.length ? `／注意: bit${detail.violations.join("・")}は仕様上の予備です` : "";
+    hint.textContent = `${info.label} ${entry.label}：${detail.hex}H = ${detail.summary}${violation}`;
+  }
+}
+
+function renderPanasonicRecords() {
+  const api = panasonicApi();
+  const body = $("panaRecordRows");
+  const protocol = panasonicProtocol();
+  if (state.panaRecords.length === 0) {
+    body.replaceChildren(emptyReceiveRow(7, "レコードがありません。入力して「レコードへ追加」を押すか、そのまま送信すると入力中の1件を送ります"));
+  } else {
+    const fragment = document.createDocumentFragment();
+    state.panaRecords.forEach((record, index) => {
+      const row = document.createElement("tr");
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.checked = Boolean(record.selected);
+      check.setAttribute("aria-label", `${index + 1}件目を選択`);
+      check.addEventListener("change", () => { record.selected = check.checked; });
+      const first = document.createElement("td");
+      first.append(check);
+      row.append(first);
+      const entry = api.findAlarmNumber(protocol, record.alarmNo);
+      const cells = [
+        String(index + 1),
+        `${record.mode}（${api.modeLabel(protocol, record.alarmNo, record.mode)}）`,
+        String(record.buildingNo).padStart(2, "0"),
+        String(record.roomNo).padStart(4, "0"),
+        String(record.alarmNo).padStart(2, "0"),
+        entry ? entry.label : "別表に該当なし",
+      ];
+      for (const text of cells) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        row.append(cell);
+      }
+      if (!entry) row.classList.add("receive-row", "error");
+      fragment.append(row);
+    });
+    body.replaceChildren(fragment);
+  }
+  $("panaRecordState").textContent = `${state.panaRecords.length}/${api.MAX_RECORDS}レコード`;
+  $("panaRecordSelectAll").checked = state.panaRecords.length > 0 && state.panaRecords.every((record) => record.selected);
+}
+
+function panasonicRecordDraft() {
+  return {
+    mode: $("panaMode").value,
+    buildingNo: integerValue("panaRecordBuilding", "棟番号", 0, 99),
+    roomNo: panasonicRoomValue("panaRecordRoom"),
+    alarmNo: Number($("panaAlarmNo").value),
+    selected: false,
+  };
+}
+
+function addPanasonicRecord() {
+  const api = panasonicApi();
+  if (state.panaRecords.length >= api.MAX_RECORDS) throw new Error(`1回の送信は最大${api.MAX_RECORDS}レコードです`);
+  const record = panasonicRecordDraft();
+  // 追加時点で別表と桁を検証し、送信直前まで誤りを持ち越さない。
+  api.encodeRecord(panasonicProtocol(), record);
+  state.panaRecords.push(record);
+  renderPanasonicRecords();
+}
+
+function buildPanasonicBlockFrame() {
+  const api = panasonicApi();
+  const protocol = panasonicProtocol();
+  const entry = api.findBlockType(protocol, parseHexByte($("panaType").value, "発信種別"));
+  const role = $("panaRole").value;
+  // 要求は他社通報機からIFUへ、警報データはIFUから他社通報機への一方向。
+  if (entry.request && role !== "peer") throw new Error("要求電文は他社通報機（受信側）から送信します");
+  if (!entry.request && role !== "ifu") throw new Error("警報データはﾊﾟﾅｿﾆｯｸIFU（送信側）から送信します");
+  const addressed = !entry.request || entry.addressed !== false;
+  return api.buildFrame({
+    protocol,
+    type: entry.code,
+    info: entry.bits === null ? 0 : parseHexByte($("panaInfo").value, "警報情報"),
+    buildingNo: addressed ? integerValue("panaBuilding", "棟番号", 0, 99) : 0,
+    roomNo: addressed ? panasonicRoomValue("panaRoom") : 0,
+    historyNumber: panasonicInfo().history && !entry.request ? integerValue("panaHistory", "ヒストリー番号", 0, 15) : 0,
+  });
+}
+
+function buildPanasonicRecordFrame() {
+  if ($("panaRole").value !== "ifu") throw new Error("警報データはﾊﾟﾅｿﾆｯｸIFU（送信側）から送信します");
+  const records = state.panaRecords.length ? state.panaRecords : [panasonicRecordDraft()];
+  return panasonicApi().buildFrame({ protocol: panasonicProtocol(), records });
+}
+
+function buildPanasonicFrame() {
+  return panasonicIsBlock() ? buildPanasonicBlockFrame() : buildPanasonicRecordFrame();
+}
+
+// 大興／リモートのアンサーバックは電文で届くため、制御コード待ちとは別に受け取る。
+function createPanasonicAnswerWaiter(timeoutMs) {
+  let waiter;
+  const promise = new Promise((resolve, reject) => {
+    waiter = { resolve, reject, timer: null, done: false };
+    state.panaAnswerWaiters.push(waiter);
+  });
+  promise.catch(() => undefined);
+  return {
+    promise,
+    arm() {
+      if (waiter.done || waiter.timer) return;
+      waiter.timer = setTimeout(() => {
+        const index = state.panaAnswerWaiters.indexOf(waiter);
+        if (index !== -1) state.panaAnswerWaiters.splice(index, 1);
+        waiter.done = true;
+        waiter.reject(new Error("アンサーバック待ちタイムアウト"));
+      }, timeoutMs);
+    },
+    cancel() {
+      const index = state.panaAnswerWaiters.indexOf(waiter);
+      if (index !== -1) state.panaAnswerWaiters.splice(index, 1);
+      waiter.done = true;
+      clearTimeout(waiter.timer);
+    },
+  };
+}
+
+function dispatchPanasonicAnswer(parsed) {
+  const waiter = state.panaAnswerWaiters.shift();
+  if (!waiter) return false;
+  clearTimeout(waiter.timer);
+  waiter.done = true;
+  waiter.resolve(parsed);
+  return true;
+}
+
+function rejectPanasonicAnswerWaiters(error) {
+  const waiters = state.panaAnswerWaiters.splice(0, state.panaAnswerWaiters.length);
+  for (const waiter of waiters) {
+    clearTimeout(waiter.timer);
+    waiter.done = true;
+    waiter.reject(error);
+  }
+}
+
+async function sendPanasonicBlock(frame, forceHandshake = false) {
+  const info = panasonicInfo();
+  if (!forceHandshake && $("panaTransport").value === "direct") return transmit(frame, "frame");
+  // 仕様上の上限は256回だが、送信FSMが扱えるのは255回まで。
+  const specRetries = $("panaRole").value === "ifu" ? info.ifuRetries : info.peerRetries;
+  const maxRetries = Math.min(specRetries, 255);
+  if (specRetries > maxRetries) {
+    addLog("info", "SEQ", null, `再送上限は仕様の${specRetries}回に対し${maxRetries}回で試験します`);
+  }
+  return runHandshake([frame], {
+    sendEot: false,
+    textRetryMode: "sameText",
+    maxRetries,
+    linkTimeoutMs: info.linkTimeoutMs,
+    textTimeoutMs: info.textTimeoutMs,
+    // ENQ衝突時はIFUが優先する。
+    priority: $("panaRole").value === "ifu",
+  });
+}
+
+// アンサーバックがNAK、または5秒間ない場合はリトライ送信（計3回）を行う。
+async function sendPanasonicRecord(frame, label = "警報データ") {
+  const info = panasonicInfo();
+  if ($("panaTransport").value === "direct") return transmit(frame, "frame");
+  const attempts = info.sendAttempts;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    setSequence(`${label}送信 ${attempt}/${attempts}`);
+    const waiter = createPanasonicAnswerWaiter(info.answerbackTimeoutMs);
+    try {
+      await transmit(frame, "frame");
+    } catch (error) {
+      waiter.cancel();
+      throw error;
+    }
+    waiter.arm();
+    try {
+      const answer = await waiter.promise;
+      if (answer.kind === "ack") {
+        setSequence("完了");
+        addLog("info", "SEQ", null, `アンサーバックACK受信 / 送信${attempt}回`);
+        return answer;
+      }
+      addLog("warn", "RETRY", null, `アンサーバックNAK / ${attempt}/${attempts}`);
+    } catch (error) {
+      waiter.cancel();
+      if (!/アンサーバック待ちタイムアウト/.test(String(error.message))) throw error;
+      addLog("warn", "RETRY", null, `アンサーバック無応答 ${info.answerbackTimeoutMs}ms / ${attempt}/${attempts}`);
+    }
+  }
+  setSequence("失敗");
+  throw new Error(`アンサーバックを受信できず、リトライ上限（計${attempts}回）に達しました`);
+}
+
+async function sendPanasonicFrame(frame, label) {
+  return panasonicIsBlock() ? sendPanasonicBlock(frame) : sendPanasonicRecord(frame, label);
+}
+
+// 大興／リモートはASCIIが読めないと桁を追えないため、専用のプレビューを使う。
+function previewPanasonic() {
+  try {
+    const frame = buildPanasonicFrame();
+    $("panaPreview").textContent = panasonicPreviewText(frame);
+    return frame;
+  } catch (error) {
+    $("panaPreview").textContent = `ERROR: ${error.message}`;
+    throw error;
+  }
+}
+
+async function sendPanasonic() {
+  const frame = previewPanasonic();
+  await sendPanasonicFrame(frame);
+  if (!panasonicIsBlock() || !$("panaAutoRecord").checked) return;
+  const history = panasonicHistory();
+  if (!history) return;
+  const parsed = panasonicApi().parseBlockFrame(frame, { protocol: panasonicProtocol() });
+  if (!parsed.request) recordPanasonicHistory(frame);
+}
+
+function updatePanasonicHistoryStatus(detail) {
+  const element = $("panaHistoryState");
+  if (!element) return;
+  const history = panasonicHistory();
+  if (!history) {
+    element.textContent = `${panasonicInfo().label}プロトコルにヒストリー処理はありません`;
+    return;
+  }
+  element.textContent = `ヒストリー ${history.size}/${panasonicApi().HISTORY_LIMIT}件${detail ? ` — ${detail}` : ""}`;
+}
+
+function requirePanasonicHistory() {
+  const history = panasonicHistory();
+  if (!history) throw new Error(`${panasonicInfo().label}プロトコルにヒストリー処理はありません`);
+  return history;
+}
+
+function recordPanasonicHistory(frame = buildPanasonicBlockFrame()) {
+  const api = panasonicApi();
+  const history = requirePanasonicHistory();
+  const parsed = api.parseBlockFrame(frame, { protocol: panasonicProtocol() });
+  history.record(frame);
+  state.panaHistoryPending = null;
+  updatePanasonicHistoryStatus(`${parsed.typeLabel} / ${parsed.buildingNo}棟 ${String(parsed.roomNo).padStart(4, "0")}号室 を記録`);
+  addLog("info", "HISTORY", frame, `パナソニックヒストリーへ記録 (${history.size}/${api.HISTORY_LIMIT}件)`);
+  return frame;
+}
+
+function prepareNextPanasonicHistory() {
+  const api = panasonicApi();
+  const history = requirePanasonicHistory();
+  const frame = history.nextFrame();
+  // ヒストリー情報がない場合の要求に対しては、仕様上NAKを返す。
+  if (!frame) throw new Error("ヒストリー情報がありません（仕様上はNAKを返します）");
+  const parsed = api.parseBlockFrame(frame, { protocol: panasonicProtocol() });
+  state.panaHistoryPending = frame;
+  $("panaPreview").textContent = panasonicPreviewText(frame);
+  updatePanasonicHistoryStatus(parsed.historyNumber === 0 ? "現状を準備" : `ヒストリー${parsed.historyNumber}を準備`);
+  return frame;
+}
+
+async function sendNextPanasonicHistory(forceHandshake = false) {
+  if ($("panaRole").value !== "ifu") throw new Error("ヒストリー応答はﾊﾟﾅｿﾆｯｸIFU（送信側）から送信します");
+  const frame = state.panaHistoryPending || prepareNextPanasonicHistory();
+  state.panaHistoryPending = null;
+  await sendPanasonicBlock(frame, forceHandshake);
+  updatePanasonicHistoryStatus("ヒストリー応答を送信");
+}
+
+// HPCの要求電文への自動応答。応答内容が仕様と手元の記録で確定するものだけ送る。
+function handlePanasonicRequest(frame) {
+  if (!$("panaAutoResponse").checked || $("panaRole").value !== "ifu") return;
+  const api = panasonicApi();
+  const parsed = api.parseBlockFrame(frame, { protocol: panasonicProtocol() });
+  if (!parsed.request) return;
+  const history = panasonicHistory();
+  if (parsed.typeName === "historyRequest") {
+    if (!history || history.empty) {
+      addLog("warn", "AUTO", null, "自動応答なし: ヒストリー情報がありません（仕様上はNAK）");
+      return;
+    }
+    scheduleAutoResponse("ヒストリー自動応答", () => sendNextPanasonicHistory(true));
+    return;
+  }
+  if (parsed.typeName !== "dwellingRequest") return;
+  const response = history ? history.dwellingFrame(parsed.buildingNo, parsed.roomNo) : null;
+  if (!response) {
+    addLog("warn", "AUTO", null, `自動応答なし: ${parsed.buildingNo}棟 ${String(parsed.roomNo).padStart(4, "0")}号室の送信済みイベントがありません`);
+    return;
+  }
+  // 住戸情報要求ではヒストリーのポインタを先頭へ戻さない。
+  scheduleAutoResponse("住戸情報自動応答", () => sendPanasonicBlock(response, true));
+}
+
+// 大興／リモートは伝送制御を使わないため、受信電文そのものでACK/NAKを判断する。
+function handlePanasonicRecordFrame(frame, valid) {
+  const api = panasonicApi();
+  const protocol = panasonicProtocol();
+  let parsed = null;
+  try { parsed = api.parseRecordFrame(frame, { protocol }); } catch (_error) { parsed = null; }
+
+  if (parsed && (parsed.kind === "ack" || parsed.kind === "nak")) {
+    if (!dispatchPanasonicAnswer(parsed)) {
+      addLog("info", "PANA", null, `アンサーバック${parsed.kind === "ack" ? "ACK" : "NAK"}を受信（送信待ちなし）`);
+    }
+    return;
+  }
+  if (!$("panaAutoAnswerback").checked || $("panaRole").value !== "peer") return;
+  const accepted = valid !== false && parsed !== null;
+  const scheduled = parsed !== null && parsed.kind === "scheduled";
+  scheduleAutoResponse("パナソニックアンサーバック", async () => {
+    await transmit(api.buildAnswerback({ protocol, accepted, scheduled }), "response");
+    addLog(accepted ? "info" : "warn", "AUTO", null, `受信電文へ${accepted ? "ACK" : "NAK"}アンサーバック`);
+  });
+}
+
+function applyReceivedPanasonic(result) {
+  const parsed = result.parsed;
+  if (!parsed) throw new Error("反映できる解析結果がありません");
+  if (panasonicIsBlock()) {
+    if (parsed.type == null) throw new Error("発信種別を読み取れませんでした");
+    $("panaType").value = panasonicHexByte(parsed.type);
+    if (parsed.info != null) $("panaInfo").value = panasonicHexByte(parsed.info);
+    if (parsed.buildingNo != null) $("panaBuilding").value = String(parsed.buildingNo);
+    if (parsed.roomNo != null) $("panaRoom").value = String(parsed.roomNo).padStart(4, "0");
+    if (parsed.historyNumber != null) $("panaHistory").value = String(parsed.historyNumber);
+    syncPanasonicInfoForm();
+    toast("受信電文を送信フォームへ取り込みました");
+    return;
+  }
+  if (parsed.kind !== "alarm" || !parsed.records.length) throw new Error("取り込める警報レコードがありません");
+  state.panaRecords = parsed.records.map((record) => ({
+    mode: record.mode,
+    buildingNo: record.buildingNo,
+    roomNo: record.roomNo,
+    alarmNo: record.alarmNo,
+    selected: false,
+  }));
+  renderPanasonicRecords();
+  toast(`受信した${state.panaRecords.length}レコードを取り込みました`);
+}
+
+// プロトコル切替は電文形式・通信条件・受信リーダーまで変わるため、まとめて追従させる。
+function syncPanasonicForm() {
+  const api = panasonicApi();
+  const info = panasonicInfo();
+  const block = panasonicIsBlock();
+  $("panaBlockForm").hidden = !block;
+  $("panaRecordForm").hidden = block;
+  $("panaSpecNote").textContent = `${info.document}：${block
+    ? "STX＋データ長37H＋データ7byte＋ETX＋BCC（加算）"
+    : `SND＋レコード（最大${api.MAX_RECORDS}）＋チェックサム4桁＋CR`}`;
+  const preset = SERIAL_PRESETS[viewPreset("panasonic")];
+  if (preset) $("panaSpecBadge").textContent = presetLabel(preset);
+
+  refreshPanasonicTypes();
+  refreshPanasonicAlarmNumbers();
+
+  $("panaRecordHistoryButton").hidden = !info.history;
+  $("panaNextButton").hidden = !info.history;
+  $("panaHistorySendButton").hidden = !info.history;
+  $("panaHistoryClearButton").hidden = !info.history;
+  $("panaScheduledButton").hidden = !info.scheduled;
+  $("panaAckButton").hidden = block;
+  $("panaNakButton").hidden = block;
+  $("panaPropertyField").hidden = !info.scheduled;
+
+  if (block) syncPanasonicInfoForm();
+  else renderPanasonicRecords();
+  updatePanasonicHistoryStatus();
+
+  // 受信リーダーと解析条件が変わるので、途中まで溜めた受信は破棄して読み直す。
+  resetFrameReader();
+  state.frameReaderView = null;
+  if (state.currentView === "panasonic") updatePresetWarning();
+  renderReceiveMonitor("panasonic");
 }
 
 // Q48-005F：宅配側として動作しているときだけ、情報要求へ現在のロッカーデータで応答する。
@@ -1701,12 +2248,20 @@ async function sendLocker2() {
 // フレーム境界の検出は protocol/frame-reader.js に集約している。
 // マンションコントローラはStreamDecoderへ委譲され、LEN範囲・早すぎるETX・
 // 再同期の記録まで実通信経路で効く。
+// パナソニックは1画面でフレーム形式が変わるため、画面名ではなく
+// 選択中のプロトコルに対応するリーダーを引く。
+function frameReaderProfile() {
+  if (state.currentView !== "panasonic") return state.currentView;
+  return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK ? "panasonicBlock" : "panasonicRecord";
+}
+
 function currentFrameReader() {
-  if (!state.frameReader || state.frameReaderView !== state.currentView) {
+  const profile = frameReaderProfile();
+  if (!state.frameReader || state.frameReaderView !== profile) {
     const Reader = requireApi("FrameReader");
     // KIND/CMDの方向・Version検証は describeFrame 側で行うため、ここでは長さとBCCだけを見る。
-    state.frameReader = new Reader(state.currentView, { validateCommand: false });
-    state.frameReaderView = state.currentView;
+    state.frameReader = new Reader(profile, { validateCommand: false });
+    state.frameReaderView = profile;
   }
   return state.frameReader;
 }
@@ -1751,6 +2306,9 @@ function receiveInspectOptions(view) {
   if (view === "key") {
     const profile = keyProfile();
     return { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label };
+  }
+  if (view === "panasonic") {
+    return { protocol: $("panaProtocol").value };
   }
   return {};
 }
@@ -2164,6 +2722,7 @@ function applyReceiveMonitor(view) {
   if (view === "locker4") return applyReceivedLocker4(result);
   if (view === "locker2") return applyReceivedLocker2(result);
   if (view === "key") return applyReceivedKey(result);
+  if (view === "panasonic") return applyReceivedPanasonic(result);
   throw new Error("この画面には反映機能がありません");
 }
 
@@ -2216,6 +2775,30 @@ function describeFrame(view, frame) {
     const info = alarmInfoDetail(value.info, value.type);
     return `警報 ${value.typeName} info=${info.hex}（${info.summary}） source=${value.source.kind}`;
   }
+  if (view === "panasonic") {
+    const api = panasonicApi();
+    const protocol = panasonicProtocol();
+    const label = panasonicInfo().label;
+    if (panasonicIsBlock()) {
+      const value = api.parseBlockFrame(frame, { protocol });
+      const detail = api.describeInfo(protocol, value.type, value.info);
+      // 要求はIFUが受け、警報データは他社通報機が受ける。逆向きなら止める。
+      const localRole = $("panaRole").value;
+      if ((localRole === "ifu" && !value.request) || (localRole === "peer" && value.request)) {
+        throw new Error("現在の動作側に対して送信方向が逆です");
+      }
+      const history = value.historyNumber ? ` ﾋｽﾄﾘｰ${value.historyNumber}` : "";
+      return `パナソニック${label} ${value.typeLabel} info=${detail.hex}（${detail.summary}） 棟=${value.buildingNo} 住戸=${String(value.roomNo).padStart(4, "0")}${history}`;
+    }
+    const value = api.parseRecordFrame(frame, { protocol });
+    if (value.kind === "ack") return `パナソニック${label} アンサーバックACK`;
+    if (value.kind === "nak") return `パナソニック${label} アンサーバックNAK`;
+    if (value.kind === "scheduled") return `パナソニック${label} 定時送信 物件コード=${value.propertyCode}`;
+    const records = value.records
+      .map((record) => `${record.mode}${String(record.buildingNo).padStart(2, "0")}-${String(record.roomNo).padStart(4, "0")}:${String(record.alarmNo).padStart(2, "0")}${record.alarmLabel ? `(${record.alarmLabel})` : ""}`)
+      .join(" ");
+    return `パナソニック${label} 警報データ ${value.recordCount}件 ${records}`;
+  }
   if (view === "mansion") {
     const api = requireApi("MansionController");
     const incomingRole = $("mcRole").value === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
@@ -2250,13 +2833,15 @@ function inspectReceive(bytes, at) {
     // 受信モニタの記録は検証結果に依存させない。仕様違反の電文ほど
     // どの桁が想定と違うのかを確認したいので、必ず先に記録する。
     recordReceivedFrame(view, event.bytes, at);
+    let valid = true;
     try {
       addLog("info", "PARSE", null, describeFrame(view, event.bytes));
-      handleCompletedInboundFrame(true).then((control) => handleApplicationFrame(view, event.bytes, control));
     } catch (error) {
       logError(error, "受信電文検証");
-      handleCompletedInboundFrame(false);
+      valid = false;
     }
+    // 検証NGでも応答を返す機種があるため、判定結果を渡して処理は続ける。
+    handleCompletedInboundFrame(valid).then((control) => handleApplicationFrame(view, event.bytes, control, valid));
   }
   // 未完のフレームが残っている間だけ受信完了タイマーを走らせる。
   if (reader.bufferedLength > 0) armReceiveTimer(state.currentView, "frame");
@@ -2290,7 +2875,7 @@ function navigate(view) {
   if (RECEIVE_MONITORS[view]) renderReceiveMonitor(view);
   document.querySelectorAll(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  const preset = VIEW_PRESETS[view] || null;
+  const preset = viewPreset(view);
   if (preset && !state.connected) {
     $("serialPreset").value = preset;
     applySerialPreset(preset);
@@ -2343,6 +2928,7 @@ function collectProfile() {
     values,
     locker4Rows: state.locker4Rows.map((row) => ({ ...row })),
     locker2Rows: state.locker2Rows.map((row) => ({ ...row })),
+    panaRecords: state.panaRecords.map((row) => ({ ...row })),
   };
 }
 
@@ -2372,6 +2958,7 @@ function applyProfile(profile) {
   if (legacyKeyProfile === "limited8") $("keyProfile").value = "vFine";
   syncKeyForm();
   syncAlarmInfoForm();
+  syncPanasonicForm();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -2397,6 +2984,16 @@ function applyProfile(profile) {
       selected: Boolean(row.selected),
     }));
     $("locker2Count").value = String(state.locker2Rows.length);
+  }
+  if (Array.isArray(profile.panaRecords)) {
+    state.panaRecords = profile.panaRecords.slice(0, requireApi("PanasonicAlarm").MAX_RECORDS).map((row) => ({
+      mode: row.mode === "F" ? "F" : "N",
+      buildingNo: Number(row.buildingNo) || 0,
+      roomNo: Number(row.roomNo) || 0,
+      alarmNo: Number(row.alarmNo) || 0,
+      selected: Boolean(row.selected),
+    }));
+    renderPanasonicRecords();
   }
   renderLocker4Table();
   renderLocker2Table();
@@ -2553,6 +3150,73 @@ function bindEvents() {
     updateAlarmHistoryStatus("消去しました");
   });
 
+  // 警報（パナソニック）
+  $("panaProtocol").addEventListener("change", () => { try { syncPanasonicForm(); } catch (error) { logError(error, "プロトコル切替"); } });
+  $("panaRole").addEventListener("change", () => {
+    // 動作側を変えると送れる電文が入れ替わるため、既定の発信種別も合わせる。
+    if (panasonicIsBlock()) {
+      const requestType = panasonicApi().blockTypes(panasonicProtocol()).find((entry) => entry.request);
+      if ($("panaRole").value === "peer" && requestType) $("panaType").value = panasonicHexByte(requestType.code);
+      if ($("panaRole").value === "ifu") $("panaType").value = "00";
+      syncPanasonicInfoForm();
+    }
+  });
+  $("panaType").addEventListener("change", () => syncPanasonicInfoForm());
+  $("panaInfo").addEventListener("input", () => syncPanasonicInfoForm());
+  $("panaInfoBits").addEventListener("change", () => syncPanasonicInfoForm("bits"));
+  $("panaInfoClearButton").addEventListener("click", () => {
+    $("panaInfo").value = "00";
+    syncPanasonicInfoForm();
+  });
+  $("panaRecordAdd").addEventListener("click", () => { try { addPanasonicRecord(); } catch (error) { logError(error, "レコード追加"); } });
+  $("panaRecordRemove").addEventListener("click", () => {
+    const remaining = state.panaRecords.filter((record) => !record.selected);
+    if (remaining.length === state.panaRecords.length) { toast("削除するレコードを選択してください", true); return; }
+    state.panaRecords = remaining;
+    renderPanasonicRecords();
+  });
+  $("panaRecordClear").addEventListener("click", () => { state.panaRecords = []; renderPanasonicRecords(); });
+  $("panaRecordSelectAll").addEventListener("change", () => {
+    const checked = $("panaRecordSelectAll").checked;
+    state.panaRecords.forEach((record) => { record.selected = checked; });
+    renderPanasonicRecords();
+  });
+  $("panaPreviewButton").addEventListener("click", () => { try { previewPanasonic(); } catch (error) { logError(error, "プレビュー"); } });
+  $("panaSendButton").addEventListener("click", () => {
+    withTransaction("警報（パナソニック）", sendPanasonic).catch((error) => logError(error, "パナソニック送信"));
+  });
+  $("panaRecordHistoryButton").addEventListener("click", () => { try { recordPanasonicHistory(); } catch (error) { logError(error, "ヒストリー記録"); } });
+  $("panaNextButton").addEventListener("click", () => { try { prepareNextPanasonicHistory(); } catch (error) { logError(error, "ヒストリー準備"); } });
+  $("panaHistorySendButton").addEventListener("click", () => {
+    withTransaction("パナソニックヒストリー応答", () => sendNextPanasonicHistory()).catch((error) => logError(error, "ヒストリー応答送信"));
+  });
+  $("panaHistoryClearButton").addEventListener("click", () => {
+    try { requirePanasonicHistory().reset(); } catch (error) { logError(error, "ヒストリー消去"); return; }
+    state.panaHistoryPending = null;
+    updatePanasonicHistoryStatus("消去しました");
+  });
+  $("panaScheduledButton").addEventListener("click", () => {
+    withTransaction("定時送信", async () => {
+      const frame = panasonicApi().buildScheduledFrame({ protocol: panasonicProtocol(), propertyCode: $("panaProperty").value });
+      $("panaPreview").textContent = panasonicPreviewText(frame);
+      await sendPanasonicRecord(frame, "定時送信");
+    }).catch((error) => logError(error, "定時送信"));
+  });
+  $("panaAckButton").addEventListener("click", () => {
+    withTransaction("アンサーバック", async () => {
+      const frame = panasonicApi().buildAnswerback({ protocol: panasonicProtocol(), accepted: true });
+      await transmit(frame, "response");
+      addLog("info", "PANA", frame, "アンサーバックACKを手動送信");
+    }).catch((error) => logError(error, "アンサーバック送信"));
+  });
+  $("panaNakButton").addEventListener("click", () => {
+    withTransaction("アンサーバック", async () => {
+      const frame = panasonicApi().buildAnswerback({ protocol: panasonicProtocol(), accepted: false });
+      await transmit(frame, "response");
+      addLog("warn", "PANA", frame, "アンサーバックNAKを手動送信");
+    }).catch((error) => logError(error, "アンサーバック送信"));
+  });
+
   // 受信モニタ：反映・消去は機種ごとに同じ操作体系でそろえる。
   for (const [view, config] of Object.entries(RECEIVE_MONITORS)) {
     $(`${config.prefix}Apply`).addEventListener("click", () => {
@@ -2596,6 +3260,7 @@ async function initialize() {
   renderLocker2Table();
   for (const view of Object.keys(RECEIVE_MONITORS)) renderReceiveMonitor(view);
   syncAlarmInfoForm();
+  syncPanasonicForm();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

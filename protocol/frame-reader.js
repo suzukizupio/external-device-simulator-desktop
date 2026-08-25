@@ -45,6 +45,26 @@
     return total === 10 || total === 13 ? total : -1;
   }
 
+  // 大興／リモートはSTXを使わず、"SND"（警報・ACK）／"TRS"（定時送信・ACK）／
+  // "NG"（NAK）で始まりCRで終わる。レコード区切りのETXは電文の途中に現れる。
+  const CR = 0x0D;
+  const RECORD_HEADS = Object.freeze(["SND", "TRS", "NG"]);
+  const RECORD_STARTS = new Set(RECORD_HEADS.map(function (head) { return head.charCodeAt(0); }));
+
+  function isRecordStart(byte) {
+    return RECORD_STARTS.has(byte);
+  }
+
+  function recordLength(buffer) {
+    // ヘッダが確定した分だけ先に照合し、無関係なASCIIを引きずらない。
+    const head = String.fromCharCode.apply(null, buffer.slice(0, 3));
+    if (!RECORD_HEADS.some(function (candidate) {
+      return head.startsWith(candidate) || candidate.startsWith(head);
+    })) return -1;
+    const cr = buffer.indexOf(CR);
+    return cr === -1 ? null : cr + 1;
+  }
+
   const RULES = Object.freeze({
     locker2: { length: () => 11, resyncOnStx: true },
     locker4: { length: locker4Length, resyncOnStx: true },
@@ -53,6 +73,9 @@
     // 警報電文は発報元と履歴番号が生バイトのため、電文中に02Hが現れる。
     // 固定長で読み切り、STXでの再同期は行わない。
     alarm: { length: () => 11, resyncOnStx: false },
+    // パナソニックHPC／新TSSも住戸番号とBCCが生バイトで02Hを取りうる11byte固定。
+    panasonicBlock: { length: () => 11, resyncOnStx: false },
+    panasonicRecord: { start: isRecordStart, length: recordLength, resyncOnStx: false },
   });
 
   function controlEvent(code) {
@@ -109,7 +132,8 @@
       if (this.buffer.length === 0) return [];
       const raw = this.buffer.slice();
       this.buffer = [];
-      return [errorEvent("TRUNCATED_FRAME", "STXで始まったフレームが完結していません", raw)];
+      const opening = this.rule && this.rule.start ? "ヘッダ" : "STX";
+      return [errorEvent("TRUNCATED_FRAME", opening + "で始まったフレームが完結していません", raw)];
     }
 
     _expectedLength() {
@@ -117,9 +141,14 @@
       return expected == null ? null : expected;
     }
 
+    // フレームの開始バイトは機種で違う。既定はSTX、大興／リモートは"SND"等の先頭文字。
+    _isStart(byte) {
+      return this.rule.start ? this.rule.start(byte) : byte === STX;
+    }
+
     _consume(byte, events) {
       if (this.buffer.length === 0) {
-        if (byte === STX) this.buffer.push(byte);
+        if (this._isStart(byte)) this.buffer.push(byte);
         else if (TRANSPORT_CONTROLS.has(byte)) events.push(controlEvent(byte));
         return;
       }
