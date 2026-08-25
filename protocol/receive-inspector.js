@@ -14,16 +14,17 @@
       require("./locker4.js"),
       require("./noncontact-key.js"),
       require("./panasonic-alarm.js"),
-      require("./panasonic-elevator.js")
+      require("./panasonic-elevator.js"),
+      require("./alarm-identifier.js")
     );
   } else {
-    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator);
+    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator, root.AlarmIdentifier);
   }
-})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator) {
+})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier) {
   "use strict";
 
-  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator) {
-    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm and PanasonicElevator");
+  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator || !AlarmIdentifier) {
+    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator and AlarmIdentifier");
   }
 
   const STX = 0x02;
@@ -526,23 +527,23 @@
     const finished = info.style === PanasonicAlarm.STYLE.BLOCK
       ? inspectPanasonicBlock(result, bytes, protocolName, info)
       : inspectPanasonicRecord(result, bytes, protocolName, info);
-    return annotatePanasonicIdentification(finished, bytes, protocolName);
+    return annotatePanasonicIdentification(finished, bytes, protocolName, options);
   }
 
   // 選択中のプロトコルが実際の電文と違っていても分かるよう、受信バイト列だけから
-  // 成立するプロトコルを判定して結果に添える。形式（STX形式かレコード形式か）は
-  // 必ず決まるが、HPC／TSSの共通発信種別や大興／リモートの共通警報No.は
-  // 電文だけでは一意に決まらないため、その場合は候補と読みの違いを示す。
-  function annotatePanasonicIdentification(result, bytes, selected) {
-    const identified = PanasonicAlarm.identify(bytes);
-    const name = (protocol) => PanasonicAlarm.protocolInfo(protocol).label;
+  // 成立するプロトコルを判定して結果に添える。アイホンQ49-023GとパナソニックHPC／TSSは
+  // 外形が同じなので、メーカーをまたいで候補に入れる。共通の発信種別や警報No.しか
+  // 含まない電文は一意に決まらないため、その場合は候補と読みの違いを示す。
+  function annotatePanasonicIdentification(result, bytes, selected, options) {
+    const identified = AlarmIdentifier.identify(bytes, { aiphonePattern: (options || {}).aiphonePattern });
+    const selectedLabel = PanasonicAlarm.protocolInfo(selected).label;
     const notes = [];
 
-    if (identified.candidates.length === 0) {
+    if (identified.targets.length === 0) {
       result.identification = {
-        protocol: null, candidates: [], matchesSelection: false,
-        text: "どのプロトコルの電文としても成立しません",
-        notes: [],
+        id: null, candidates: [], matchesSelection: false, otherVendor: false,
+        text: "アイホン・パナソニックのどの警報プロトコルとしても成立しません",
+        notes: [], tone: "warn",
       };
       result.badges.push(badge("判定: 不成立", STATUS.ERROR));
       return result;
@@ -551,29 +552,35 @@
     const matchesSelection = identified.candidates.indexOf(selected) !== -1;
     // 一意に決まったときは、同じ形式の他プロトコルを外した理由が決め手になる。
     for (const rejected of identified.rejected) {
-      notes.push(`${name(rejected.protocol)}では成立しません：${rejected.reason}`);
+      notes.push(`${rejected.target.short}では成立しません：${rejected.reason}`);
     }
     for (const difference of identified.differences) notes.push(difference);
 
-    const text = identified.protocol
-      ? `${name(identified.protocol)}の電文と判定しました`
-      : `${identified.candidates.map(name).join(" / ")} のどちらとしても成立します（電文だけでは区別できません）`;
+    // この画面で扱えない候補（アイホン）が混じるときは、確認先の画面を案内する。
+    const aiphone = identified.targets.some((target) => target.vendor === AlarmIdentifier.VENDOR.AIPHONE);
+    if (aiphone) {
+      notes.push(identified.target && identified.target.vendor === AlarmIdentifier.VENDOR.AIPHONE
+        ? "アイホンの警報電文です。「警報（アイホン）」画面で送受信できます"
+        : "アイホンの警報としても成立します。「警報（アイホン）」画面でも読めます");
+    }
+
+    const text = identified.target
+      ? `${identified.target.label}の電文と判定しました`
+      : `${identified.targets.map((target) => target.short).join(" / ")} のいずれとしても成立します（電文だけでは区別できません）`;
 
     result.identification = {
-      protocol: identified.protocol,
+      id: identified.id,
       candidates: identified.candidates.slice(),
       matchesSelection,
-      text,
+      otherVendor: aiphone,
+      text: matchesSelection ? text : `選択中の${selectedLabel}では成立しません。${text}`,
       notes,
+      tone: matchesSelection ? "info" : "warn",
     };
 
-    if (identified.protocol) {
-      result.badges.push(badge(`判定: ${name(identified.protocol)}`, matchesSelection ? STATUS.OK : STATUS.WARN));
-    } else {
-      result.badges.push(badge(`判定: ${identified.candidates.map(name).join(" / ")}`, matchesSelection ? STATUS.INFO : STATUS.WARN));
-    }
-    result.identification.tone = matchesSelection ? "info" : "warn";
-    if (!matchesSelection) result.identification.text = `選択中の${name(selected)}では成立しません。${text}`;
+    const summary = identified.target ? identified.target.short : identified.targets.map((target) => target.short).join(" / ");
+    result.badges.push(badge(`判定: ${summary}`,
+      matchesSelection ? (identified.target ? STATUS.OK : STATUS.INFO) : STATUS.WARN));
     return result;
   }
 

@@ -1884,20 +1884,25 @@ function handlePanasonicRecordFrame(frame, valid) {
 // 区別できないため、その場合は切り替えず受信モニタへ候補を示すだけにする。
 function autoDetectPanasonicProtocol(bytes) {
   if (state.currentView !== "panasonic" || !$("panaAutoDetect").checked) return false;
-  const api = panasonicApi();
+  const identifier = requireApi("AlarmIdentifier");
   let identified = null;
-  try { identified = api.identify(bytes); } catch (_error) { return false; }
-  const detected = identified.protocol;
-  if (!detected || detected === panasonicProtocol()) return false;
+  try { identified = identifier.identify(bytes, { aiphonePattern: $("alarmBitPattern").value }); } catch (_error) { return false; }
+  const target = identified.target;
+  if (!target) return false;
+  // アイホンの電文はこの画面では送受信できないため、切り替えず案内だけ残す。
+  if (target.vendor === identifier.VENDOR.AIPHONE) {
+    addLog("warn", "PANA", null, `受信電文は${target.label}と判定しました。「警報（アイホン）」画面で確認してください`);
+    return false;
+  }
+  if (target.protocol === panasonicProtocol()) return false;
   const from = panasonicInfo().label;
-  const to = api.protocolInfo(detected).label;
-  const reason = identified.rejected.length ? `（${identified.rejected[0].protocol === panasonicProtocol()
-    ? identified.rejected[0].reason
-    : `${api.protocolInfo(identified.rejected[0].protocol).label}では${identified.rejected[0].reason}`}）` : "";
-  $("panaProtocol").value = detected;
+  const reason = identified.rejected.length
+    ? `（${identified.rejected[0].target.short}では${identified.rejected[0].reason}）`
+    : "";
+  $("panaProtocol").value = target.protocol;
   syncPanasonicForm();
-  addLog("info", "PANA", null, `受信電文から${to}と判定し、プロトコルを${from}から切り替えました${reason}`);
-  toast(`受信電文から判定し、プロトコルを${to}へ切り替えました`);
+  addLog("info", "PANA", null, `受信電文から${target.short}と判定し、プロトコルを${from}から切り替えました${reason}`);
+  toast(`受信電文から判定し、プロトコルを${target.short}へ切り替えました`);
   return true;
 }
 
@@ -2643,7 +2648,8 @@ function receiveInspectOptions(view) {
     return { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label };
   }
   if (view === "panasonic") {
-    return { protocol: $("panaProtocol").value };
+    // アイホンQ49-023Gの読みはビット割付で変わるため、警報（アイホン）画面の選択を渡す。
+    return { protocol: $("panaProtocol").value, aiphonePattern: $("alarmBitPattern").value };
   }
   if (view === "panasonicElevator") {
     // 電文の向きは電文自身が決めるため、選択中の動作側は注意の判定にだけ使う。
@@ -3120,7 +3126,17 @@ function describeFrame(view, frame) {
   }
   if (view === "alarm") {
     const api = requireApi("AlarmProtocol");
-    const value = api.parseFrame(frame);
+    let value = null;
+    try {
+      value = api.parseFrame(frame);
+    } catch (error) {
+      // Q49-023GとパナソニックHPC／TSSは外形が同じなので、読めない電文は
+      // 他メーカーの警報かどうかを判定して理由に添える。
+      const identified = requireApi("AlarmIdentifier").identify(frame, { aiphonePattern: $("alarmBitPattern").value });
+      if (identified.targets.length === 0) throw error;
+      const names = identified.target ? identified.target.label : identified.targets.map((item) => item.label).join("・");
+      throw new Error(`${error.message}／${names} の電文の可能性があります`);
+    }
     const localRole = $("alarmRole").value;
     if ((localRole === "intercom" && value.type !== api.TYPE.HISTORY_REQUEST) ||
         (localRole === "alarm" && value.type === api.TYPE.HISTORY_REQUEST)) {

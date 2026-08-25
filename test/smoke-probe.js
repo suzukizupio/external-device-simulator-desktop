@@ -8,6 +8,7 @@ const Telegram4 = require("../protocol/locker4");
 const NoncontactKey = require("../protocol/noncontact-key");
 const PanasonicAlarm = require("../protocol/panasonic-alarm");
 const PanasonicElevator = require("../protocol/panasonic-elevator");
+const AlarmProtocol = require("../protocol/alarm");
 const { version: packageVersion } = require("../package.json");
 
 // 宅配2線式・4線式は送信登録が0件だとプレビューできないため、ここでは対象外にして
@@ -29,7 +30,7 @@ const PROBE_SCRIPT = `
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -515,8 +516,8 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     `(() => { const s = ${$("panaProtocol")}; s.value = "daiko"; s.dispatchEvent(new Event("change")); })()`
   );
   await window.webContents.executeJavaScript(`${$("panaAutoDetect")}.checked = true`);
-  // ヒストリー要求(30H)はHPCにしかない。
-  await send(PanasonicAlarm.buildFrame({ protocol: "hpc", type: 0x30 }));
+  // 汎用警報情報(05H)はHPCにしかない（30HはアイホンQ49-023Gにもあるため絞れない）。
+  await send(PanasonicAlarm.buildFrame({ protocol: "hpc", type: 0x05, infoBits: [0], buildingNo: 1, roomNo: 101 }));
   await wait(80);
   const detected = await window.webContents.executeJavaScript(`({
     protocol: ${$("panaProtocol")}.value,
@@ -538,8 +539,8 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     notes: Array.from(document.querySelectorAll("#panaRxNotes .receive-note")).map((node) => node.textContent),
   })`);
   if (ambiguous.protocol !== "daiko"
-      || !ambiguous.notes.some((note) => note.includes("どちらとしても成立します"))
-      || !ambiguous.notes.some((note) => note.includes("大興なら「非常」"))) {
+      || !ambiguous.notes.some((note) => note.includes("いずれとしても成立します"))
+      || !ambiguous.notes.some((note) => note.includes("大興なら「N01-0101：非常」"))) {
     throw new Error(`panasonic ambiguous protocol handling failed: ${JSON.stringify(ambiguous)}`);
   }
 
@@ -554,6 +555,24 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   })`);
   if (kept.protocol !== "daiko" || !kept.notes.some((note) => note.includes("選択中の大興では成立しません"))) {
     throw new Error(`panasonic auto-detect opt-out failed: ${JSON.stringify(kept)}`);
+  }
+
+  // アイホンQ49-023Gの電文は外形が同じでも判別でき、切り替えずに画面を案内する。
+  await window.webContents.executeJavaScript(`${$("panaAutoDetect")}.checked = true`);
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "hpc"; s.dispatchEvent(new Event("change")); })()`
+  );
+  // 管理室からの発報はパナソニックのBCD住戸番号として成立しない。
+  await send(AlarmProtocol.buildFrame({ type: 0x00, infoBits: [1], buildingNo: 1, managementNo: 1 }));
+  await wait(80);
+  const aiphoneDetected = await window.webContents.executeJavaScript(`({
+    protocol: ${$("panaProtocol")}.value,
+    notes: Array.from(document.querySelectorAll("#panaRxNotes .receive-note")).map((node) => node.textContent),
+  })`);
+  if (aiphoneDetected.protocol !== "hpc"
+      || !aiphoneDetected.notes.some((note) => note.includes("アイホン Q49-023Gの電文と判定"))
+      || !aiphoneDetected.notes.some((note) => note.includes("「警報（アイホン）」画面で送受信できます"))) {
+    throw new Error(`aiphone alarm detection failed: ${JSON.stringify(aiphoneDetected)}`);
   }
 
   await click("panaRecordClear");
