@@ -1,17 +1,22 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
+  "author": {
+    "name": "External Device Simulator Next Team"
+  },
   "main": "main.js",
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
     "test": "node test/run-all.js",
     "test:smoke": "node test/electron-smoke.js",
+    "test:hil": "node test/serial-hil.js",
     "icons": "node tools/build-icons.js",
     "stamp": "node tools/build-stamp.js",
     "pack": "npm run stamp && electron-builder --dir",
-    "dist:win": "npm run stamp && electron-builder --win portable --x64"
+    "dist:win": "npm run stamp && electron-builder --win portable --x64",
+    "dist:win:signed": "npm run dist:win && node tools/verify-signature.js"
   },
   "dependencies": {
     "serialport": "^12.0.0"
@@ -23,6 +28,7 @@
   "build": {
     "appId": "jp.aiphone.external-device-simulator.next",
     "productName": "外部疑似装置 Next",
+    "copyright": "Copyright © 2026 External Device Simulator Next Team",
     "asar": true,
     "npmRebuild": true,
     "directories": {

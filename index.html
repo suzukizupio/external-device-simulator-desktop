@@ -29,6 +29,7 @@
       <button id="disconnectButton" class="secondary" disabled>切断</button>
       <span class="connection-state"><i id="connectionDot"></i><span id="connectionText">未接続</span></span>
       <span class="preset-warning" id="presetWarning" hidden></span>
+      <button id="toggleLogPane" class="secondary log-toggle" type="button" aria-pressed="false">ログを隠す</button>
     </div>
   </header>
 
@@ -285,8 +286,9 @@
             <li>ボーレート・パリティなどを個別に指定できます（プリセットで足りないとき）</li>
             <li>DTR／RTSの操作と、CTS／DSR／DCDの取得ができます</li>
             <li><strong>通信条件の判別</strong>で、相手の条件が分からないときに順に試して探せます</li>
-            <li>全画面の入力値をこのPCへ保存したり、JSONで書き出して共有できます</li>
-            <li>通信ログの保持件数（2,000／20,000／100,000件）を選べます</li>
+            <li>全画面の入力値をこのPCへ保存したり、設定JSONとして共有できます</li>
+            <li>試験結果JSONにはバージョン、通信条件、設定、通信ログ、受信モニタ履歴がまとめて入ります</li>
+            <li>通信ログの保持件数（2,000／20,000／100,000件）を選べます。画面には最新2,000件だけを描画し、保存時は保持中の全件を出力します</li>
           </ul>
         </article>
 
@@ -318,7 +320,7 @@
           </ul>
 
           <h3 class="receive-subtitle">試験の記録を残したい</h3>
-          <p>通信ログの↓ボタンで保存できます。受信時刻・HEX・ASCII・解析結果が残ります。不具合を報告するときは、「概要」画面の<strong>バージョン情報</strong>もコピーして添えてください。</p>
+          <p>通信ログの↓ボタンでテキスト保存できます。再現に必要な情報をまとめる場合は、通信ログ上部の<strong>JSON</strong>または通信設定画面の<strong>試験結果JSONを書き出し</strong>を使ってください。バージョン・通信条件・全画面の設定・ログ・受信モニタ履歴が1ファイルに入ります。</p>
         </article>
 
         <article class="card help-section" id="help-words">
@@ -385,10 +387,16 @@
             </table>
           </div>
 
+          <div class="table-pager" aria-label="宅配4線式一覧のページ切替">
+            <button class="secondary" id="locker4PagePrevious" type="button">前へ</button>
+            <span id="locker4PageRange" aria-live="polite">0件</span>
+            <button class="secondary" id="locker4PageNext" type="button">次へ</button>
+          </div>
+
           <div class="locker-status">
             <span>表示 <strong id="locker4Visible">0</strong> 件</span>
             <span>送信登録 <strong id="locker4Selected">0</strong> 件</span>
-            <button class="secondary" id="locker4SelectVisible">表示中を全て登録</button>
+            <button class="secondary" id="locker4SelectVisible">絞り込み全件を登録</button>
             <button class="secondary" id="locker4ClearSelection">登録を解除</button>
           </div>
 
@@ -463,12 +471,18 @@
             </table>
           </div>
 
+          <div class="table-pager" aria-label="宅配2線式一覧のページ切替">
+            <button class="secondary" id="locker2PagePrevious" type="button">前へ</button>
+            <span id="locker2PageRange" aria-live="polite">0件</span>
+            <button class="secondary" id="locker2PageNext" type="button">次へ</button>
+          </div>
+
           <div class="locker-status">
             <span>表示 <strong id="locker2Visible">0</strong> 件</span>
             <span>送信登録 <strong id="locker2Selected">0</strong> 件</span>
             <span>着荷・滞留 <strong id="locker2Boxes">0</strong> 件</span>
             <span id="locker2Limit">上限 100 件</span>
-            <button class="secondary" id="locker2SelectVisible">表示中を全て登録</button>
+            <button class="secondary" id="locker2SelectVisible">絞り込み全件を登録</button>
             <button class="secondary" id="locker2ClearSelection">登録を解除</button>
           </div>
           <div class="preview"><span>プレビュー</span><code id="locker2Preview">—</code></div>
@@ -874,13 +888,13 @@
         <article class="card form-card">
           <div class="card-title"><div><h2>設定プロファイル</h2><p>全画面の入力値・機種・通信条件・異常条件を保存／共有</p></div></div>
           <input id="profileImportFile" type="file" accept="application/json,.json" hidden>
-          <div class="actions"><button id="saveProfile" class="primary">このPCへ保存</button><button id="exportProfile" class="secondary">JSON書き出し</button><button id="importProfile" class="secondary">JSON読み込み</button><button id="resetProfile" class="danger">保存設定を削除</button></div>
+          <div class="actions"><button id="saveProfile" class="primary">このPCへ保存</button><button id="exportProfile" class="secondary">設定JSONを書き出し</button><button id="exportTestReport" class="secondary">試験結果JSONを書き出し</button><button id="importProfile" class="secondary">JSON読み込み</button><button id="resetProfile" class="danger">保存設定を削除</button></div>
         </article>
       </section>
     </main>
 
     <aside class="log-pane">
-      <div class="log-header"><div><strong>通信ログ</strong><small id="logCount">0件</small></div><div><button id="saveLog" title="保存">↓</button><button id="clearLog" title="消去">×</button></div></div>
+      <div class="log-header"><div><strong>通信ログ</strong><small id="logCount">0件</small></div><div><button id="saveLog" title="ログをテキスト保存" aria-label="ログをテキスト保存">↓</button><button id="saveTestReport" title="試験結果をJSON保存" aria-label="試験結果をJSON保存">JSON</button><button id="clearLog" title="ログを消去" aria-label="ログを消去">×</button></div></div>
       <div class="log-filters"><button class="active" data-filter="all">全て</button><button data-filter="tx">TX</button><button data-filter="rx">RX</button><button data-filter="info">INFO</button><button data-filter="fault">異常</button><label><input id="autoScroll" type="checkbox" checked>追従</label></div>
       <div class="log-search"><input id="logSearch" type="search" placeholder="HEX・ASCII・解析結果を検索" aria-label="ログ検索"></div>
       <div id="communicationLog" class="log-list" aria-live="polite"></div>
@@ -891,6 +905,7 @@
 
   <div id="toast" role="status" aria-live="polite"></div>
 
+  <script src="lib/view-window.js"></script>
   <script src="protocol/locker2.js"></script>
   <script src="protocol/locker4.js"></script>
   <script src="protocol/locker4-receiver.js"></script>

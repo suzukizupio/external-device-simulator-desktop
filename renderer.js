@@ -3,7 +3,10 @@
 const $ = (id) => document.getElementById(id);
 const CONTROL_NAMES = Object.freeze({ 0x02: "STX", 0x03: "ETX", 0x04: "EOT", 0x05: "ENQ", 0x06: "ACK", 0x15: "NAK" });
 const DEFAULT_LOG_LIMIT = 20000;
+const MAX_RENDERED_LOGS = 2000;
+const LOCKER_TABLE_PAGE_SIZE = 50;
 const PROFILE_STORAGE_KEY = "external-device-simulator-next.profile.v1";
+const UI_STORAGE_KEY = "external-device-simulator-next.ui.v1";
 
 const state = {
   appInfo: null,
@@ -18,6 +21,8 @@ const state = {
   errorCount: 0,
   search: "",
   logLimit: DEFAULT_LOG_LIMIT,
+  locker4Page: 0,
+  locker2Page: 0,
   controlWaiters: [],
   locker2Run: null,
   faultPlan: null,
@@ -63,6 +68,10 @@ const state = {
   auxReader: null,
   auxReaderDevice: null,
 };
+
+let pendingLogEntries = [];
+let logRenderFrame = null;
+let nextLogId = 1;
 
 // 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
 // 履歴は試験中に見返す範囲だけを保持し、全件は通信ログ側で担保する。
@@ -230,39 +239,35 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => { element.className = ""; }, 2800);
 }
 
-// atはシリアルイベントの発生時刻(epoch ms)。描画時刻ではなく実際の送受信時刻を記録する。
-function addLog(kind, label, bytes, detail, at) {
-  const occurredAt = Number.isFinite(at) ? at : Date.now();
-  const previous = state.logs[state.logs.length - 1];
-  const entry = {
-    at: occurredAt,
-    time: formatTime(occurredAt),
-    kind,
-    label,
-    bytes: bytes == null ? null : Array.from(bytes),
-    detail: detail || "",
-  };
-  state.logs.push(entry);
-  while (state.logs.length > state.logLimit) state.logs.shift();
+function logMatches(entry) {
+  const matchesKind = state.filter === "all" || entry.kind === state.filter ||
+    (state.filter === "info" && ["info", "warn", "error"].includes(entry.kind)) ||
+    (state.filter === "fault" && ["warn", "error"].includes(entry.kind));
+  if (!matchesKind) return false;
+  if (!state.search) return true;
+  const hexText = entry.bytes ? toHex(entry.bytes) : "";
+  const asciiText = entry.bytes ? toAscii(entry.bytes) : "";
+  return `${entry.label} ${hexText} ${asciiText} ${entry.detail}`.toLowerCase().includes(state.search);
+}
 
-  const list = $("communicationLog");
-  if (!previous || formatDate(previous.at) !== formatDate(occurredAt)) {
-    const separator = document.createElement("div");
-    separator.className = "log-date";
-    separator.textContent = formatDate(occurredAt);
-    list.append(separator);
-  }
+function matchingLogCount() {
+  if (state.filter === "all" && !state.search) return state.logs.length;
+  return state.logs.reduce((count, entry) => count + (logMatches(entry) ? 1 : 0), 0);
+}
 
+function logEntryElement(entry) {
   const row = document.createElement("div");
-  row.className = `log-entry ${kind}`;
-  row.dataset.kind = kind;
+  row.className = `log-entry ${entry.kind}`;
+  row.dataset.kind = entry.kind;
+  row.dataset.date = formatDate(entry.at);
+  row.dataset.logId = String(entry.id);
   const meta = document.createElement("div");
   meta.className = "log-meta";
   const time = document.createElement("span");
   time.textContent = entry.time;
   const direction = document.createElement("span");
   direction.className = "log-dir";
-  direction.textContent = label;
+  direction.textContent = entry.label;
   meta.append(time, direction);
   row.append(meta);
   const hexText = entry.bytes ? toHex(entry.bytes) : "";
@@ -282,26 +287,103 @@ function addLog(kind, label, bytes, detail, at) {
     info.textContent = entry.detail;
     row.append(info);
   }
-  row.dataset.search = `${label} ${hexText} ${asciiText} ${entry.detail}`.toLowerCase();
+  return row;
+}
 
-  list.append(row);
-  while (list.childElementCount > state.logLimit) list.firstElementChild.remove();
-  applyLogFilter(row);
-  $("logCount").textContent = `${state.logs.length}件`;
+function dateSeparator(date) {
+  const separator = document.createElement("div");
+  separator.className = "log-date";
+  separator.textContent = date;
+  return separator;
+}
+
+function updateLogCount(rendered, matching) {
+  const total = state.logs.length;
+  const suffix = matching < total ? ` / 該当${matching.toLocaleString()}件` : "";
+  const windowed = matching > rendered ? ` / 表示${rendered.toLocaleString()}件` : "";
+  $("logCount").textContent = `${total.toLocaleString()}件${suffix}${windowed}`;
+}
+
+function renderLogWindow() {
+  pendingLogEntries = [];
+  if (logRenderFrame != null) clearTimeout(logRenderFrame);
+  logRenderFrame = null;
+  const list = $("communicationLog");
+  const matching = state.logs.filter(logMatches);
+  const windowed = requireApi("ViewWindow").tail(matching, MAX_RENDERED_LOGS);
+  const fragment = document.createDocumentFragment();
+  let previousDate = null;
+  for (const entry of windowed.items) {
+    const date = formatDate(entry.at);
+    if (date !== previousDate) fragment.append(dateSeparator(date));
+    fragment.append(logEntryElement(entry));
+    previousDate = date;
+  }
+  list.replaceChildren(fragment);
+  updateLogCount(windowed.items.length, matching.length);
   if ($("autoScroll").checked) list.scrollTop = list.scrollHeight;
 }
 
-function applyLogFilter(row) {
-  const kind = row.dataset.kind;
-  const matchesKind = state.filter === "all" || kind === state.filter ||
-    (state.filter === "info" && ["info", "warn", "error"].includes(kind)) ||
-    (state.filter === "fault" && ["warn", "error"].includes(kind));
-  const matchesSearch = !state.search || (row.dataset.search || "").includes(state.search);
-  row.classList.toggle("hidden", !(matchesKind && matchesSearch));
+function trimRenderedLogs(list) {
+  const oldestRetainedId = state.logs.length ? state.logs[0].id : nextLogId;
+  for (const row of list.querySelectorAll(".log-entry")) {
+    if (Number(row.dataset.logId) < oldestRetainedId) row.remove();
+  }
+  const rows = Array.from(list.querySelectorAll(".log-entry"));
+  const excess = rows.length - MAX_RENDERED_LOGS;
+  for (let index = 0; index < excess; index += 1) rows[index].remove();
+  while (list.firstElementChild && list.firstElementChild.classList.contains("log-date")) {
+    list.firstElementChild.remove();
+  }
+  const first = list.querySelector(".log-entry");
+  if (first) list.prepend(dateSeparator(first.dataset.date));
+}
+
+function flushPendingLogs() {
+  logRenderFrame = null;
+  const entries = pendingLogEntries;
+  pendingLogEntries = [];
+  const list = $("communicationLog");
+  const fragment = document.createDocumentFragment();
+  const rendered = list.querySelectorAll(".log-entry");
+  let previousDate = rendered.length ? rendered[rendered.length - 1].dataset.date : null;
+  const oldestRetainedId = state.logs.length ? state.logs[0].id : nextLogId;
+  for (const entry of entries) {
+    if (entry.id < oldestRetainedId) continue;
+    if (!logMatches(entry)) continue;
+    const date = formatDate(entry.at);
+    if (date !== previousDate) fragment.append(dateSeparator(date));
+    fragment.append(logEntryElement(entry));
+    previousDate = date;
+  }
+  list.append(fragment);
+  trimRenderedLogs(list);
+  const matching = matchingLogCount();
+  updateLogCount(list.querySelectorAll(".log-entry").length, matching);
+  if ($("autoScroll").checked) list.scrollTop = list.scrollHeight;
+}
+
+// atはシリアルイベントの発生時刻(epoch ms)。描画時刻ではなく実際の送受信時刻を記録する。
+// 高頻度受信では同一描画フレーム内のログをまとめ、レイアウト計算を1回に抑える。
+function addLog(kind, label, bytes, detail, at) {
+  const occurredAt = Number.isFinite(at) ? at : Date.now();
+  const entry = {
+    id: nextLogId++,
+    at: occurredAt,
+    time: formatTime(occurredAt),
+    kind,
+    label,
+    bytes: bytes == null ? null : Array.from(bytes),
+    detail: detail || "",
+  };
+  state.logs.push(entry);
+  while (state.logs.length > state.logLimit) state.logs.shift();
+  pendingLogEntries.push(entry);
+  if (logRenderFrame == null) logRenderFrame = setTimeout(flushPendingLogs, 16);
 }
 
 function refreshLogFilter() {
-  document.querySelectorAll(".log-entry").forEach(applyLogFilter);
+  renderLogWindow();
 }
 
 function logError(error, context) {
@@ -882,6 +964,20 @@ function terminalFrame() {
   return bytes;
 }
 
+function updateTablePager(prefix, pageWindow) {
+  $(`${prefix}PagePrevious`).disabled = !pageWindow.hasPrevious;
+  $(`${prefix}PageNext`).disabled = !pageWindow.hasNext;
+  $(`${prefix}PageRange`).textContent = pageWindow.total
+    ? `${pageWindow.start}～${pageWindow.end} / ${pageWindow.total}件（${pageWindow.pageIndex + 1}/${pageWindow.pageCount}ページ）`
+    : "0件";
+}
+
+function moveTablePage(prefix, delta, render) {
+  const key = `${prefix}Page`;
+  state[key] = Math.max(0, state[key] + delta);
+  render();
+}
+
 function locker2Limits() {
   return LOCKER2_LIMITS[$("locker2Profile").value] || LOCKER2_LIMITS.standard;
 }
@@ -971,15 +1067,14 @@ function renderLocker2Table() {
   const api = requireApi("Telegram2");
   const filter = $("locker2Filter").value;
   const maxBuilding = locker2Limits().maxBuilding;
+  const filtered = state.locker2Rows.filter((row) => filter !== "selected" || row.selected);
+  const pageWindow = requireApi("ViewWindow").page(filtered, state.locker2Page, LOCKER_TABLE_PAGE_SIZE);
+  state.locker2Page = pageWindow.pageIndex;
   const fragment = document.createDocumentFragment();
-  let visible = 0;
-  for (const row of state.locker2Rows) {
-    if (filter === "selected" && !row.selected) continue;
-    visible += 1;
-    fragment.append(locker2RowElement(row, api, maxBuilding));
-  }
+  for (const row of pageWindow.items) fragment.append(locker2RowElement(row, api, maxBuilding));
   $("locker2Body").replaceChildren(fragment);
-  updateLocker2Counts(visible);
+  updateLocker2Counts(filtered.length);
+  updateTablePager("locker2", pageWindow);
 }
 
 function applyLocker2Count() {
@@ -1032,7 +1127,11 @@ function resetLocker2Rows() {
 }
 
 function setLocker2Selection(selected) {
-  for (const row of state.locker2Rows) row.selected = selected;
+  const filter = $("locker2Filter").value;
+  for (const row of state.locker2Rows) {
+    if (!selected) row.selected = false;
+    else if (filter !== "selected" || row.selected) row.selected = true;
+  }
   renderLocker2Table();
 }
 
@@ -1185,17 +1284,21 @@ function renderLocker4Table() {
   const api = requireApi("Telegram4");
   const allowed = locker4AllowedStates();
   const filter = $("locker4Filter").value;
-  const fragment = document.createDocumentFragment();
-  let visible = 0;
   for (const row of state.locker4Rows) {
     if (!allowed.includes(row.sendState)) row.sendState = allowed[0];
-    if (filter === "selected" && !row.selected) continue;
-    if (filter === "stored" && row.currentState === 0x30) continue;
-    visible += 1;
-    fragment.append(locker4RowElement(row, allowed, api));
   }
+  const filtered = state.locker4Rows.filter((row) => {
+    if (filter === "selected" && !row.selected) return false;
+    if (filter === "stored" && row.currentState === 0x30) return false;
+    return true;
+  });
+  const pageWindow = requireApi("ViewWindow").page(filtered, state.locker4Page, LOCKER_TABLE_PAGE_SIZE);
+  state.locker4Page = pageWindow.pageIndex;
+  const fragment = document.createDocumentFragment();
+  for (const row of pageWindow.items) fragment.append(locker4RowElement(row, allowed, api));
   $("locker4Body").replaceChildren(fragment);
-  updateLocker4Counts(visible);
+  updateLocker4Counts(filtered.length);
+  updateTablePager("locker4", pageWindow);
 }
 
 function applyLocker4Count() {
@@ -1240,6 +1343,7 @@ function setLocker4Selection(selected) {
       row.selected = false;
       continue;
     }
+    if (filter === "selected" && !row.selected) continue;
     if (filter === "stored" && row.currentState === 0x30) continue;
     row.selected = true;
   }
@@ -4119,21 +4223,30 @@ function bindPreview(buttonId, previewId, builder, multiple = false) {
   $(buttonId).addEventListener("click", () => preview(previewId, builder, multiple).catch((error) => logError(error, "プレビュー")));
 }
 
+function downloadBlob(blob, filename) {
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(anchor.href), 1000);
+}
+
 function saveLogs() {
   if (state.logs.length === 0) return toast("保存するログがありません", true);
   const text = state.logs.map((entry) => `${formatDate(entry.at)} ${entry.time}\t${entry.label}\t${entry.bytes ? toHex(entry.bytes) : ""}\t${entry.detail}`).join("\r\n");
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const anchor = document.createElement("a");
-  anchor.href = URL.createObjectURL(blob);
-  anchor.download = `external-simulator-${new Date().toISOString().replace(/[:.]/g, "-")}.log.txt`;
-  anchor.click();
-  URL.revokeObjectURL(anchor.href);
+  downloadBlob(
+    new Blob([text], { type: "text/plain;charset=utf-8" }),
+    `external-simulator-${new Date().toISOString().replace(/[:.]/g, "-")}.log.txt`
+  );
 }
 
 function clearLogs() {
+  if (state.logs.length === 0) return toast("消去するログがありません", true);
+  if (!window.confirm(`通信ログ${state.logs.length.toLocaleString()}件を消去します。保存していないログは復元できません。`)) return;
   state.logs.length = 0;
-  $("communicationLog").replaceChildren();
-  $("logCount").textContent = "0件";
+  pendingLogEntries = [];
+  renderLogWindow();
+  toast("通信ログを消去しました");
 }
 
 // 長時間の通信試験では2000件では足りないため、保持件数を切り替えられるようにする。
@@ -4141,9 +4254,7 @@ function applyLogLimit() {
   const value = Number($("logLimit").value);
   state.logLimit = Number.isInteger(value) && value > 0 ? value : DEFAULT_LOG_LIMIT;
   while (state.logs.length > state.logLimit) state.logs.shift();
-  const list = $("communicationLog");
-  while (list.childElementCount > state.logLimit) list.firstElementChild.remove();
-  $("logCount").textContent = `${state.logs.length}件`;
+  renderLogWindow();
 }
 
 function collectProfile() {
@@ -4198,7 +4309,7 @@ function applyProfile(profile) {
   }
   // ロッカー表は動的行のため、入力要素とは別に保存・復元する。
   if (Array.isArray(profile.locker4Rows) && profile.locker4Rows.length) {
-    state.locker4Rows = profile.locker4Rows.map((row, index) => ({
+    state.locker4Rows = profile.locker4Rows.slice(0, 999).map((row, index) => ({
       lockerNo: Number.isInteger(row.lockerNo) ? row.lockerNo : index + 1,
       buildingNo: Number(row.buildingNo) || 0,
       roomNo: Number(row.roomNo) || 0,
@@ -4209,7 +4320,7 @@ function applyProfile(profile) {
     $("locker4Count").value = String(state.locker4Rows.length);
   }
   if (Array.isArray(profile.locker2Rows) && profile.locker2Rows.length) {
-    state.locker2Rows = profile.locker2Rows.map((row, index) => ({
+    state.locker2Rows = profile.locker2Rows.slice(0, MAX_LOCKER2_ROWS).map((row, index) => ({
       no: Number.isInteger(row.no) ? row.no : index + 1,
       command: [0x11, 0x12, 0x13].includes(Number(row.command)) ? Number(row.command) : 0x11,
       buildingNo: Number(row.buildingNo) || 0,
@@ -4238,12 +4349,84 @@ function saveProfile() {
 }
 
 function exportProfile() {
-  const blob = new Blob([JSON.stringify(collectProfile(), null, 2)], { type: "application/json;charset=utf-8" });
-  const anchor = document.createElement("a");
-  anchor.href = URL.createObjectURL(blob);
-  anchor.download = `external-simulator-profile-${new Date().toISOString().slice(0, 10)}.json`;
-  anchor.click();
-  URL.revokeObjectURL(anchor.href);
+  downloadBlob(
+    new Blob([JSON.stringify(collectProfile(), null, 2)], { type: "application/json;charset=utf-8" }),
+    `external-simulator-profile-${new Date().toISOString().slice(0, 10)}.json`
+  );
+}
+
+function collectTestReport() {
+  const receive = {};
+  for (const [view, monitor] of Object.entries(state.receiveMonitors)) {
+    receive[view] = {
+      shownId: monitor.shownId,
+      history: monitor.history.map((entry) => ({
+        id: entry.id,
+        at: new Date(entry.at).toISOString(),
+        bytes: entry.bytes.slice(),
+        hex: toHex(entry.bytes),
+        frameError: entry.frameError,
+      })),
+    };
+  }
+  return {
+    format: "external-device-simulator-next-test-report",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    app: state.appInfo ? { ...state.appInfo } : null,
+    session: {
+      currentView: state.currentView,
+      connected: state.connected,
+      connectionOptions: state.connectionOptions ? { ...state.connectionOptions } : null,
+      metrics: {
+        transmitted: state.txCount,
+        receivedChunks: state.rxCount,
+        receivedFrames: state.rxFrames,
+        errors: state.errorCount,
+      },
+      logRetention: state.logLimit,
+      renderedLogLimit: MAX_RENDERED_LOGS,
+    },
+    profile: collectProfile(),
+    receive,
+    logs: state.logs.map((entry) => ({
+      at: new Date(entry.at).toISOString(),
+      kind: entry.kind,
+      label: entry.label,
+      bytes: entry.bytes ? entry.bytes.slice() : null,
+      hex: entry.bytes ? toHex(entry.bytes) : "",
+      ascii: entry.bytes ? toAscii(entry.bytes) : "",
+      detail: entry.detail,
+    })),
+  };
+}
+
+function exportTestReport() {
+  const report = collectTestReport();
+  downloadBlob(
+    new Blob([JSON.stringify(report, null, 2)], { type: "application/json;charset=utf-8" }),
+    `external-simulator-test-report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`
+  );
+  toast(`試験結果を保存しました（ログ${state.logs.length.toLocaleString()}件）`);
+}
+
+function setLogPaneCollapsed(collapsed, persist = true) {
+  document.body.classList.toggle("log-collapsed", collapsed);
+  const button = $("toggleLogPane");
+  button.textContent = collapsed ? "ログを表示" : "ログを隠す";
+  button.setAttribute("aria-pressed", String(collapsed));
+  if (persist) localStorage.setItem(UI_STORAGE_KEY, JSON.stringify({ logCollapsed: collapsed }));
+}
+
+function loadUiPreferences() {
+  try {
+    const source = localStorage.getItem(UI_STORAGE_KEY);
+    const preferences = source ? JSON.parse(source) : {};
+    setLogPaneCollapsed(Boolean(preferences.logCollapsed), false);
+  } catch (_error) {
+    localStorage.removeItem(UI_STORAGE_KEY);
+    setLogPaneCollapsed(false, false);
+  }
 }
 
 async function importProfile(file) {
@@ -4298,7 +4481,9 @@ function bindEvents() {
     syncAlarmInfoForm();
   });
   $("saveLog").addEventListener("click", saveLogs);
+  $("saveTestReport").addEventListener("click", exportTestReport);
   $("clearLog").addEventListener("click", clearLogs);
+  $("toggleLogPane").addEventListener("click", () => setLogPaneCollapsed(!document.body.classList.contains("log-collapsed")));
   document.querySelectorAll(".log-filters button").forEach((button) => button.addEventListener("click", () => {
     state.filter = button.dataset.filter;
     document.querySelectorAll(".log-filters button").forEach((item) => item.classList.toggle("active", item === button));
@@ -4321,8 +4506,10 @@ function bindEvents() {
   $("terminalSendButton").addEventListener("click", () => withTransaction("汎用送信", async () => transmit(await preview("terminalPreview", terminalFrame), "frame")).catch((error) => logError(error, "送信")));
   document.querySelectorAll(".control-byte").forEach((button) => button.addEventListener("click", () => sendControlByte(Number(button.dataset.byte)).catch((error) => logError(error, "制御コード送信"))));
   $("locker2Count").addEventListener("change", () => { try { applyLocker2Count(); } catch (error) { logError(error, "登録行数"); } });
-  $("locker2Filter").addEventListener("change", renderLocker2Table);
+  $("locker2Filter").addEventListener("change", () => { state.locker2Page = 0; renderLocker2Table(); });
   $("locker2Profile").addEventListener("change", renderLocker2Table);
+  $("locker2PagePrevious").addEventListener("click", () => moveTablePage("locker2", -1, renderLocker2Table));
+  $("locker2PageNext").addEventListener("click", () => moveTablePage("locker2", 1, renderLocker2Table));
   $("locker2BulkApply").addEventListener("click", () => { try { applyLocker2Bulk(); } catch (error) { logError(error, "番号設定"); } });
   $("locker2SwitchApply").addEventListener("click", () => { try { applyLocker2Switch(); } catch (error) { logError(error, "状態の一括変更"); } });
   $("locker2BulkReset").addEventListener("click", resetLocker2Rows);
@@ -4331,8 +4518,10 @@ function bindEvents() {
   $("locker2SendButton").addEventListener("click", () => withTransaction("2線式", sendLocker2).catch((error) => logError(error, "2線式送信")));
   $("locker2StopButton").addEventListener("click", () => { if (state.locker2Run) state.locker2Run.cancelled = true; });
   $("locker4Count").addEventListener("change", () => { try { applyLocker4Count(); } catch (error) { logError(error, "ロッカー数"); } });
-  $("locker4Filter").addEventListener("change", renderLocker4Table);
+  $("locker4Filter").addEventListener("change", () => { state.locker4Page = 0; renderLocker4Table(); });
   $("locker4Profile").addEventListener("change", renderLocker4Table);
+  $("locker4PagePrevious").addEventListener("click", () => moveTablePage("locker4", -1, renderLocker4Table));
+  $("locker4PageNext").addEventListener("click", () => moveTablePage("locker4", 1, renderLocker4Table));
   $("locker4BulkApply").addEventListener("click", () => { try { applyLocker4Bulk(); } catch (error) { logError(error, "部屋番号設定"); } });
   $("locker4BulkReset").addEventListener("click", resetLocker4Rooms);
   $("locker4SelectVisible").addEventListener("click", () => setLocker4Selection(true));
@@ -4551,12 +4740,15 @@ function bindEvents() {
   $("scanApply").addEventListener("click", () => { try { applyScanSetting(); } catch (error) { logError(error, "条件の適用"); } });
   $("saveProfile").addEventListener("click", saveProfile);
   $("exportProfile").addEventListener("click", exportProfile);
+  $("exportTestReport").addEventListener("click", exportTestReport);
   $("importProfile").addEventListener("click", () => $("profileImportFile").click());
   $("profileImportFile").addEventListener("change", (event) => {
     importProfile(event.target.files[0]).catch((error) => logError(error, "プロファイル読込"));
     event.target.value = "";
   });
   $("resetProfile").addEventListener("click", () => {
+    if (!localStorage.getItem(PROFILE_STORAGE_KEY)) return toast("削除する保存設定がありません", true);
+    if (!window.confirm("このPCへ保存した設定を削除します。現在画面の入力値は次回起動まで残ります。")) return;
     localStorage.removeItem(PROFILE_STORAGE_KEY);
     toast("保存設定を削除しました。次回起動時は初期値になります");
   });
@@ -4566,6 +4758,7 @@ async function initialize() {
   state.locker4Rows = createLocker4Rows(DEFAULT_LOCKER_COUNT);
   state.locker2Rows = createLocker2Rows(DEFAULT_LOCKER2_COUNT);
   bindEvents();
+  loadUiPreferences();
   installHelpButtons();
   // 版の表示はシリアル初期化を待たせない。取得できなくても起動は続ける。
   await applyAppVersion().catch((error) => logError(error, "バージョン取得"));

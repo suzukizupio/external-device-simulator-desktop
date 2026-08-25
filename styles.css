@@ -21,6 +21,7 @@ html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 "Segoe UI", "Yu Gothic UI", Meiryo, sans-serif; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
+button:focus-visible, .nav-item:focus-visible { outline: 2px solid #8bb4ff; outline-offset: 2px; }
 
 .topbar { height: 64px; display: flex; align-items: center; gap: 28px; padding: 0 18px; background: #0d1424; border-bottom: 1px solid var(--line); }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 260px; }
@@ -31,6 +32,7 @@ button { color: inherit; }
 .connection-strip { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .connection-strip select { max-width: 260px; }
 .connection-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); white-space: nowrap; margin-left: 4px; }
+.log-toggle { margin-left: auto; white-space: nowrap; }
 .connection-state i { width: 9px; height: 9px; border-radius: 50%; background: #5c6677; }
 .connection-state i.open { background: var(--green); box-shadow: 0 0 9px rgba(78,211,164,.75); }
 .connection-state i.opening { background: var(--yellow); }
@@ -55,9 +57,11 @@ button.danger { background: #49242e; border-color: #743443; color: #ffc6cd; }
 /* grid-template-rows を明示しないと行が max-content になり、通信ログが伸びた分だけ
    各列が縦に膨らんで .content / .log-list のスクロールが失われる（min-height:0 が必須）。 */
 .layout { height: calc(100% - 64px); display: grid; grid-template-columns: var(--sidebar) minmax(620px, 1fr) var(--log); grid-template-rows: 100%; min-height: 0; }
+.log-collapsed .layout { grid-template-columns: var(--sidebar) minmax(620px, 1fr); }
+.log-collapsed .log-pane { display: none; }
 .layout > * { min-height: 0; }
 .sidebar { background: #0d1424; border-right: 1px solid var(--line); padding: 12px 8px; overflow-y: auto; }
-.sidebar p { margin: 18px 10px 6px; color: #60708b; text-transform: uppercase; font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.sidebar p { margin: 18px 10px 6px; color: #8492a8; text-transform: uppercase; font-size: 10px; font-weight: 700; letter-spacing: .12em; }
 .nav-item { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 2px 0; background: transparent; border: 0; color: #aab5c7; text-align: left; }
 .nav-item span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid #34415a; border-radius: 6px; color: #8ea1be; font-size: 11px; font-weight: 700; }
 .nav-item:hover, .nav-item.active { background: #17243b; color: white; }
@@ -136,6 +140,8 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .locker-table .locker-no { width: 84px; color: #61a4ff; font-weight: 700; }
 .locker-table .locker-current { width: 96px; color: var(--muted); }
 .locker-status { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 11px; color: var(--muted); font-size: 11px; }
+.table-pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 10px; color: #aeb9cb; font-size: 11px; }
+.table-pager button { min-width: 58px; padding: 4px 10px; }
 .locker-status strong { color: var(--text); font-size: 14px; }
 .locker-status .limit-over { color: var(--red); font-weight: 700; }
 .preview { display: grid; grid-template-columns: 90px 1fr; gap: 12px; align-items: start; margin-top: 15px; padding: 10px 12px; border-radius: 7px; background: #090f1d; border: 1px solid #222e46; }
@@ -177,7 +183,7 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .receive-table .receive-label { width: 118px; color: #9fb6dc; white-space: nowrap; }
 .receive-table .receive-raw { width: 132px; color: #b9d2ff; word-break: break-all; }
 .receive-value { color: #e2e9f6; }
-.receive-hint { margin-top: 2px; color: #6f7e97; font-size: 10px; }
+.receive-hint { margin-top: 2px; color: #8290a7; font-size: 10px; }
 .receive-row.warn { background: rgba(233,185,73,.07); }
 .receive-row.warn .receive-value { color: #f3d489; }
 .receive-row.error { background: rgba(240,111,122,.09); }
@@ -206,19 +212,19 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
 .log-filters label { margin-left: auto; color: var(--muted); font-size: 9px; }
 .log-search { padding: 0 10px 8px; border-bottom: 1px solid #202b42; }
 .log-search input { width: 100%; padding: 4px 8px; background: #0f1729; border: 1px solid var(--line); border-radius: 4px; color: var(--text); font: 10px Consolas, "Cascadia Mono", monospace; }
-.log-search input::placeholder { color: #5d6b85; }
+.log-search input::placeholder { color: #7f8ca2; }
 .log-date { margin: 10px 0 4px; padding-top: 5px; border-top: 1px dashed #2b3a56; color: var(--muted); font-size: 9px; letter-spacing: .08em; }
 .log-list { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 9px; font: 11px/1.5 Consolas, "Cascadia Mono", monospace; }
 .log-entry { padding: 7px 6px; border-bottom: 1px solid rgba(47,61,88,.55); }
 .log-entry.hidden { display: none; }
-.log-meta { display: flex; gap: 7px; color: #63718b; font-size: 9px; }
+.log-meta { display: flex; gap: 7px; color: #7d8ba2; font-size: 10px; }
 .log-dir { font-weight: 700; }
 .log-entry.tx .log-dir { color: #61a4ff; }
 .log-entry.rx .log-dir { color: var(--green); }
 .log-entry.error .log-dir { color: var(--red); }
 .log-entry.warn .log-dir { color: var(--yellow); }
 .log-hex { color: #cbd4e3; word-break: break-all; margin-top: 2px; }
-.log-ascii { color: #78869e; word-break: break-all; }
+.log-ascii { color: #8794aa; word-break: break-all; }
 .quick-controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; padding: 7px 9px; border-top: 1px solid var(--line); }
 .quick-controls button { padding: 5px 3px; background: #19263d; border-color: #30415e; font: 10px Consolas, monospace; }
 .sequence-state { display: flex; justify-content: space-between; padding: 8px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 10px; }
@@ -234,7 +240,7 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
   .brand small { display: none; }
 }
 
-@media (max-width: 1050px) {
+@media (max-width: 1180px) {
   body { overflow: auto; }
   .topbar { height: auto; min-height: 64px; flex-wrap: wrap; padding: 10px; }
   /* 狭幅時はページ全体スクロールなので行高さの固定を解除する */
@@ -245,4 +251,12 @@ input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
   .form-grid.cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bit-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .form-grid .span-3 { grid-column: span 2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+
+@media (forced-colors: active) {
+  button:focus-visible, .nav-item:focus-visible { outline-color: Highlight; }
 }

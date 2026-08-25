@@ -27,10 +27,11 @@ const PROBE_SCRIPT = `
       versionValue: document.getElementById("appVersionValue").textContent,
       buildValue: document.getElementById("appBuildValue").textContent,
       runtimeValue: document.getElementById("appRuntimeValue").textContent,
+      report: (() => { const value = collectTestReport(); return { format: value.format, appVersion: value.app && value.app.version, profileFormat: value.profile.format }; })(),
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "AlarmBridge", "DeviceBridge", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "ViewWindow", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "AlarmBridge", "DeviceBridge", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -44,6 +45,12 @@ const LOCKER_UI_SCRIPT = `
     const numbersOf = (tr) => Array.from(tr.querySelectorAll("input[type=number]")).map((input) => input.value).join("-");
     const initialRows = rowsOf("locker4Body").length;
     const initialRows2 = rowsOf("locker2Body").length;
+    document.getElementById("locker4PageNext").click();
+    const locker4NextFirst = document.querySelector("#locker4Body .locker-no").textContent;
+    document.getElementById("locker4PagePrevious").click();
+    document.getElementById("locker2PageNext").click();
+    const locker2NextFirst = document.querySelector("#locker2Body .locker-no").textContent;
+    document.getElementById("locker2PagePrevious").click();
 
     document.getElementById("locker4BulkBuilding").value = "1";
     document.getElementById("locker4BulkRoom").value = "101";
@@ -101,6 +108,7 @@ const LOCKER_UI_SCRIPT = `
       filter.dispatchEvent(new Event("change"));
       resolve({
         initialRows,
+        locker4NextFirst,
         assigned,
         registered,
         filteredRows,
@@ -108,6 +116,7 @@ const LOCKER_UI_SCRIPT = `
         visible: document.getElementById("locker4Visible").textContent,
         preview: document.getElementById("locker4Preview").textContent,
         initialRows2,
+        locker2NextFirst,
         assigned2,
         assignedFloor,
         registered2,
@@ -222,7 +231,7 @@ const LAYOUT_SCROLL_SCRIPT = `(() => {
   const last = cards[cards.length - 1];
   const lastBottom = last ? last.getBoundingClientRect().bottom : 0;
   return {
-    narrowMode: window.matchMedia("(max-width: 1050px)").matches,
+    narrowMode: window.matchMedia("(max-width: 1180px)").matches,
     viewportHeight: window.innerHeight,
     layoutHeight: Math.round(layout.getBoundingClientRect().height),
     contentHeight: Math.round(content.getBoundingClientRect().height),
@@ -1115,13 +1124,18 @@ async function run({ window, app, sendToRenderer }) {
     if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
       throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
     }
+    if (initial.report.format !== "external-device-simulator-next-test-report"
+        || initial.report.appVersion !== packageVersion
+        || initial.report.profileFormat !== "external-device-simulator-next-profile") {
+      throw new Error(`test report was not generated: ${JSON.stringify(initial.report)}`);
+    }
     if (initial.title !== "外部疑似装置 Next" || initial.views !== 14 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 
     const locker = await window.webContents.executeJavaScript(LOCKER_UI_SCRIPT);
     if (locker.scriptError) throw new Error(`locker UI script failed: ${locker.scriptError}`);
-    if (locker.initialRows !== 100 || locker.visible !== "100" || locker.restoredRows !== 100) {
+    if (locker.initialRows !== 50 || locker.visible !== "100" || locker.restoredRows !== 50 || locker.locker4NextFirst !== "051") {
       throw new Error(`locker table was not rendered: ${JSON.stringify(locker)}`);
     }
     if (locker.assigned.join(",") !== "1-101,1-102,1-103") {
@@ -1133,7 +1147,7 @@ async function run({ window, app, sendToRenderer }) {
     if (!locker.preview.startsWith("#1 02 ")) {
       throw new Error(`locker preview failed: ${JSON.stringify(locker)}`);
     }
-    if (locker.initialRows2 !== 100 || locker.visible2 !== "100" || locker.limit2 !== "上限 100 件") {
+    if (locker.initialRows2 !== 50 || locker.visible2 !== "100" || locker.limit2 !== "上限 100 件" || locker.locker2NextFirst !== "051") {
       throw new Error(`locker2 table was not rendered: ${JSON.stringify(locker)}`);
     }
     if (locker.assigned2.join(",") !== "1-101,1-102,1-103" || locker.assignedFloor.join(",") !== "1-101,1-201,1-301") {
