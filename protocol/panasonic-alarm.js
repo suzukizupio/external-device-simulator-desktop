@@ -659,6 +659,94 @@
   }
 
   // ------------------------------------------------------------------
+  // 受信電文からのプロトコル判定
+  // ------------------------------------------------------------------
+
+  // 4プロトコルのうち、その電文として成立するものを列挙する。
+  // 形式（STX形式かレコード形式か）は先頭バイトで必ず決まるが、
+  //   ・HPC／TSSは発信種別00H・01H・02H・04Hが共通
+  //   ・大興／リモートは警報No.40以外の台帳が共通
+  // のため、電文だけでは一意に決まらない組み合わせが残る。
+  function identify(value) {
+    const frame = bytes(value, "frame");
+    const results = PROTOCOL_NAMES.map(function (protocol) {
+      try {
+        const parsed = parseFrame(frame, { protocol });
+        // 別表にない警報No.を含む電文は、そのプロトコルの電文とは認めない。
+        // （受信解析では読み取れた桁を残すため通すが、判定では根拠として使う）
+        const unknown = parsed.kind === "alarm"
+          ? parsed.records.filter(function (record) { return !record.known; })
+          : [];
+        if (unknown.length) {
+          const numbers = unknown.map(function (record) { return String(record.alarmNo).padStart(2, "0"); });
+          return {
+            protocol: protocol,
+            style: styleOf(protocol),
+            accepted: false,
+            reason: "警報No." + numbers.join("・") + " が別表にありません",
+          };
+        }
+        return { protocol: protocol, style: styleOf(protocol), accepted: true, parsed: parsed, reason: null };
+      } catch (error) {
+        return {
+          protocol: protocol,
+          style: styleOf(protocol),
+          accepted: false,
+          reason: String(error && error.message || error),
+        };
+      }
+    });
+
+    const accepted = results.filter(function (item) { return item.accepted; });
+    const style = accepted.length ? styleOf(accepted[0].protocol) : null;
+    return {
+      candidates: accepted.map(function (item) { return item.protocol; }),
+      protocol: accepted.length === 1 ? accepted[0].protocol : null,
+      style: style,
+      results: results,
+      // 形式そのものが違うプロトコルを外した理由は自明なので、
+      // 決め手として示すのは同じ形式の中で成立しなかったものだけにする。
+      rejected: results.filter(function (item) { return !item.accepted && item.style === style; }),
+      differences: describeDifferences(accepted),
+    };
+  }
+
+  // 候補が複数残るとき、プロトコルによって読みが変わる箇所を挙げる。
+  // 同じバイト列でもHPC／TSSはビット割付が、大興／リモートは警報No.の割付が違う。
+  function describeDifferences(accepted) {
+    if (accepted.length < 2) return [];
+    const notes = [];
+    if (styleOf(accepted[0].protocol) === STYLE.BLOCK) {
+      const readings = accepted.map(function (item) {
+        const detail = describeInfo(item.protocol, item.parsed.type, item.parsed.info);
+        return {
+          label: PROTOCOL_INFO[item.protocol].label,
+          text: item.parsed.typeLabel + "：" + detail.summary,
+        };
+      });
+      if (new Set(readings.map(function (item) { return item.text; })).size > 1) {
+        notes.push(readings.map(function (item) { return item.label + "なら「" + item.text + "」"; }).join("、"));
+      }
+      return notes;
+    }
+    const first = accepted[0].parsed;
+    if (first.kind !== "alarm") return notes;
+    first.records.forEach(function (record, index) {
+      const readings = accepted.map(function (item) {
+        return {
+          label: PROTOCOL_INFO[item.protocol].label,
+          alarm: item.parsed.records[index].alarmLabel,
+        };
+      });
+      if (new Set(readings.map(function (item) { return item.alarm; })).size > 1) {
+        notes.push("レコード" + (index + 1) + "の警報No." + String(record.alarmNo).padStart(2, "0") + "は "
+          + readings.map(function (item) { return item.label + "なら「" + item.alarm + "」"; }).join("、"));
+      }
+    });
+    return notes;
+  }
+
+  // ------------------------------------------------------------------
   // HPCのヒストリー処理
   // ------------------------------------------------------------------
 
@@ -813,6 +901,7 @@
     parseFrame: parseFrame,
     validate: validateFrame,
     validateFrame: validateFrame,
+    identify: identify,
     PanasonicHistory: PanasonicHistory,
     toHex: toHex,
     toAscii: asciiText,

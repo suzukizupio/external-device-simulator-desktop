@@ -1879,6 +1879,28 @@ function handlePanasonicRecordFrame(frame, valid) {
   });
 }
 
+// 受信バイト列だけからプロトコルを判定し、一意に決まったときだけ選択を合わせる。
+// HPCとTSSの共通発信種別や、大興とリモートの共通警報No.は電文だけでは
+// 区別できないため、その場合は切り替えず受信モニタへ候補を示すだけにする。
+function autoDetectPanasonicProtocol(bytes) {
+  if (state.currentView !== "panasonic" || !$("panaAutoDetect").checked) return false;
+  const api = panasonicApi();
+  let identified = null;
+  try { identified = api.identify(bytes); } catch (_error) { return false; }
+  const detected = identified.protocol;
+  if (!detected || detected === panasonicProtocol()) return false;
+  const from = panasonicInfo().label;
+  const to = api.protocolInfo(detected).label;
+  const reason = identified.rejected.length ? `（${identified.rejected[0].protocol === panasonicProtocol()
+    ? identified.rejected[0].reason
+    : `${api.protocolInfo(identified.rejected[0].protocol).label}では${identified.rejected[0].reason}`}）` : "";
+  $("panaProtocol").value = detected;
+  syncPanasonicForm();
+  addLog("info", "PANA", null, `受信電文から${to}と判定し、プロトコルを${from}から切り替えました${reason}`);
+  toast(`受信電文から判定し、プロトコルを${to}へ切り替えました`);
+  return true;
+}
+
 function applyReceivedPanasonic(result) {
   const parsed = result.parsed;
   if (!parsed) throw new Error("反映できる解析結果がありません");
@@ -2562,8 +2584,10 @@ async function sendLocker2() {
 // パナソニックは1画面でフレーム形式が変わるため、画面名ではなく
 // 選択中のプロトコルに対応するリーダーを引く。
 function frameReaderProfile() {
-  if (state.currentView !== "panasonic") return state.currentView;
-  return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK ? "panasonicBlock" : "panasonicRecord";
+  // 警報は選択中のプロトコルと違う形式の電文も受信して判定するため、
+  // STX形式・レコード形式の両方を読める共通リーダーを使う。
+  if (state.currentView === "panasonic") return "panasonicAlarm";
+  return state.currentView;
 }
 
 function currentFrameReader() {
@@ -2683,7 +2707,8 @@ function shownReceiveEntry(view) {
 function receiveVerdictOf(result) {
   if (!result) return { text: "未受信", tone: "" };
   if (!result.valid) return { text: "検証NG", tone: "error" };
-  if (result.warnings.length) return { text: "検証OK（注意あり）", tone: "warn" };
+  const mismatched = Boolean(result.identification) && !result.identification.matchesSelection;
+  if (result.warnings.length || mismatched) return { text: "検証OK（注意あり）", tone: "warn" };
   return { text: "検証OK", tone: "ok" };
 }
 
@@ -2702,6 +2727,19 @@ function renderReceiveNotes(view, result) {
     item.className = "receive-note warn";
     item.textContent = `注意: ${warning}`;
     fragment.append(item);
+  }
+  // 受信バイト列だけから判定したプロトコルと、その決め手・読みの違い。
+  if (result && result.identification) {
+    const verdict = document.createElement("p");
+    verdict.className = `receive-note ${result.identification.tone === "warn" ? "warn" : "info"}`;
+    verdict.textContent = `プロトコル判定: ${result.identification.text}`;
+    fragment.append(verdict);
+    for (const note of result.identification.notes) {
+      const item = document.createElement("p");
+      item.className = "receive-note info";
+      item.textContent = note;
+      fragment.append(item);
+    }
   }
   if (result && result.expectedResponse) {
     const item = document.createElement("p");
@@ -3157,6 +3195,8 @@ function inspectReceive(bytes, at) {
     const view = state.currentView;
     // 受信モニタの記録は検証結果に依存させない。仕様違反の電文ほど
     // どの桁が想定と違うのかを確認したいので、必ず先に記録する。
+    // 判定を先に行い、切り替わった後の条件で解析・記録する。
+    if (view === "panasonic") autoDetectPanasonicProtocol(event.bytes);
     recordReceivedFrame(view, event.bytes, at);
     let valid = true;
     try {

@@ -67,6 +67,17 @@
     return cr === -1 ? null : cr + 1;
   }
 
+  // 警報のSTX形式は11byte固定、レコード形式はCR終端。先頭バイトで見分ける。
+  const PANASONIC_BLOCK_LENGTH = 11;
+
+  function isPanasonicAlarmStart(byte) {
+    return byte === STX || isRecordStart(byte);
+  }
+
+  function panasonicAlarmLength(buffer) {
+    return buffer[0] === STX ? PANASONIC_BLOCK_LENGTH : recordLength(buffer);
+  }
+
   const RULES = Object.freeze({
     locker2: { length: () => 11, resyncOnStx: true },
     locker4: { length: locker4Length, resyncOnStx: true },
@@ -75,9 +86,10 @@
     // 警報電文は発報元と履歴番号が生バイトのため、電文中に02Hが現れる。
     // 固定長で読み切り、STXでの再同期は行わない。
     alarm: { length: () => 11, resyncOnStx: false },
-    // パナソニックHPC／TSSも住戸番号とBCCが生バイトで02Hを取りうる11byte固定。
-    panasonicBlock: { length: () => 11, resyncOnStx: false },
-    panasonicRecord: { start: isRecordStart, length: recordLength, resyncOnStx: false },
+    // パナソニックの警報は1画面で4プロトコルを扱い、STX形式（HPC／TSSの11byte固定、
+    // 住戸番号とBCCが生バイトで02Hを取りうる）とレコード形式（大興／リモート）が混在する。
+    // 選択中のプロトコルと違う電文も受信して判定できるよう、両方の開始バイトを受ける。
+    panasonicAlarm: { start: isPanasonicAlarmStart, length: panasonicAlarmLength, resyncOnStx: false },
     // パナソニックのエレベータ連動は18byte固定で、正常応答が10H／30Hの2種類。
     // 30Hは'0'と同値のため、フレームの外側でだけ制御コードとして扱う。
     panasonicElevator: { length: () => 18, resyncOnStx: false, controls: PANASONIC_ELEVATOR_CONTROLS },

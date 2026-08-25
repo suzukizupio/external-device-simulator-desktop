@@ -523,9 +523,58 @@
     const result = baseResult("panasonic", bytes);
     result.title = `警報（パナソニック ${info.label}）`;
     result.badges.push(badge(`${info.label}プロトコル`, STATUS.INFO));
-    return info.style === PanasonicAlarm.STYLE.BLOCK
+    const finished = info.style === PanasonicAlarm.STYLE.BLOCK
       ? inspectPanasonicBlock(result, bytes, protocolName, info)
       : inspectPanasonicRecord(result, bytes, protocolName, info);
+    return annotatePanasonicIdentification(finished, bytes, protocolName);
+  }
+
+  // 選択中のプロトコルが実際の電文と違っていても分かるよう、受信バイト列だけから
+  // 成立するプロトコルを判定して結果に添える。形式（STX形式かレコード形式か）は
+  // 必ず決まるが、HPC／TSSの共通発信種別や大興／リモートの共通警報No.は
+  // 電文だけでは一意に決まらないため、その場合は候補と読みの違いを示す。
+  function annotatePanasonicIdentification(result, bytes, selected) {
+    const identified = PanasonicAlarm.identify(bytes);
+    const name = (protocol) => PanasonicAlarm.protocolInfo(protocol).label;
+    const notes = [];
+
+    if (identified.candidates.length === 0) {
+      result.identification = {
+        protocol: null, candidates: [], matchesSelection: false,
+        text: "どのプロトコルの電文としても成立しません",
+        notes: [],
+      };
+      result.badges.push(badge("判定: 不成立", STATUS.ERROR));
+      return result;
+    }
+
+    const matchesSelection = identified.candidates.indexOf(selected) !== -1;
+    // 一意に決まったときは、同じ形式の他プロトコルを外した理由が決め手になる。
+    for (const rejected of identified.rejected) {
+      notes.push(`${name(rejected.protocol)}では成立しません：${rejected.reason}`);
+    }
+    for (const difference of identified.differences) notes.push(difference);
+
+    const text = identified.protocol
+      ? `${name(identified.protocol)}の電文と判定しました`
+      : `${identified.candidates.map(name).join(" / ")} のどちらとしても成立します（電文だけでは区別できません）`;
+
+    result.identification = {
+      protocol: identified.protocol,
+      candidates: identified.candidates.slice(),
+      matchesSelection,
+      text,
+      notes,
+    };
+
+    if (identified.protocol) {
+      result.badges.push(badge(`判定: ${name(identified.protocol)}`, matchesSelection ? STATUS.OK : STATUS.WARN));
+    } else {
+      result.badges.push(badge(`判定: ${identified.candidates.map(name).join(" / ")}`, matchesSelection ? STATUS.INFO : STATUS.WARN));
+    }
+    result.identification.tone = matchesSelection ? "info" : "warn";
+    if (!matchesSelection) result.identification.text = `選択中の${name(selected)}では成立しません。${text}`;
+    return result;
   }
 
   // HPC／TSS：STX＋データ長37H＋データ7バイト＋ETX＋BCCの11バイト固定。

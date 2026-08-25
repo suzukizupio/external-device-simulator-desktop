@@ -510,6 +510,52 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   if (panaApplied.state !== "2/10レコード" || panaApplied.rows !== 2) {
     throw new Error(`panasonic record apply failed: ${JSON.stringify(panaApplied)}`);
   }
+  // 選択中のプロトコルが違っても、電文から一意に決まれば自動で切り替わる。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "daiko"; s.dispatchEvent(new Event("change")); })()`
+  );
+  await window.webContents.executeJavaScript(`${$("panaAutoDetect")}.checked = true`);
+  // ヒストリー要求(30H)はHPCにしかない。
+  await send(PanasonicAlarm.buildFrame({ protocol: "hpc", type: 0x30 }));
+  await wait(80);
+  const detected = await window.webContents.executeJavaScript(`({
+    protocol: ${$("panaProtocol")}.value,
+    verdict: ${$("panaRxVerdict")}.textContent,
+    notes: Array.from(document.querySelectorAll("#panaRxNotes .receive-note")).map((node) => node.textContent),
+  })`);
+  if (detected.protocol !== "hpc" || !detected.notes.some((note) => note.includes("HPCの電文と判定"))) {
+    throw new Error(`panasonic protocol auto-detect failed: ${JSON.stringify(detected)}`);
+  }
+
+  // 判定が一意にならない電文では切り替えず、候補と読みの違いを示す。
+  await window.webContents.executeJavaScript(
+    `(() => { const s = ${$("panaProtocol")}; s.value = "daiko"; s.dispatchEvent(new Event("change")); })()`
+  );
+  await send(PanasonicAlarm.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 3 }] }));
+  await wait(80);
+  const ambiguous = await window.webContents.executeJavaScript(`({
+    protocol: ${$("panaProtocol")}.value,
+    notes: Array.from(document.querySelectorAll("#panaRxNotes .receive-note")).map((node) => node.textContent),
+  })`);
+  if (ambiguous.protocol !== "daiko"
+      || !ambiguous.notes.some((note) => note.includes("どちらとしても成立します"))
+      || !ambiguous.notes.some((note) => note.includes("大興なら「非常」"))) {
+    throw new Error(`panasonic ambiguous protocol handling failed: ${JSON.stringify(ambiguous)}`);
+  }
+
+  // 自動判定を切れば、選択中のプロトコルのまま「成立しない」と示す。
+  await window.webContents.executeJavaScript(`${$("panaAutoDetect")}.checked = false`);
+  await send(PanasonicAlarm.buildFrame({ protocol: "tss", type: 0x44, infoBits: [0], buildingNo: 1, roomNo: 101 }));
+  await wait(80);
+  const kept = await window.webContents.executeJavaScript(`({
+    protocol: ${$("panaProtocol")}.value,
+    verdict: ${$("panaRxVerdict")}.textContent,
+    notes: Array.from(document.querySelectorAll("#panaRxNotes .receive-note")).map((node) => node.textContent),
+  })`);
+  if (kept.protocol !== "daiko" || !kept.notes.some((note) => note.includes("選択中の大興では成立しません"))) {
+    throw new Error(`panasonic auto-detect opt-out failed: ${JSON.stringify(kept)}`);
+  }
+
   await click("panaRecordClear");
   await click("panaRxClear");
 

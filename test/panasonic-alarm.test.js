@@ -332,10 +332,78 @@ test("ヒストリーは15件を超えると古い情報を捨てる", function 
   assert.throws(() => new P.PanasonicHistory({ protocol: "tss" }), /ヒストリー応答はありません/);
 });
 
+// ------------------------------------------------------- プロトコルの判定
+
+test("プロトコル固有の電文は受信バイト列だけで一意に特定できる", function () {
+  const only = (bytes) => P.identify(bytes).protocol;
+  // 05H(汎用警報情報)・10H(住戸情報要求)・30H(ヒストリー要求)はHPCだけにある。
+  assert.equal(only(P.buildFrame({ protocol: "hpc", type: 0x05, infoBits: [0], buildingNo: 1, roomNo: 101 })), "hpc");
+  assert.equal(only(P.buildFrame({ protocol: "hpc", type: 0x10, buildingNo: 1, roomNo: 101 })), "hpc");
+  assert.equal(only(P.buildFrame({ protocol: "hpc", type: 0x30 })), "hpc");
+  // ヒストリー種別が0以外の電文もHPCでしか成立しない。
+  assert.equal(only(P.buildFrame({ protocol: "hpc", type: 0x01, infoBits: [7], buildingNo: 2, roomNo: 1201, historyNumber: 3 })), "hpc");
+  // 44H(警戒解除情報)はTSSだけにある。
+  assert.equal(only(P.buildFrame({ protocol: "tss", type: 0x44, infoBits: [0], buildingNo: 1, roomNo: 101 })), "tss");
+  // 宅配登録･削除(40)と定時送信はリモートだけにある。
+  assert.equal(only(P.buildFrame({ protocol: "remote", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 40 }] })), "remote");
+  assert.equal(only(P.buildScheduledFrame({ protocol: "remote", propertyCode: "12345" })), "remote");
+});
+
+test("判定の決め手は同じ形式のプロトコルから示す", function () {
+  const history = P.identify(P.buildFrame({ protocol: "hpc", type: 0x30 }));
+  // STX形式どうしの比較だけを決め手にし、形式違いの大興・リモートは挙げない。
+  assert.deepEqual(history.rejected.map((item) => item.protocol), ["tss"]);
+  assert.match(history.rejected[0].reason, /発信種別 30H はありません/);
+
+  const delivery = P.identify(P.buildFrame({ protocol: "remote", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 40 }] }));
+  assert.deepEqual(delivery.rejected.map((item) => item.protocol), ["daiko"]);
+  assert.match(delivery.rejected[0].reason, /警報No.40 が別表にありません/);
+
+  const scheduled = P.identify(P.buildScheduledFrame({ protocol: "remote", propertyCode: "0001" }));
+  assert.match(scheduled.rejected[0].reason, /定時送信はありません/);
+});
+
+test("共通部分だけの電文は候補を絞れず、読みの違いを示す", function () {
+  // 00H・01H・02H・04HはHPCとTSSの両方にある。
+  const block = P.identify(P.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [3], buildingNo: 1, roomNo: 101 }));
+  assert.equal(block.protocol, null);
+  assert.deepEqual(block.candidates, ["hpc", "tss"]);
+  assert.equal(block.style, P.STYLE.BLOCK);
+  // 同じbit3でも割付が違うため、読みが変わることを示す。
+  assert.equal(block.differences.length, 1);
+  assert.match(block.differences[0], /HPCなら「警報情報１：水漏れ／コール」、TSSなら「警報情報１：水漏れ」/);
+
+  // 警報No.03は大興が「非常」、リモートが「防犯(代表)」で意味が入れ替わる。
+  const record = P.identify(P.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 3 }] }));
+  assert.equal(record.protocol, null);
+  assert.deepEqual(record.candidates, ["daiko", "remote"]);
+  assert.match(record.differences[0], /大興なら「非常」、リモートなら「防犯\(代表\)」/);
+
+  // 読みが変わらない電文では違いを挙げない。
+  const same = P.identify(P.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }] }));
+  assert.deepEqual(same.differences, []);
+  // アンサーバックはどちらの形式でも同じで、絞り込めない。
+  assert.deepEqual(P.identify(P.buildAnswerback({ protocol: "daiko" })).candidates, ["daiko", "remote"]);
+});
+
+test("どのプロトコルでも成立しない電文は候補なしで返す", function () {
+  const broken = P.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [0], buildingNo: 1, roomNo: 101 });
+  broken[10] = (broken[10] + 1) & 0xFF;
+  const identified = P.identify(broken);
+  assert.deepEqual(identified.candidates, []);
+  assert.equal(identified.protocol, null);
+  assert.equal(identified.style, null);
+  // 形式が分からないので決め手も示さない。
+  assert.deepEqual(identified.rejected, []);
+  // 4プロトコルすべての不成立理由は残す。
+  assert.equal(identified.results.length, 4);
+  assert.ok(identified.results.every((item) => !item.accepted && item.reason));
+});
+
 // ---------------------------------------------------------------- 受信の境界
 
-test("panasonicBlockはBCCがSTXと同値でも11byteで切り出す", function () {
-  const reader = new FrameReader("panasonicBlock");
+test("STX形式はBCCがSTXと同値でも11byteで切り出す", function () {
+  const reader = new FrameReader("panasonicAlarm");
   // BCCが02H(STX)になる組み合わせを作り、途中で再同期しないことを確かめる。
   const frame = P.buildFrame({ protocol: "hpc", type: 0x00, info: 0xC8, buildingNo: 0, roomNo: 0 });
   assert.equal(frame[10], 0x02);
@@ -343,21 +411,21 @@ test("panasonicBlockはBCCがSTXと同値でも11byteで切り出す", function 
   assert.equal(events.length, 1);
   assert.deepEqual(events[0].bytes, frame);
   // 分割して届いても同じ結果になる。
-  const split = new FrameReader("panasonicBlock");
+  const split = new FrameReader("panasonicAlarm");
   assert.equal(split.push(frame.slice(0, 5)).length, 0);
   assert.deepEqual(split.push(frame.slice(5))[0].bytes, frame);
 });
 
-test("panasonicRecordはCRで区切り、1byteずつ届いても連結されても同じ結果になる", function () {
+test("レコード形式はCRで区切り、1byteずつ届いても連結されても同じ結果になる", function () {
   const alarm = P.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }] });
   const ack = P.buildAnswerback({ protocol: "daiko" });
   const nak = P.buildAnswerback({ protocol: "daiko", accepted: false });
   const stream = alarm.concat(ack, nak);
 
-  const bulk = new FrameReader("panasonicRecord").push(stream).filter((event) => event.type === "frame");
+  const bulk = new FrameReader("panasonicAlarm").push(stream).filter((event) => event.type === "frame");
   assert.deepEqual(bulk.map((event) => ascii(event.bytes)), [ascii(alarm), ascii(ack), ascii(nak)]);
 
-  const drip = new FrameReader("panasonicRecord");
+  const drip = new FrameReader("panasonicAlarm");
   const dripped = [];
   for (const byte of stream) dripped.push(...drip.push([byte]).filter((event) => event.type === "frame"));
   assert.deepEqual(dripped.map((event) => ascii(event.bytes)), bulk.map((event) => ascii(event.bytes)));
@@ -365,13 +433,30 @@ test("panasonicRecordはCRで区切り、1byteずつ届いても連結されて�
   // レコード区切りのETXでは切らない。
   assert.equal(bulk[0].bytes.filter((byte) => byte === 0x03).length, 1);
   // ヘッダが仕様外なら受信データとして捨て、次のCRを待たない。
-  const garbage = new FrameReader("panasonicRecord").push(Array.from("SNX!!\r", (character) => character.charCodeAt(0)));
+  const garbage = new FrameReader("panasonicAlarm").push(Array.from("SNX!!\r", (character) => character.charCodeAt(0)));
   assert.equal(garbage[0].type, "error");
 });
 
-test("FrameReaderのプロファイル一覧にパナソニックが含まれる", function () {
-  assert.ok(FrameReader.PROFILES.includes("panasonicBlock"));
-  assert.ok(FrameReader.PROFILES.includes("panasonicRecord"));
+test("1つのリーダーでSTX形式とレコード形式の混在を切り出せる", function () {
+  // 選択中のプロトコルと違う形式の電文も受信できないと、判定機能が働かない。
+  const reader = new FrameReader("panasonicAlarm");
+  const block = P.buildFrame({ protocol: "hpc", type: 0x30 });
+  const record = P.buildFrame({ protocol: "daiko", records: [{ mode: "N", buildingNo: 1, roomNo: 101, alarmNo: 1 }] });
+  const ack = P.buildAnswerback({ protocol: "daiko" });
+  const frames = reader.push(block.concat(record, ack, block)).filter((event) => event.type === "frame");
+  assert.equal(frames.length, 4);
+  assert.deepEqual(frames[0].bytes, block);
+  assert.deepEqual(frames[1].bytes, record);
+  assert.deepEqual(frames[2].bytes, ack);
+  assert.deepEqual(frames[3].bytes, block);
+
+  // 1バイトずつ届いても同じ結果になる。
+  const drip = new FrameReader("panasonicAlarm");
+  const dripped = [];
+  for (const byte of block.concat(record, ack)) dripped.push(...drip.push([byte]).filter((event) => event.type === "frame"));
+  assert.deepEqual(dripped.map((event) => event.bytes), [block, record, ack]);
+
+  assert.ok(FrameReader.PROFILES.includes("panasonicAlarm"));
 });
 
 console.log("=== " + passed + " panasonic tests passed ===");
