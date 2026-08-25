@@ -46,6 +46,7 @@
       <button class="nav-item" data-view="panasonicElevator"><span>V</span>エレベータ（パナソニック）</button>
       <button class="nav-item" data-view="alarm"><span>A</span>警報（アイホン）</button>
       <button class="nav-item" data-view="panasonic"><span>P</span>警報（パナソニック）</button>
+      <button class="nav-item" data-view="bridge"><span>⇄</span>警報変換</button>
       <p>試験</p>
       <button class="nav-item" data-view="faults"><span>!</span>異常注入</button>
       <button class="nav-item" data-view="settings"><span>⚙</span>通信設定</button>
@@ -512,6 +513,44 @@
         </article>
       </section>
 
+      <section class="view" id="view-bridge">
+        <div class="page-heading"><div><h1>警報変換（メーカー間ブリッジ）</h1><p>受信した警報を、別メーカーの形式へ読み替えて送信します</p></div><span class="spec-badge" id="bridgeSpecBadge">—</span></div>
+        <article class="card form-card">
+          <div class="form-grid cols-3">
+            <label>変換元<select id="bridgeFrom"></select></label>
+            <label>変換先<select id="bridgeTo"></select></label>
+            <label id="bridgePatternField">アイホンのビット割付<select id="bridgePattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
+          </div>
+          <div class="inline-options"><label><input id="bridgeAuto" type="checkbox"> 受信したら自動で変換して送信する</label></div>
+          <p class="callout">この対応付けは<strong>通信仕様書には規定がありません</strong>。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。またCOMポートは1つのため受信と送信は同じ回線になります。実機どうしを橋渡しするには2回線が必要です。</p>
+          <div class="preview"><span>変換後</span><code id="bridgePreview">—</code></div>
+          <div class="actions"><button class="secondary" id="bridgeConvertButton">最新の受信を変換</button><button class="primary requires-connection" id="bridgeSendButton" disabled>変換結果を送信</button><button class="danger" id="bridgeClearButton">変換結果を消去</button></div>
+        </article>
+
+        <article class="card">
+          <div class="card-title"><div><h2>変換結果</h2><p>読み取った警報と、送信できるもの・落ちるもの</p></div><span class="receive-verdict" id="bridgeVerdict">未変換</span></div>
+          <div class="receive-summary" id="bridgeSummary">まだ変換していません。変換元の警報を受信するか、「最新の受信を変換」を押してください。</div>
+          <div class="receive-badges" id="bridgeBadges"></div>
+          <div class="receive-notes" id="bridgeNotes"></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>#</th><th>変換後の電文</th></tr></thead>
+              <tbody id="bridgeFrames"><tr class="receive-empty"><td colspan="2">未変換</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-title"><div><h2>変換表</h2><p id="bridgeTableNote">—</p></div></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>警報</th><th>変換元の桁</th><th>変換先の桁</th></tr></thead>
+              <tbody id="bridgeMapping"><tr class="receive-empty"><td colspan="3">—</td></tr></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
       <section class="view" id="view-faults">
         <div class="page-heading"><div><h1>異常注入</h1><p>全プロトコル共通の再現可能な故障ルール</p></div></div>
         <article class="card form-card">
@@ -590,6 +629,7 @@
   <script src="protocol/panasonic-elevator.js"></script>
   <script src="protocol/alarm-identifier.js"></script>
   <script src="protocol/link-analyzer.js"></script>
+  <script src="protocol/alarm-bridge.js"></script>
   <script src="protocol/handshake.js"></script>
   <script src="protocol/fault-engine.js"></script>
   <script src="protocol/auto-responder.js"></script>

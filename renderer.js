@@ -53,6 +53,9 @@ const state = {
   receiveMonitors: {},
   // 通信条件の判別：条件ごとの受信結果。
   scanResults: [],
+  // 警報変換：直近の受信電文と変換結果。
+  bridgeLastFrame: null,
+  bridgeResult: null,
 };
 
 // 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
@@ -580,6 +583,8 @@ function rejectControlWaiters(error) {
 function viewUsesHandshake(view) {
   // パナソニックはHPC／TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
   // 大興／リモートのアンサーバックは伝送制御コードではなく電文で返す。
+  // 変換画面は電文を読み替えるだけで、ENQ手順や自動ACKには関与しない。
+  if (view === "bridge") return false;
   if (view === "panasonic") return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK;
   return ["locker4", "mansion", "elevator", "alarm", "panasonicElevator"].includes(view);
 }
@@ -1407,6 +1412,11 @@ function handleApplicationFrame(view, frame, transportResponse, valid) {
   // 制御コードの送出結果ではなく電文の検証結果で判断する。
   if (view === "panasonic" && !panasonicIsBlock()) {
     try { handlePanasonicRecordFrame(frame, valid); } catch (error) { logError(error, "アンサーバック処理"); }
+    return;
+  }
+  // 変換画面も伝送制御を使わないため、ACKの送出結果を待たずに読み替える。
+  if (view === "bridge") {
+    try { handleBridgeFrame(frame); } catch (error) { logError(error, "警報変換"); }
     return;
   }
   if (!isTransportAck(view, transportResponse)) return;
@@ -2594,6 +2604,8 @@ function frameReaderProfile() {
   // 警報は選択中のプロトコルと違う形式の電文も受信して判定するため、
   // STX形式・レコード形式の両方を読める共通リーダーを使う。
   if (state.currentView === "panasonic") return "panasonicAlarm";
+  // 変換画面は変換元が何であれ受け取れるよう、同じ共通リーダーを使う。
+  if (state.currentView === "bridge") return "panasonicAlarm";
   return state.currentView;
 }
 
@@ -2614,6 +2626,208 @@ function resetFrameReader() {
 
 function trackLocker4Packet(value) {
   state.locker4Inbound = state.locker4Series.accept(value);
+}
+
+// ------------------------------------------------ 警報変換（メーカー間ブリッジ）
+// 受信した警報を別メーカーの形式へ読み替える。対応付けは通信仕様書の規定ではなく
+// 警報名の一致に基づく推定のため、送れなかった項目と理由を必ず画面へ残す。
+
+function bridgeApi() {
+  return requireApi("AlarmBridge");
+}
+
+function bridgeSpec(which) {
+  const id = $(which === "from" ? "bridgeFrom" : "bridgeTo").value;
+  return { id, pattern: $("bridgePattern").value };
+}
+
+function bridgeUsesAiphone() {
+  return $("bridgeFrom").value === requireApi("AlarmIdentifier").AIPHONE_ID
+    || $("bridgeTo").value === requireApi("AlarmIdentifier").AIPHONE_ID;
+}
+
+function refreshBridgeTargets() {
+  const targets = requireApi("AlarmIdentifier").TARGETS;
+  for (const [id, fallback] of [["bridgeFrom", "aiphone"], ["bridgeTo", "hpc"]]) {
+    const select = $(id);
+    const previous = select.value;
+    select.replaceChildren(...targets.map((target) => {
+      const option = document.createElement("option");
+      option.value = target.id;
+      option.textContent = target.label;
+      return option;
+    }));
+    select.value = targets.some((target) => target.id === previous) ? previous : fallback;
+  }
+}
+
+function renderBridgeMapping() {
+  const body = $("bridgeMapping");
+  const from = bridgeSpec("from");
+  const to = bridgeSpec("to");
+  if (from.id === to.id) {
+    body.replaceChildren(emptyReceiveRow(3, "変換元と変換先が同じです"));
+    $("bridgeTableNote").textContent = "変換元と変換先に別のプロトコルを選んでください";
+    return;
+  }
+  const api = bridgeApi();
+  const rows = api.mappingTable(from, to);
+  const identifier = requireApi("AlarmIdentifier");
+  const fromLabel = identifier.findTarget(from.id).short;
+  const toLabel = identifier.findTarget(to.id).short;
+  const missing = rows.filter((row) => !row.to).length;
+  $("bridgeTableNote").textContent = `${fromLabel} → ${toLabel}：${rows.length}項目のうち${missing}項目は変換先に枠がありません`;
+
+  const fragment = document.createDocumentFragment();
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.className = row.to ? "receive-row ok" : "receive-row warn";
+    const slotText = (slot) => {
+      if (!slot) return "（枠なし）";
+      if (slot.alarmNo != null) return `警報No.${String(slot.alarmNo).padStart(2, "0")} ${slot.label}`;
+      return `${panasonicHexByte(slot.type)}H bit${slot.bit} ${slot.label}`;
+    };
+    for (const text of [row.label, slotText(row.from), slotText(row.to)]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      tr.append(cell);
+    }
+    fragment.append(tr);
+  }
+  body.replaceChildren(fragment);
+}
+
+function bridgeFrameText(frame) {
+  // レコード形式はASCIIで読めたほうが桁を追いやすい。
+  if (frame[0] === 0x02) return toHex(frame);
+  const ascii = requireApi("PanasonicAlarm").toAscii(frame)
+    .replace(/[\x00-\x1F]/g, (character) => `<${panasonicHexByte(character.charCodeAt(0))}>`);
+  return `${ascii}    ${toHex(frame)}`;
+}
+
+function renderBridgeResult() {
+  const result = state.bridgeResult;
+  const verdict = $("bridgeVerdict");
+  const body = $("bridgeFrames");
+  const badges = $("bridgeBadges");
+  const notes = $("bridgeNotes");
+
+  if (!result) {
+    verdict.textContent = "未変換";
+    verdict.className = "receive-verdict";
+    $("bridgeSummary").textContent = "まだ変換していません。変換元の警報を受信するか、「最新の受信を変換」を押してください。";
+    $("bridgePreview").textContent = "—";
+    body.replaceChildren(emptyReceiveRow(2, "未変換"));
+    badges.replaceChildren();
+    notes.replaceChildren();
+    return;
+  }
+
+  if (result.error) {
+    verdict.textContent = "変換不可";
+    verdict.className = "receive-verdict error";
+    $("bridgeSummary").textContent = result.error;
+    $("bridgePreview").textContent = "—";
+    body.replaceChildren(emptyReceiveRow(2, "変換できません"));
+    badges.replaceChildren();
+    notes.replaceChildren();
+    return;
+  }
+
+  const tone = result.complete ? "ok" : result.frames.length ? "warn" : "error";
+  verdict.textContent = result.complete ? "変換OK" : result.frames.length ? "変換OK（一部を送れません）" : "送れる警報がありません";
+  verdict.className = `receive-verdict ${tone}`;
+  const terms = result.terms.map((item) => item.label).join("＋") || "警報なし（復旧）";
+  $("bridgeSummary").textContent = `${result.from.short} → ${result.to.short}／${terms}／`
+    + `${result.buildingNo}棟 ${result.roomNo == null ? "----" : String(result.roomNo).padStart(4, "0")}号室`;
+  $("bridgePreview").textContent = result.frames.length ? result.frames.map(bridgeFrameText).join("\n") : "—";
+
+  const badgeFragment = document.createDocumentFragment();
+  for (const item of [`${result.frames.length}電文`, ...result.dropped.map((entry) => `送れない: ${entry.label}`)]) {
+    const chip = document.createElement("span");
+    chip.className = `receive-badge ${item.startsWith("送れない") ? "warn" : "info"}`;
+    chip.textContent = item;
+    badgeFragment.append(chip);
+  }
+  badges.replaceChildren(badgeFragment);
+
+  const noteFragment = document.createDocumentFragment();
+  for (const note of result.notes) {
+    const item = document.createElement("p");
+    item.className = /送れません|変換できません|特定できない/.test(note) ? "receive-note warn" : "receive-note info";
+    item.textContent = note;
+    noteFragment.append(item);
+  }
+  notes.replaceChildren(noteFragment);
+
+  if (result.frames.length === 0) {
+    body.replaceChildren(emptyReceiveRow(2, "送信できる電文がありません"));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  result.frames.forEach((frame, index) => {
+    const row = document.createElement("tr");
+    for (const text of [String(index + 1), bridgeFrameText(frame)]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    fragment.append(row);
+  });
+  body.replaceChildren(fragment);
+}
+
+function syncBridgeForm() {
+  refreshBridgeTargets();
+  // ビット割付はアイホンが絡むときだけ効く。
+  $("bridgePatternField").hidden = !bridgeUsesAiphone();
+  const identifier = requireApi("AlarmIdentifier");
+  const from = identifier.findTarget($("bridgeFrom").value);
+  const to = identifier.findTarget($("bridgeTo").value);
+  $("bridgeSpecBadge").textContent = from && to ? `${from.short} → ${to.short}` : "—";
+  renderBridgeMapping();
+  renderBridgeResult();
+  if (state.currentView === "bridge") updatePresetWarning();
+}
+
+function convertBridgeFrame(frame) {
+  const from = bridgeSpec("from");
+  const to = bridgeSpec("to");
+  try {
+    const result = bridgeApi().convert(frame, from, to);
+    state.bridgeResult = Object.assign({ sourceFrame: Array.from(frame) }, result);
+    addLog("info", "BRIDGE", null, `${result.from.short} → ${result.to.short}：`
+      + `${result.terms.map((item) => item.label).join("＋") || "復旧"}`
+      + `${result.dropped.length ? `／送れない: ${result.dropped.map((item) => item.label).join("・")}` : ""}`);
+  } catch (error) {
+    state.bridgeResult = { error: String(error && error.message || error), sourceFrame: Array.from(frame), frames: [] };
+    addLog("warn", "BRIDGE", frame, `変換できません: ${state.bridgeResult.error}`);
+  }
+  renderBridgeResult();
+  return state.bridgeResult;
+}
+
+// 受信のたびに最新の1件を覚えておき、手動変換でも使えるようにする。
+function handleBridgeFrame(frame) {
+  state.bridgeLastFrame = Array.from(frame);
+  const result = convertBridgeFrame(frame);
+  if (!$("bridgeAuto").checked || result.error || result.frames.length === 0) return;
+  scheduleAutoResponse("警報変換の送信", async () => {
+    for (const outgoing of result.frames) await transmit(outgoing, "frame");
+    addLog("info", "BRIDGE", null, `変換した${result.frames.length}電文を送信しました`);
+  });
+}
+
+function convertLatestReceive() {
+  if (!state.bridgeLastFrame) throw new Error("変換できる受信電文がありません");
+  convertBridgeFrame(state.bridgeLastFrame);
+}
+
+async function sendBridgeFrames() {
+  const result = state.bridgeResult;
+  if (!result || result.error || result.frames.length === 0) throw new Error("送信できる変換結果がありません");
+  for (const frame of result.frames) await transmit(frame, "frame");
+  addLog("info", "BRIDGE", null, `変換した${result.frames.length}電文を送信しました`);
 }
 
 // ------------------------------------------------------------ 通信条件の判別
@@ -2841,6 +3055,16 @@ function receiveInspectOptions(view) {
   if (view === "panasonic") {
     // アイホンQ49-023Gの読みはビット割付で変わるため、警報（アイホン）画面の選択を渡す。
     return Object.assign(linkInspectOptions(view), { protocol: $("panaProtocol").value, aiphonePattern: $("alarmBitPattern").value });
+  }
+  if (view === "bridge") {
+    const identifier = requireApi("AlarmIdentifier");
+    const from = identifier.findTarget($("bridgeFrom").value);
+    const identified = identifier.identify(frame, { aiphonePattern: $("bridgePattern").value });
+    const names = identified.target ? identified.target.label
+      : identified.targets.length ? identified.targets.map((item) => item.short).join(" / ") : null;
+    if (!names) throw new Error("警報電文として解釈できません");
+    const match = identified.candidates.includes(from.id) ? "" : `（変換元は${from.short}の設定です）`;
+    return `変換元 ${names} の警報を受信${match}`;
   }
   if (view === "panasonicElevator") {
     // 電文の向きは電文自身が決めるため、選択中の動作側は注意の判定にだけ使う。
@@ -3548,6 +3772,7 @@ function applyProfile(profile) {
   syncAlarmInfoForm();
   syncPanasonicForm();
   syncPanasonicElevatorForm();
+  syncBridgeForm();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -3867,6 +4092,18 @@ function bindEvents() {
       logError(error, "バージョン情報のコピー");
     }
   });
+  ["bridgeFrom", "bridgeTo", "bridgePattern"].forEach((id) => $(id).addEventListener("change", () => {
+    try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
+  }));
+  $("bridgeConvertButton").addEventListener("click", () => { try { convertLatestReceive(); } catch (error) { logError(error, "警報変換"); } });
+  $("bridgeSendButton").addEventListener("click", () => {
+    withTransaction("警報変換の送信", sendBridgeFrames).catch((error) => logError(error, "変換結果の送信"));
+  });
+  $("bridgeClearButton").addEventListener("click", () => {
+    state.bridgeResult = null;
+    state.bridgeLastFrame = null;
+    renderBridgeResult();
+  });
   $("scanStart").addEventListener("click", () => {
     withTransaction("通信条件の判別", runLinkScan).catch((error) => {
       $("scanStart").disabled = false;
@@ -3904,6 +4141,7 @@ async function initialize() {
   syncAlarmInfoForm();
   syncPanasonicForm();
   syncPanasonicElevatorForm();
+  syncBridgeForm();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
   state.locker4Series = new (requireApi("Locker4Receiver").PacketSeries)();

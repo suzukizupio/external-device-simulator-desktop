@@ -30,7 +30,7 @@ const PROBE_SCRIPT = `
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
         .filter((id) => document.getElementById(id).textContent.startsWith("ERROR") || document.getElementById(id).textContent === "—"),
-      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
+      modules: ["serialAPI", "Telegram2", "Telegram4", "Locker4Receiver", "NoncontactKey", "MansionController", "StreamDecoder", "FrameReader", "ElevatorProtocol", "AlarmProtocol", "PanasonicAlarm", "PanasonicElevator", "AlarmIdentifier", "LinkAnalyzer", "AlarmBridge", "HandshakeProtocol", "FaultEngine", "AutoResponder", "ReceiveInspector"]
         .filter((name) => !window[name])
     }), 50);
   }, 750))
@@ -625,6 +625,66 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   await window.webContents.executeJavaScript(`${$("pevRxFollow")}.checked = true`);
   await click("pevRxClear");
 
+  // ------------------------------- 警報変換：受信した電文を別メーカー形式へ
+  await navigate("bridge");
+  await window.webContents.executeJavaScript(`${$("bridgeAuto")}.checked = false`);
+  await window.webContents.executeJavaScript(`
+    (() => {
+      const set = (id, value) => { const s = document.getElementById(id); s.value = value; s.dispatchEvent(new Event("change")); };
+      set("bridgeFrom", "aiphone");
+      set("bridgePattern", "standard");
+      set("bridgeTo", "daiko");
+    })()
+  `);
+  // アイホンの火災＋非常（住戸101・1棟）
+  await send(AlarmProtocol.buildFrame({ type: 0x00, infoBits: [1, 2], buildingNo: 1, roomNo: 101 }));
+  await wait(90);
+  const bridged = await window.webContents.executeJavaScript(`({
+    verdict: ${$("bridgeVerdict")}.textContent,
+    summary: ${$("bridgeSummary")}.textContent,
+    preview: ${$("bridgePreview")}.textContent,
+    rows: ${$("bridgeFrames")}.querySelectorAll("tr").length,
+    badge: ${$("bridgeSpecBadge")}.textContent,
+  })`);
+  if (bridged.verdict !== "変換OK" || !bridged.summary.includes("火災＋非常")
+      || !bridged.preview.startsWith("SNDN01010101<03>N01010103<03>")) {
+    throw new Error(`alarm bridge conversion failed: ${JSON.stringify(bridged)}`);
+  }
+  if (bridged.badge !== "アイホン → 大興" || bridged.rows !== 1) {
+    throw new Error(`alarm bridge result view failed: ${JSON.stringify(bridged)}`);
+  }
+
+  // 相手に枠がない警報は、落とした理由まで示す。
+  await window.webContents.executeJavaScript(`
+    (() => { const s = document.getElementById("bridgeFrom"); s.value = "hpc"; s.dispatchEvent(new Event("change")); })()
+  `);
+  await window.webContents.executeJavaScript(`
+    (() => { const s = document.getElementById("bridgeTo"); s.value = "aiphone"; s.dispatchEvent(new Event("change")); })()
+  `);
+  // HPCの「水漏れ／コール」はアイホンの標準割付に枠がない。
+  await send(PanasonicAlarm.buildFrame({ protocol: "hpc", type: 0x00, infoBits: [3], buildingNo: 1, roomNo: 101 }));
+  await wait(90);
+  const dropped = await window.webContents.executeJavaScript(`({
+    verdict: ${$("bridgeVerdict")}.textContent,
+    notes: Array.from(document.querySelectorAll("#bridgeNotes .receive-note")).map((node) => node.textContent),
+    badges: Array.from(document.querySelectorAll("#bridgeBadges .receive-badge")).map((node) => node.textContent),
+  })`);
+  if (dropped.verdict !== "送れる警報がありません"
+      || !dropped.notes.some((note) => note.includes("「水漏れ」はアイホンに対応する枠がないため送れません"))
+      || !dropped.badges.some((badge) => badge.includes("送れない: 水漏れ"))) {
+    throw new Error(`alarm bridge drop reporting failed: ${JSON.stringify(dropped)}`);
+  }
+
+  // 変換表は変換先に枠がない項目を数えて示す。
+  const mapping = await window.webContents.executeJavaScript(`({
+    note: ${$("bridgeTableNote")}.textContent,
+    rows: ${$("bridgeMapping")}.querySelectorAll("tr").length,
+  })`);
+  if (!mapping.note.includes("HPC → アイホン") || !/項目は変換先に枠がありません/.test(mapping.note) || mapping.rows < 5) {
+    throw new Error(`alarm bridge mapping table failed: ${JSON.stringify(mapping)}`);
+  }
+  await click("bridgeClearButton");
+
   // ------------------------------------- フレーム不成立でも受信内容を残す
   await navigate("key");
   // 先の履歴選択で追従を切っているため、最新表示へ戻してから受信させる。
@@ -924,7 +984,7 @@ async function run({ window, app, sendToRenderer }) {
     if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
       throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
     }
-    if (initial.title !== "外部疑似装置 Next" || initial.views !== 12 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
+    if (initial.title !== "外部疑似装置 Next" || initial.views !== 13 || initial.modules.length || initial.previewErrors.length || !initial.ready) {
       throw new Error(`unexpected renderer state: ${JSON.stringify(initial)}`);
     }
 

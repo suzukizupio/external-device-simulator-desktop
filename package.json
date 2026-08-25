@@ -1,6 +1,6 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "main": "main.js",
   "license": "UNLICENSED",
