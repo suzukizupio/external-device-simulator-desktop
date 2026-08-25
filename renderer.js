@@ -53,9 +53,11 @@ const state = {
   receiveMonitors: {},
   // 通信条件の判別：条件ごとの受信結果。
   scanResults: [],
-  // 警報変換：直近の受信電文と変換結果。
+  // 警報変換：直近の受信電文と変換結果、送信ポートの状態。
   bridgeLastFrame: null,
   bridgeResult: null,
+  bridgePort: null,
+  bridgeReader: null,
 };
 
 // 受信モニタの対象機種と、画面ID接頭辞・履歴保持件数。
@@ -444,6 +446,8 @@ async function refreshPorts() {
 }
 
 function applyConnectionState(snapshot) {
+  // 変換画面は受信ポートの状態も表示するため、更新を伝える。
+  setTimeout(() => { try { applyBridgePortState(state.bridgePort); } catch (_error) { /* 初期化前は無視 */ } }, 0);
   const status = snapshot && snapshot.status || "closed";
   state.connected = status === "open";
   state.sessionId = snapshot && snapshot.sessionId || 0;
@@ -2636,6 +2640,116 @@ function bridgeApi() {
   return requireApi("AlarmBridge");
 }
 
+// ---- 送信ポート（2本目の回線）----
+// 受信ポートは画面上部の接続をそのまま使い、変換した電文はこちらへ流す。
+// 両メーカーの通信条件は違うことが多いため、回線ごとに条件を持つ。
+
+function bridgeTargetSerial(id) {
+  const identifier = requireApi("AlarmIdentifier");
+  const target = identifier.findTarget(id);
+  if (!target) return null;
+  // アイホンQ49-023Gは1200～9600,E,8,1。既定は警報プリセットと同じ1200,E,8,1。
+  if (target.vendor === identifier.VENDOR.AIPHONE) {
+    return { baudRate: 1200, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" };
+  }
+  const serial = requireApi("PanasonicAlarm").protocolInfo(target.protocol).serial;
+  return { baudRate: serial.baudRate, dataBits: serial.dataBits, stopBits: serial.stopBits, parity: serial.parity, flowControl: "none" };
+}
+
+function bridgePortOptions() {
+  const path = $("bridgePort").value;
+  if (!path) throw new RangeError("送信ポートのCOMポートを選択してください");
+  if (path === $("serialPort").value && state.connected) {
+    throw new Error("受信ポートと同じCOMポートは選べません");
+  }
+  if ($("bridgePortPreset").value === "auto") {
+    const serial = bridgeTargetSerial($("bridgeTo").value);
+    if (!serial) throw new Error("変換先を選び直してください");
+    return Object.assign({ path }, serial);
+  }
+  const framing = String($("bridgeFraming").value).split("-");
+  return {
+    path,
+    baudRate: integerValue("bridgeBaud", "ボーレート", 50, 4_000_000),
+    dataBits: Number(framing[0]),
+    stopBits: Number(framing[1]),
+    parity: $("bridgeParity").value,
+    flowControl: "none",
+  };
+}
+
+// 「変換先の規定に合わせる」ときは、選んだプロトコルの条件を欄へ映して見せる。
+function syncBridgePortFields() {
+  const auto = $("bridgePortPreset").value === "auto";
+  const serial = auto ? bridgeTargetSerial($("bridgeTo").value) : null;
+  if (serial) {
+    $("bridgeBaud").value = String(serial.baudRate);
+    $("bridgeParity").value = serial.parity;
+    $("bridgeFraming").value = `${serial.dataBits}-${serial.stopBits}`;
+  }
+  for (const id of ["bridgeBaud", "bridgeParity", "bridgeFraming"]) $(id).disabled = auto;
+
+  const identifier = requireApi("AlarmIdentifier");
+  const from = identifier.findTarget($("bridgeFrom").value);
+  const to = identifier.findTarget($("bridgeTo").value);
+  const rxSerial = bridgeTargetSerial($("bridgeFrom").value);
+  const hint = [];
+  if (from && rxSerial) hint.push(`受信ポートは${from.short}の規定 ${presetLabel(rxSerial)} で接続してください`);
+  if (to && serial) hint.push(`送信ポートは${to.short}の規定 ${presetLabel(serial)} で開きます`);
+  $("bridgePortHint").textContent = hint.join("／") || "変換元と変換先を選んでください";
+}
+
+function applyBridgePortState(snapshot) {
+  const open = snapshot && snapshot.status === "open";
+  state.bridgePort = open ? snapshot : null;
+  const dot = $("bridgePortDot");
+  const text = $("bridgePortText");
+  if (dot) dot.className = open ? "open" : snapshot && snapshot.status === "error" ? "error" : "";
+  if (text) {
+    text.textContent = open
+      ? `送信ポート ${snapshot.options.path} ${presetLabel(snapshot.options)}`
+      : snapshot && snapshot.error ? `送信ポートエラー: ${snapshot.error}` : "送信ポート未接続";
+  }
+  $("bridgePortConnect").disabled = open;
+  $("bridgePortDisconnect").disabled = !open;
+  $("bridgeRxPort").value = state.connected && state.connectionOptions
+    ? `${state.connectionOptions.path} ${presetLabel(state.connectionOptions)}`
+    : "未接続";
+}
+
+async function refreshBridgePorts() {
+  if (!window.serialAPI) return;
+  try {
+    const ports = await window.serialAPI.list();
+    const select = $("bridgePort");
+    const previous = select.value;
+    const options = [Object.assign(document.createElement("option"), { value: "", textContent: "COMポートを選択" })];
+    for (const port of ports) {
+      const option = document.createElement("option");
+      option.value = port.path;
+      option.textContent = port.friendlyName ? `${port.path} — ${port.friendlyName}` : port.path;
+      options.push(option);
+    }
+    select.replaceChildren(...options);
+    if (options.some((option) => option.value === previous)) select.value = previous;
+  } catch (error) {
+    logError(error, "送信ポート一覧");
+  }
+}
+
+async function connectBridgePort() {
+  if (!window.bridgeAPI) throw new Error("送信ポートのAPIを利用できません");
+  const options = bridgePortOptions();
+  await window.bridgeAPI.open(options);
+  addLog("info", "BRIDGE", null, `送信ポート ${options.path} を ${presetLabel(options)} で開きました`);
+}
+
+async function disconnectBridgePort() {
+  if (!window.bridgeAPI) return;
+  await window.bridgeAPI.close();
+  addLog("info", "BRIDGE", null, "送信ポートを切断しました");
+}
+
 function bridgeSpec(which) {
   const id = $(which === "from" ? "bridgeFrom" : "bridgeTo").value;
   return { id, pattern: $("bridgePattern").value };
@@ -2738,7 +2852,8 @@ function renderBridgeResult() {
   verdict.textContent = result.complete ? "変換OK" : result.frames.length ? "変換OK（一部を送れません）" : "送れる警報がありません";
   verdict.className = `receive-verdict ${tone}`;
   const terms = result.terms.map((item) => item.label).join("＋") || "警報なし（復旧）";
-  $("bridgeSummary").textContent = `${result.from.short} → ${result.to.short}／${terms}／`
+  const way = result.direction ? `${result.direction.label}／` : "";
+  $("bridgeSummary").textContent = `${way}${result.from.short} → ${result.to.short}／${terms}／`
     + `${result.buildingNo}棟 ${result.roomNo == null ? "----" : String(result.roomNo).padStart(4, "0")}号室`;
   $("bridgePreview").textContent = result.frames.length ? result.frames.map(bridgeFrameText).join("\n") : "—";
 
@@ -2787,46 +2902,84 @@ function syncBridgeForm() {
   $("bridgeSpecBadge").textContent = from && to ? `${from.short} → ${to.short}` : "—";
   renderBridgeMapping();
   renderBridgeResult();
+  syncBridgePortFields();
+  applyBridgePortState(state.bridgePort);
   if (state.currentView === "bridge") updatePresetWarning();
 }
 
-function convertBridgeFrame(frame) {
-  const from = bridgeSpec("from");
-  const to = bridgeSpec("to");
+// 受信ポートで受けた電文は変換先へ、送信ポートで受けた電文は変換元へ、と
+// 向きによって読み方も送り出す回線も入れ替わる。
+function bridgeDirectionSpec(direction) {
+  const reverse = direction === "reverse";
+  return {
+    reverse,
+    source: reverse ? bridgeSpec("to") : bridgeSpec("from"),
+    target: reverse ? bridgeSpec("from") : bridgeSpec("to"),
+    label: reverse ? "送信ポート→受信ポート" : "受信ポート→送信ポート",
+  };
+}
+
+// 変換した電文の送り先。受信ポートは既存の送信経路（異常注入・ログを通る）を使う。
+async function sendBridgeVia(direction, frames) {
+  if (direction === "reverse") {
+    for (const frame of frames) await transmit(frame, "frame");
+    return;
+  }
+  if (!window.bridgeAPI) throw new Error("送信ポートのAPIを利用できません");
+  if (!state.bridgePort) throw new Error("送信ポートが未接続です");
+  for (const frame of frames) await window.bridgeAPI.write(frame);
+}
+
+function convertBridgeFrame(frame, direction) {
+  const spec = bridgeDirectionSpec(direction);
   try {
-    const result = bridgeApi().convert(frame, from, to);
-    state.bridgeResult = Object.assign({ sourceFrame: Array.from(frame) }, result);
-    addLog("info", "BRIDGE", null, `${result.from.short} → ${result.to.short}：`
+    const result = bridgeApi().convert(frame, spec.source, spec.target);
+    state.bridgeResult = Object.assign({ sourceFrame: Array.from(frame), direction: spec }, result);
+    addLog("info", "BRIDGE", null, `${spec.label}／${result.from.short} → ${result.to.short}：`
       + `${result.terms.map((item) => item.label).join("＋") || "復旧"}`
       + `${result.dropped.length ? `／送れない: ${result.dropped.map((item) => item.label).join("・")}` : ""}`);
   } catch (error) {
-    state.bridgeResult = { error: String(error && error.message || error), sourceFrame: Array.from(frame), frames: [] };
-    addLog("warn", "BRIDGE", frame, `変換できません: ${state.bridgeResult.error}`);
+    state.bridgeResult = {
+      error: String(error && error.message || error),
+      sourceFrame: Array.from(frame), direction: spec, frames: [],
+    };
+    addLog("warn", "BRIDGE", frame, `${spec.label}の変換ができません: ${state.bridgeResult.error}`);
   }
   renderBridgeResult();
   return state.bridgeResult;
 }
 
 // 受信のたびに最新の1件を覚えておき、手動変換でも使えるようにする。
-function handleBridgeFrame(frame) {
-  state.bridgeLastFrame = Array.from(frame);
-  const result = convertBridgeFrame(frame);
+function handleBridgeFrame(frame, direction) {
+  const way = direction === "reverse" ? "reverse" : "forward";
+  state.bridgeLastFrame = { bytes: Array.from(frame), direction: way };
+  const result = convertBridgeFrame(frame, way);
   if (!$("bridgeAuto").checked || result.error || result.frames.length === 0) return;
   scheduleAutoResponse("警報変換の送信", async () => {
-    for (const outgoing of result.frames) await transmit(outgoing, "frame");
-    addLog("info", "BRIDGE", null, `変換した${result.frames.length}電文を送信しました`);
+    await sendBridgeVia(way, result.frames);
+    addLog("info", "BRIDGE", null, `${result.direction.label}へ変換した${result.frames.length}電文を送信しました`);
   });
+}
+
+// 送信ポート側の受信は独自のリーダーで切り出す（受信ポートとは別の回線のため）。
+function bridgePortReader() {
+  if (!state.bridgeReader) {
+    const Reader = requireApi("FrameReader");
+    state.bridgeReader = new Reader("panasonicAlarm", { validateCommand: false });
+  }
+  return state.bridgeReader;
 }
 
 function convertLatestReceive() {
   if (!state.bridgeLastFrame) throw new Error("変換できる受信電文がありません");
-  convertBridgeFrame(state.bridgeLastFrame);
+  convertBridgeFrame(state.bridgeLastFrame.bytes, state.bridgeLastFrame.direction);
 }
 
 async function sendBridgeFrames() {
   const result = state.bridgeResult;
   if (!result || result.error || result.frames.length === 0) throw new Error("送信できる変換結果がありません");
-  for (const frame of result.frames) await transmit(frame, "frame");
+  const way = result.direction && result.direction.reverse ? "reverse" : "forward";
+  await sendBridgeVia(way, result.frames);
   addLog("info", "BRIDGE", null, `変換した${result.frames.length}電文を送信しました`);
 }
 
@@ -4092,6 +4245,14 @@ function bindEvents() {
       logError(error, "バージョン情報のコピー");
     }
   });
+  $("bridgePortConnect").addEventListener("click", () => {
+    connectBridgePort().catch((error) => logError(error, "送信ポート接続"));
+  });
+  $("bridgePortDisconnect").addEventListener("click", () => {
+    disconnectBridgePort().catch((error) => logError(error, "送信ポート切断"));
+  });
+  $("bridgePortRefresh").addEventListener("click", () => { refreshBridgePorts(); });
+  $("bridgePortPreset").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信ポート条件"); } });
   ["bridgeFrom", "bridgeTo", "bridgePattern"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
@@ -4169,6 +4330,29 @@ async function initialize() {
     }
     autoRespondKey(bytes);
   });
+  if (window.bridgeAPI) {
+    window.bridgeAPI.onStatus(applyBridgePortState);
+    window.bridgeAPI.onWrite((event) => {
+      state.txCount += 1;
+      updateMetrics();
+      addLog("tx", "TX2", event.bytes, `送信ポート seq=${event.sequence}`, event.timestamp);
+    });
+    window.bridgeAPI.onError((message) => logError(new Error(message), "送信ポート"));
+    window.bridgeAPI.onData((bytes, event) => {
+      state.rxCount += 1;
+      updateMetrics();
+      addLog("rx", "RX2", bytes, `送信ポート seq=${event.sequence}`, event.timestamp);
+      // 逆向きの中継は、送信ポートで受けた電文を変換元の形式へ戻して受信ポートへ送る。
+      if (!$("bridgeReverse").checked) return;
+      try {
+        for (const item of bridgePortReader().push(bytes)) {
+          if (item.type === "frame") handleBridgeFrame(item.bytes, "reverse");
+        }
+      } catch (error) {
+        logError(error, "送信ポートの受信解析");
+      }
+    });
+  }
   window.serialAPI.onScan((event) => {
     const entry = {
       setting: event.setting,
@@ -4193,6 +4377,8 @@ async function initialize() {
     applySerialPreset("locker");
   }
   await refreshPorts();
+  await refreshBridgePorts();
+  if (window.bridgeAPI) applyBridgePortState(await window.bridgeAPI.status());
   updateMetrics();
   addLog("info", "READY", null, state.appInfo
     ? `${versionSummary(state.appInfo)} を初期化しました`

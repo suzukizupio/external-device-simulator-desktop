@@ -683,6 +683,42 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   if (!mapping.note.includes("HPC → アイホン") || !/項目は変換先に枠がありません/.test(mapping.note) || mapping.rows < 5) {
     throw new Error(`alarm bridge mapping table failed: ${JSON.stringify(mapping)}`);
   }
+  // 送信ポートは受信ポートとは別に開く。未接続のまま送ろうとしたら理由を出す。
+  const bridgePort = await window.webContents.executeJavaScript(`
+    (() => {
+      const $ = (id) => document.getElementById(id);
+      const before = { text: $("bridgePortText").textContent, connectDisabled: $("bridgePortConnect").disabled, disconnectDisabled: $("bridgePortDisconnect").disabled };
+      // 変換先の規定に合わせる設定では、通信条件の欄は自動で埋まり編集できない。
+      const set = (id, value) => { const s = $(id); s.value = value; s.dispatchEvent(new Event("change")); };
+      set("bridgeTo", "daiko");
+      set("bridgePortPreset", "auto");
+      const auto = { baud: $("bridgeBaud").value, parity: $("bridgeParity").value, disabled: $("bridgeBaud").disabled, hint: $("bridgePortHint").textContent };
+      set("bridgePortPreset", "custom");
+      const manual = { disabled: $("bridgeBaud").disabled };
+      set("bridgePortPreset", "auto");
+      $("bridgePortConnect").click();
+      return { before, auto, manual, rxPort: $("bridgeRxPort").value };
+    })()
+  `);
+  // 大興は1200,N,8,1。変換先を選べば送信ポートの条件が自動で入る。
+  if (bridgePort.auto.baud !== "1200" || bridgePort.auto.parity !== "none" || !bridgePort.auto.disabled) {
+    throw new Error(`bridge port auto preset failed: ${JSON.stringify(bridgePort.auto)}`);
+  }
+  if (bridgePort.manual.disabled) {
+    throw new Error(`bridge port manual entry failed: ${JSON.stringify(bridgePort.manual)}`);
+  }
+  if (!bridgePort.auto.hint.includes("送信ポートは大興の規定 1200,N,8,1 で開きます")) {
+    throw new Error(`bridge port hint failed: ${JSON.stringify(bridgePort.auto.hint)}`);
+  }
+  if (bridgePort.before.text !== "送信ポート未接続" || bridgePort.before.connectDisabled || !bridgePort.before.disconnectDisabled) {
+    throw new Error(`bridge port initial state failed: ${JSON.stringify(bridgePort.before)}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const bridgePortError = await window.webContents.executeJavaScript(
+    `document.getElementById("communicationLog").textContent.includes("送信ポートのCOMポートを選択してください")`
+  );
+  if (!bridgePortError) throw new Error("bridge port without selection did not report a reason");
+
   await click("bridgeClearButton");
 
   // ------------------------------------- フレーム不成立でも受信内容を残す

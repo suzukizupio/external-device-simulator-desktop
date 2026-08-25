@@ -521,8 +521,22 @@
             <label>変換先<select id="bridgeTo"></select></label>
             <label id="bridgePatternField">アイホンのビット割付<select id="bridgePattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
           </div>
-          <div class="inline-options"><label><input id="bridgeAuto" type="checkbox"> 受信したら自動で変換して送信する</label></div>
-          <p class="callout">この対応付けは<strong>通信仕様書には規定がありません</strong>。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。またCOMポートは1つのため受信と送信は同じ回線になります。実機どうしを橋渡しするには2回線が必要です。</p>
+          <div class="inline-options"><label><input id="bridgeAuto" type="checkbox"> 受信したら自動で変換して送信する</label><label><input id="bridgeReverse" type="checkbox" checked> 送信ポートで受けた電文も逆向きに変換して中継する</label></div>
+          <p class="callout">この対応付けは<strong>通信仕様書には規定がありません</strong>。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。</p>
+        </article>
+
+        <article class="card form-card">
+          <div class="card-title"><div><h2>回線</h2><p>受信ポートは画面上部の接続、送信ポートはここで開きます</p></div><span class="connection-state"><i id="bridgePortDot"></i><span id="bridgePortText">送信ポート未接続</span></span></div>
+          <div class="form-grid cols-3">
+            <label>受信ポート（変換元側）<input id="bridgeRxPort" value="未接続" readonly></label>
+            <label>送信ポート（変換先側）<select id="bridgePort"><option value="">COMポートを選択</option></select></label>
+            <label>送信ポートの通信条件<select id="bridgePortPreset"><option value="auto">変換先の規定に合わせる</option><option value="custom">下の値を使う</option></select></label>
+            <label>ボーレート<input id="bridgeBaud" type="number" min="50" max="4000000" value="1200"></label>
+            <label>パリティ<select id="bridgeParity"><option value="none">None</option><option value="odd">Odd</option><option value="even" selected>Even</option></select></label>
+            <label>データ／ストップ<select id="bridgeFraming"><option value="8-1">8bit / 1</option><option value="8-2">8bit / 2</option><option value="7-1">7bit / 1</option></select></label>
+          </div>
+          <p class="callout" id="bridgePortHint">—</p>
+          <div class="actions"><button id="bridgePortConnect" class="primary">送信ポートへ接続</button><button id="bridgePortDisconnect" class="secondary" disabled>切断</button><button id="bridgePortRefresh" class="secondary">ポート一覧を更新</button></div>
           <div class="preview"><span>変換後</span><code id="bridgePreview">—</code></div>
           <div class="actions"><button class="secondary" id="bridgeConvertButton">最新の受信を変換</button><button class="primary requires-connection" id="bridgeSendButton" disabled>変換結果を送信</button><button class="danger" id="bridgeClearButton">変換結果を消去</button></div>
         </article>

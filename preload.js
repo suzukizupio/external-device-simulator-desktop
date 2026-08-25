@@ -10,6 +10,22 @@ function subscribe(channel, callback) {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
+// 警報変換の送信側に使う2本目の回線。受信側のserialAPIとは独立している。
+contextBridge.exposeInMainWorld("bridgeAPI", Object.freeze({
+  status: () => ipcRenderer.invoke("bridge:status"),
+  open: (options) => ipcRenderer.invoke("bridge:open", options),
+  write: (bytes) => {
+    const payload = Array.from(bytes);
+    if (payload.length === 0 || payload.length > MAX_WRITE_BYTES) throw new RangeError(`送信データは1～${MAX_WRITE_BYTES}byteで指定してください`);
+    return ipcRenderer.invoke("bridge:write", { bytes: payload });
+  },
+  close: () => ipcRenderer.invoke("bridge:close"),
+  onData: (callback) => subscribe("bridge:data", (event) => callback(event.bytes, event)),
+  onWrite: (callback) => subscribe("bridge:tx", callback),
+  onStatus: (callback) => subscribe("bridge:status", callback),
+  onError: (callback) => subscribe("bridge:error", (event) => callback(event.message, event)),
+}));
+
 contextBridge.exposeInMainWorld("appAPI", Object.freeze({
   info: () => ipcRenderer.invoke("app:info"),
 }));
