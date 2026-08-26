@@ -31,6 +31,7 @@ button:focus-visible, .nav-item:focus-visible { outline: 2px solid #8bb4ff; outl
 .brand small { color: var(--muted); font-size: 10px; }
 .connection-strip { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .connection-strip select { max-width: 260px; }
+#serialPreset { max-width: 390px; }
 .connection-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); white-space: nowrap; margin-left: 4px; }
 .log-toggle { margin-left: auto; white-space: nowrap; }
 .connection-state i { width: 9px; height: 9px; border-radius: 50%; background: #5c6677; }

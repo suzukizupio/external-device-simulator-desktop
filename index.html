@@ -21,8 +21,8 @@
         <option value="locker" selected>宅配／MC 4800,E,8,1</option>
         <option value="key">非接触キー 9600,E,8,1</option>
         <option value="elevator">EV 1200,E,8,1</option>
-        <option value="alarm">警報 1200,E,8,1</option>
-        <option value="panasonicRecord">警報 大興／リモート 1200,N,8,1</option>
+        <option value="alarm">警報 STX形式（アイホン／HPC／TSS） 1200,E,8,1</option>
+        <option value="panasonicRecord">警報 ASCII形式（大興／リモート） 1200,N,8,1</option>
         <option value="panasonicElevator">EV パナソニック 9600,E,8,1</option>
       </select>
       <button id="connectButton" class="primary">接続</button>
@@ -244,6 +244,7 @@
           <h2>警報（パナソニック）</h2>
           <p>1つの画面で4プロトコル（HPC／TSS／大興／リモート）を切り替えます。形式が2種類あります。</p>
           <ul class="check-list">
+            <li>上部の通信プリセットはメーカー別ではなく、<strong>STX形式（アイホン／HPC／TSS）</strong>と<strong>ASCII形式（大興／リモート）</strong>に分かれています</li>
             <li><strong>HPC／TSS</strong> … STXで始まる11byte固定。1200,E,8,1</li>
             <li><strong>大興／リモート</strong> … SNDで始まるASCIIレコード（最大10件）。1200,N,8,1。パリティを使いません</li>
             <li>プロトコルを切り替えると、電文形式・通信条件・入力欄・受信の読み方がまとめて変わります</li>

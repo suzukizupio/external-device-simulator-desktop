@@ -27,6 +27,7 @@ const PROBE_SCRIPT = `
       versionValue: document.getElementById("appVersionValue").textContent,
       buildValue: document.getElementById("appBuildValue").textContent,
       runtimeValue: document.getElementById("appRuntimeValue").textContent,
+      presetLabels: Array.from(document.getElementById("serialPreset").options).map((option) => option.textContent),
       report: (() => { const value = collectTestReport(); return { format: value.format, appVersion: value.app && value.app.version, profileFormat: value.profile.format }; })(),
       readyLog: document.getElementById("communicationLog").textContent.includes("v" + "${packageVersion}"),
       previewErrors: ["keyPreview", "mcPreview", "elevatorPreview", "alarmPreview", "panaPreview", "pevPreview"]
@@ -1138,6 +1139,10 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (!initial.buildValue.includes("開発実行") || !initial.runtimeValue.includes("Electron ")) {
       throw new Error(`build stamp was not surfaced: ${JSON.stringify({ build: initial.buildValue, runtime: initial.runtimeValue })}`);
+    }
+    if (!initial.presetLabels.includes("警報 STX形式（アイホン／HPC／TSS） 1200,E,8,1") ||
+        !initial.presetLabels.includes("警報 ASCII形式（大興／リモート） 1200,N,8,1")) {
+      throw new Error(`alarm preset labels were not surfaced: ${JSON.stringify(initial.presetLabels)}`);
     }
     if (initial.report.format !== "external-device-simulator-next-test-report"
         || initial.report.appVersion !== packageVersion
