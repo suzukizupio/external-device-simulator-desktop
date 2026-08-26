@@ -1,6 +1,6 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.12.3",
+  "version": "1.12.4",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "author": {
     "name": "External Device Simulator Next Team"
