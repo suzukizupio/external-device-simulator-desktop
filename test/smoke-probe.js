@@ -1452,6 +1452,53 @@ async function run({ window, app, sendToRenderer }) {
       throw new Error(`preset warning must clear once reopened correctly: ${JSON.stringify(presetWarning.fixed)}`);
     }
 
+    // どのチェックを入れるべきかを、状況に応じて案内するか。
+    const mcGuidance = await window.webContents.executeJavaScript(`
+      (() => {
+        const $ = (id) => document.getElementById(id);
+        const read = () => ({ hidden: $("mcGuidance").hidden, text: $("mcGuidance").textContent });
+        document.querySelector(String.fromCharCode(91) + "data-view=" + JSON.stringify("mansion") + String.fromCharCode(93)).click();
+        updateMcGuidance();
+        const disconnected = read();
+
+        applyConnectionState({ status: "open", sessionId: 3, options: { path: "COM_TEST", baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" } });
+        const stopped = read();
+
+        // 起動シーケンス中を作って、自動応答と宅配通知の案内を確かめる。
+        state.mcLifecycle = { role: "IC", version: 3, product: "generic", deliveryNotification: false, initTimer: null, healthTimer: null };
+        $("mcAutoResponse").checked = false;
+        updateMcGuidance();
+        const autoResponseOff = read();
+        $("mcAutoResponse").checked = true;
+        updateMcGuidance();
+        const ready = read();
+        $("mcDeliveryNotification").checked = true;
+        updateMcGuidance();
+        const deliveryUnapplied = read();
+
+        $("mcDeliveryNotification").checked = false;
+        $("mcAutoResponse").checked = false;
+        state.mcLifecycle = null;
+        applyConnectionState({ status: "closed" });
+        return { disconnected, stopped, autoResponseOff, ready, deliveryUnapplied };
+      })()
+    `);
+    if (mcGuidance.disconnected.hidden || !mcGuidance.disconnected.text.includes("接続")) {
+      throw new Error(`mc guidance must ask for connection: ${JSON.stringify(mcGuidance.disconnected)}`);
+    }
+    if (mcGuidance.stopped.hidden || !mcGuidance.stopped.text.includes("起動・周期通信開始")) {
+      throw new Error(`mc guidance must ask to start the lifecycle: ${JSON.stringify(mcGuidance.stopped)}`);
+    }
+    if (mcGuidance.autoResponseOff.hidden || !mcGuidance.autoResponseOff.text.includes("自動応答")) {
+      throw new Error(`mc guidance must warn about disabled auto response: ${JSON.stringify(mcGuidance.autoResponseOff)}`);
+    }
+    // 起動済みで自動応答も入っていれば、出しっぱなしにはしない。
+    if (!mcGuidance.ready.hidden) {
+      throw new Error(`mc guidance must clear once ready: ${JSON.stringify(mcGuidance.ready)}`);
+    }
+    if (mcGuidance.deliveryUnapplied.hidden || !mcGuidance.deliveryUnapplied.text.includes("未反映")) {
+      throw new Error(`mc guidance must report unapplied delivery flag: ${JSON.stringify(mcGuidance.deliveryUnapplied)}`);
+    }
     // Q48-008I 6章のメッセージ定義から入力欄を組み立て、電文になるか。
     const mcPayload = await window.webContents.executeJavaScript(`
       (() => {
@@ -1587,7 +1634,7 @@ async function run({ window, app, sendToRenderer }) {
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
     const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, mcPayload, receiveMonitor, layoutScroll })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, mcGuidance, mcPayload, receiveMonitor, layoutScroll })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);

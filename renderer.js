@@ -624,6 +624,7 @@ function applyConnectionState(snapshot) {
   $("metricPort").textContent = snapshot && snapshot.options ? `${snapshot.options.path} / ${snapshot.options.baudRate}` : "—";
   state.connectionOptions = state.connected && snapshot ? snapshot.options || null : null;
   updatePresetWarning();
+  try { updateMcGuidance(); } catch (_error) { /* 初期化前は無視 */ }
   if (!state.connected) {
     stopMcLifecycle("接続切断により起動・周期通信を停止しました");
     $("pevAutoHealth").checked = false;
@@ -2742,6 +2743,40 @@ function handleMansionRequest(frame) {
   });
 }
 
+// チェックの意味と「いつ効くか」は画面から読み取りにくいので、
+// いま直すべきものを1つだけ案内する。先に直すべきものを優先して返す。
+function mcGuidanceText() {
+  if (!state.connected) return "シリアルポートへ接続してください";
+  const lifecycle = state.mcLifecycle;
+  if (!lifecycle) {
+    return "「起動・周期通信開始」を押してください。通信接続開始(30,43)を送るまで、MCは初期化以外の電文を無視します";
+  }
+  // 宅配通知は初期化要求のパラメータなので、チェックを変えただけでは相手に伝わらない。
+  if (lifecycle.role === "IC" && lifecycle.deliveryNotification !== $("mcDeliveryNotification").checked) {
+    return "「IC起動時：宅配通知あり」の変更が起動シーケンスへ未反映です。初期化要求のパラメータなので、「起動・周期通信開始」で送り直してください";
+  }
+  if (!$("mcAutoResponse").checked) {
+    return "自動応答が無効です。MCからの要求へ応答しないため、MC側が処理中のまま待ち続けます";
+  }
+  return "";
+}
+
+function updateMcGuidance() {
+  const element = $("mcGuidance");
+  if (!element) return;
+  const text = mcGuidanceText();
+  element.textContent = text ? `⚠ ${text}` : "";
+  element.hidden = !text;
+}
+
+// 宅配通知なしで初期化していると、MCはICからのボックス情報を設定異常として扱う。
+function warnMcDeliveryMismatch() {
+  if ($("mcRole").value !== "IC") return;
+  if (parseHexByte($("mcKind").value, "KIND") !== 0x36) return;
+  if (parseHexByte($("mcCommand").value, "CMD") !== 0x43) return;
+  if (state.mcLifecycle && state.mcLifecycle.deliveryNotification) return;
+  addLog("warn", "MC-SEND", null, "「IC起動時：宅配通知あり」で初期化していないため、MCが宅配ボックス設定異常として扱う可能性があります。チェックを入れて「起動・周期通信開始」からやり直してください");
+}
 function updateMcLifecycleState(detail) {
   const lifecycle = state.mcLifecycle;
   const element = $("mcLifecycleState");
@@ -2752,6 +2787,7 @@ function updateMcLifecycleState(detail) {
     element.textContent = detail || "起動シーケンス停止中";
   }
   $("mcLifecycleStop").disabled = !lifecycle;
+  updateMcGuidance();
 }
 
 function clearMcLifecycleTimer(name) {
@@ -2815,6 +2851,7 @@ async function startMcLifecycle() {
     role: $("mcRole").value,
     version: Number($("mcVersion").value),
     product: $("mcProduct").value,
+    deliveryNotification: $("mcDeliveryNotification").checked,
     initTimer: null,
     healthTimer: null,
     sawInitializationRequest: false,
@@ -5032,6 +5069,7 @@ function bindEvents() {
   }));
   $("mcKind").addEventListener("change", refreshMcCommands);
   ["mcCommand", "mcUseSchema", "mcAddressType"].forEach((id) => $(id).addEventListener("change", renderMcPayload));
+  ["mcAutoResponse", "mcDeliveryNotification"].forEach((id) => $(id).addEventListener("change", updateMcGuidance));
   $("mcAlarmBits").addEventListener("change", updateMcAlarmSummary);
   $("mcAlarmClear").addEventListener("click", () => {
     mcAlarmCheckboxes().forEach((box) => { box.checked = false; });
@@ -5117,6 +5155,7 @@ function bindEvents() {
   $("mcSendButton").addEventListener("click", async () => {
     try { await withTransaction("マンションコントローラ", async () => {
       const frame = await preview("mcPreview", buildMcFrame);
+      warnMcDeliveryMismatch();
       if ($("mcTransport").value === "direct") await transmit(frame, "frame");
       else await runHandshake([frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC", idleBeforeEnqMs: $("mcRole").value === "IC" ? 50 : 0 });
     }); } catch (error) { logError(error, "MC送信"); }
