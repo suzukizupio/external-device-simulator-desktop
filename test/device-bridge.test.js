@@ -152,4 +152,40 @@ test("対応表を一覧として取り出せる", function () {
   assert.ok(locker.some((row) => /集荷預り/.test(row.from) && /対応なし/.test(row.to)));
 });
 
+// ボックス再送要求への応答は、保持している状態から直接組み立てる。
+test("保持ロッカーからICボックス情報を残PKT付きで組み立てる", function () {
+  const held = [
+    { state: L4.STATE.PARCEL, lockerNo: 1, buildingNo: 0, roomNo: 101 },
+    { state: L4.STATE.PARCEL, lockerNo: 2, buildingNo: 0, roomNo: 102 },
+  ];
+  const converted = D.boxRecords(held, { version: 3 });
+  assert.equal(converted.records.length, 2);
+  assert.equal(converted.dropped.length, 0);
+
+  const frames = D.boxInfoFrames(converted.records, { version: 3, role: "IC" });
+  assert.equal(frames.length, 2);
+  const first = MC.parseFrame(frames[0], { version: 3, from: "IC" });
+  const last = MC.parseFrame(frames[1], { version: 3, from: "IC" });
+  assert.equal(first.command, 0x43);
+  // 残PKTは1件ずつ減り、最終パケットは0になる。
+  assert.equal(first.messageText, "0001" + "1" + "1" + "BBB101");
+  assert.equal(last.messageText, "0000" + "1" + "1" + "BBB102");
+});
+
+test("役割がMCならボックスNOを持つMCボックス情報を組み立てる", function () {
+  const converted = D.boxRecords([{ state: L4.STATE.PARCEL, lockerNo: 7, buildingNo: 0, roomNo: 101 }], { version: 3 });
+  const frames = D.boxInfoFrames(converted.records, { version: 3, role: "MC" });
+  const parsed = MC.parseFrame(frames[0], { version: 3, from: "MC" });
+  assert.equal(parsed.command, 0x41);
+  // 41Hは残PKT3桁＋PKT NO＋ボックスNO3桁＋STS＋ADDR。
+  assert.equal(parsed.messageText, "000" + "1" + "007" + "1" + "BBB101");
+});
+
+test("ボックス状態識別に対応しないロッカーは理由を付けて落とす", function () {
+  const converted = D.boxRecords([{ state: L4.STATE.PICKUP_HOLD, lockerNo: 3, buildingNo: 0, roomNo: 103 }], { version: 3 });
+  assert.equal(converted.records.length, 0);
+  assert.match(converted.dropped[0].reason, /ボックス状態識別/);
+  assert.equal(D.boxInfoFrames(converted.records, { version: 3, role: "IC" }).length, 0);
+});
+
 console.log("=== " + passed + " device bridge tests passed ===");

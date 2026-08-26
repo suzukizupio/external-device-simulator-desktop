@@ -113,17 +113,13 @@
   // 宅配ボックス4線式 → 6.7 宅配ボックス制御(36H)
   // ------------------------------------------------------------------
 
-  function convertLocker4(frame, options) {
+  // ロッカー状態をQ48-008I 6.7のボックス情報詳細へ読み替える。
+  // 送れないものは理由を添えて dropped へ回す。
+  function boxRecords(lockers, options) {
     const opts = options || {};
-    const parsed = Telegram4.parseTelegram(frame);
-    if (parsed.type !== "response") throw new Error("ロッカー情報を持つ情報応答／変化通知だけを変換できます");
-    if (parsed.lockers.length === 0) throw new Error("ロッカーデータがありません");
-
-    const frames = [];
     const records = [];
     const dropped = [];
-    const notes = [];
-    for (const locker of parsed.lockers) {
+    for (const locker of lockers) {
       const status = BOX_STATUS[locker.state];
       if (status == null) {
         dropped.push({
@@ -144,7 +140,6 @@
         continue;
       }
       const address = addressOf(locker.buildingNo, locker.roomNo, opts);
-      // ICボックス情報(43H)は1パケット1件として組み立てる（残PKTは後で埋める）。
       records.push({
         lockerNo: locker.lockerNo,
         status: status,
@@ -155,17 +150,40 @@
         label: `ロッカー${String(locker.lockerNo).padStart(3, "0")} / ${BOX_STATUS_LABEL[status]} / ${address.text}`,
       });
     }
+    return { records: records, dropped: dropped };
+  }
 
-    records.forEach(function (record, index) {
-      const remaining = records.length - index - 1;
-      const message = MansionController.buildMessage(0x36, 0x43, {
-        version: opts.version,
-        values: { "残PKT": remaining, "PKT NO": 0x31, "STS": record.status, "ADDR": record.addressBytes },
+  // 1パケット1件で組み立て、残PKTで残数を示す（Q48-008I 6.7）。
+  // ICボックス情報(43H)はボックスNOを持たず、MCボックス情報(41H)は持つ。
+  function boxInfoFrames(records, options) {
+    const opts = options || {};
+    const role = opts.role === "MC" ? "MC" : "IC";
+    const command = role === "MC" ? 0x41 : 0x43;
+    return records.map(function (record, index) {
+      const values = {
+        "残PKT": records.length - index - 1,
+        "PKT NO": 0x31,
+        "STS": record.status,
+        "ADDR": record.addressBytes,
+      };
+      if (command === 0x41) values["ボックスNO"] = record.lockerNo;
+      const message = MansionController.buildMessage(0x36, command, { version: opts.version, values: values });
+      return MansionController.buildFrame({
+        kind: 0x36, command: command, message: message, version: opts.version, from: role,
       });
-      frames.push(MansionController.buildFrame({
-        kind: 0x36, command: 0x43, message: message, version: opts.version, from: "IC",
-      }));
     });
+  }
+  function convertLocker4(frame, options) {
+    const opts = options || {};
+    const parsed = Telegram4.parseTelegram(frame);
+    if (parsed.type !== "response") throw new Error("ロッカー情報を持つ情報応答／変化通知だけを変換できます");
+    if (parsed.lockers.length === 0) throw new Error("ロッカーデータがありません");
+
+    const converted = boxRecords(parsed.lockers, opts);
+    const records = converted.records;
+    const dropped = converted.dropped;
+    const frames = boxInfoFrames(records, opts);
+    const notes = [];
 
     for (const item of dropped) {
       notes.push(`ロッカー${String(item.lockerNo).padStart(3, "0")}の「${item.label}」は送れません：${item.reason}`);
@@ -222,6 +240,8 @@
     BOX_STATUS: BOX_STATUS,
     BOX_STATUS_LABEL: BOX_STATUS_LABEL,
     addressOf: addressOf,
+    boxRecords: boxRecords,
+    boxInfoFrames: boxInfoFrames,
     convert: convert,
     mappingTable: mappingTable,
   });

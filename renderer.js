@@ -2672,6 +2672,42 @@ function handleLocker4Request(frame) {
   });
 }
 
+// Q48-008I 6.7：ボックス再送要求には、保持しているボックス状態のうち「取出し以外」を
+// 残PKTを減らしながら1件ずつ返し、ボックス再送完了で締める。台帳どおりに完了だけを
+// 返すと「宅配ボックスの情報が1件も無い」意味になってしまう。
+// 保持状態は宅配4線式画面で送信登録した行を使う（登録が無ければ完了のみ）。
+function handleMansionBoxResend(frame) {
+  const api = requireApi("MansionController");
+  let parsed;
+  try {
+    parsed = api.parseFrame(frame, { validateCommand: false });
+  } catch (_error) {
+    return false;
+  }
+  if (parsed.kind !== api.KIND.DELIVERY_BOX || parsed.command !== 0x42) return false;
+  const bridge = requireApi("DeviceBridge");
+  const role = $("mcRole").value;
+  const version = Number($("mcVersion").value);
+  const empty = requireApi("Telegram4").STATE.EMPTY;
+  const held = locker4CurrentLockers().filter((locker) => locker.state !== empty);
+  const converted = bridge.boxRecords(held, { version });
+  const frames = bridge.boxInfoFrames(converted.records, { version, role });
+  frames.push(api.buildFrame({ kind: 0x36, command: 0x62, version, from: role }));
+  scheduleAutoResponse("MCボックス再送", async () => {
+    for (const item of converted.dropped) {
+      addLog("warn", "AUTO", null, `ロッカー${String(item.lockerNo).padStart(3, "0")}の「${item.label}」は送れません：${item.reason}`);
+    }
+    addLog("info", "AUTO", null, converted.records.length
+      ? `ボックス再送要求へ${converted.records.length}件のボックス情報とボックス再送完了を送信`
+      : "ボックス再送要求へ、取出し以外のボックスが無いためボックス再送完了のみを送信");
+    if ($("mcTransport").value === "direct") {
+      for (const item of frames) await transmit(item, "frame");
+    } else {
+      await runHandshake(frames, { sendEot: false, textRetryMode: "sameText", priority: role === "IC" });
+    }
+  });
+  return true;
+}
 // Q48-008I：KIND/CMD台帳で応答コマンドが確定する要求にだけ応答する。
 function handleMansionRequest(frame) {
   if (state.mcLifecycle) {
@@ -2686,6 +2722,8 @@ function handleMansionRequest(frame) {
     if ([api.KIND.INITIALIZATION, api.KIND.HEALTH_CHECK].includes(parsed.kind)) return;
   }
   if (!$("mcAutoResponse").checked) return;
+  // 宅配ボックスだけは台帳の完了パケットではなく、保持している状態を返してから締める。
+  if (handleMansionBoxResend(frame)) return;
   const api = requireApi("MansionController");
   const result = requireApi("AutoResponder").mansionResponse(frame, {
     version: Number($("mcVersion").value),
