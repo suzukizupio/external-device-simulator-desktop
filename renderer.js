@@ -3838,6 +3838,19 @@ function evaluateScanBytes(bytes) {
     });
     hits.push({ profile: entry.profile, label: entry.label, frames: frames.length, verified: verified.length });
   }
+  // 同じ11byte警報電文がアイホン・HPC・TSSの全てで成立する場合、メーカーを断定しない。
+  const alarmHit = hits.find((hit) => hit.profile === "alarm" && hit.verified > 0);
+  const panasonicHit = hits.find((hit) => hit.profile === "panasonicAlarm" && hit.verified > 0);
+  if (alarmHit && panasonicHit) {
+    const remaining = hits.filter((hit) => hit !== alarmHit && hit !== panasonicHit);
+    remaining.push({
+      profile: "alarmBlock",
+      label: "警報STX（アイホン／HPC／TSS）",
+      frames: Math.max(alarmHit.frames, panasonicHit.frames),
+      verified: Math.max(alarmHit.verified, panasonicHit.verified),
+    });
+    hits.splice(0, hits.length, ...remaining);
+  }
   // 中身まで読めた数が多いものを先に見せる。
   return hits.sort((a, b) => b.verified - a.verified || b.frames - a.frames);
 }
@@ -3862,13 +3875,15 @@ function renderScanRow(entry) {
   const row = document.createElement("tr");
   const hits = entry.hits || [];
   const best = hits[0] || null;
+  const acknowledgements = entry.probe && entry.probe.acksSent ? entry.probe.acksSent : 0;
   const verdict = entry.error ? `開けません（${entry.error}）`
     : entry.bytes.length === 0 ? "受信なし"
       : best && best.verified > 0 ? "★ この条件で読めます"
-        : best ? "フレーム境界のみ一致" : "解釈できず";
+        : best ? "フレーム境界のみ一致"
+          : acknowledgements > 0 ? "ACK応答後も本文を解釈できず" : "解釈できず";
   const cells = [
     linkSettingLabel(entry.setting),
-    entry.error ? "—" : `${entry.bytes.length}byte`,
+    entry.error ? "—" : `${entry.bytes.length}byte${acknowledgements ? `／ACK ${acknowledgements}回` : ""}`,
     best ? `${best.label} ${best.verified}/${best.frames}件` : "—",
     verdict,
   ];
@@ -3904,15 +3919,16 @@ async function runLinkScan() {
   if (!path) throw new Error("COMポートを選択してください");
   const settings = $("scanScope").value === "wide" ? wideLinkSettings() : KNOWN_LINK_SETTINGS.map((item) => ({ ...item }));
   const dwellMs = integerValue("scanDwell", "待ち時間", 500, 15000);
+  const respondToEnq = $("scanRespondEnq").checked;
 
   state.scanResults = [];
   renderScanResults();
   $("scanApply").disabled = true;
   $("scanStart").disabled = true;
   $("scanState").value = `判別中 0/${settings.length}`;
-  addLog("info", "SCAN", null, `通信条件の判別を開始（${settings.length}通り／1条件あたり${dwellMs}ms）`);
+  addLog("info", "SCAN", null, `通信条件の判別を開始（${settings.length}通り／1条件あたり${dwellMs}ms／${respondToEnq ? "ENQへACK応答" : "受動受信のみ"}）`);
   try {
-    await window.serialAPI.scan({ path, settings, dwellMs });
+    await window.serialAPI.scan({ path, settings, dwellMs, respondToEnq });
     const best = scanBestSetting();
     if (best) {
       const hit = best.hits[0];
@@ -5302,16 +5318,18 @@ async function initialize() {
       setting: event.setting,
       bytes: Array.isArray(event.bytes) ? event.bytes : [],
       error: event.error || null,
+      probe: event.probe || null,
     };
     entry.hits = entry.error ? [] : evaluateScanBytes(entry.bytes);
     state.scanResults.push(entry);
     $("scanState").value = `判別中 ${event.index + 1}/${event.total}`;
     const best = entry.hits[0];
+    const ackNote = entry.probe && entry.probe.acksSent ? `（ENQへACK ${entry.probe.acksSent}回）` : "";
     addLog(best && best.verified > 0 ? "info" : "warn", "SCAN", entry.bytes.length ? entry.bytes.slice(0, 32) : null,
       `${linkSettingLabel(entry.setting)}: ${entry.error ? `開けません（${entry.error}）`
         : entry.bytes.length === 0 ? "受信なし"
           : best && best.verified > 0 ? `${best.label}のフレームを${best.verified}件読み取り`
-            : `${entry.bytes.length}byte受信したが解釈できず`}`);
+            : `${entry.bytes.length}byte受信したが解釈できず`}${ackNote}`);
     renderScanResults();
   });
   window.serialAPI.onError((message) => logError(new Error(message), "シリアル"));

@@ -1287,13 +1287,13 @@ async function run({ window, app, sendToRenderer }) {
         const initial = { state: $("scanState").value, rows: $("scanResults").textContent.trim(), applyDisabled: $("scanApply").disabled };
         const scopes = Array.from($("scanScope").options).map((option) => option.value);
         $("scanStart").click();
-        return { initial, scopes, dwell: $("scanDwell").value };
+        return { initial, scopes, dwell: $("scanDwell").value, respondEnq: $("scanRespondEnq").checked };
       })()
     `);
     if (scan.initial.state !== "未実行" || scan.initial.rows !== "未実行" || !scan.initial.applyDisabled) {
       throw new Error(`link scan initial state failed: ${JSON.stringify(scan.initial)}`);
     }
-    if (scan.scopes.join(",") !== "known,wide" || scan.dwell !== "3000") {
+    if (scan.scopes.join(",") !== "known,wide" || scan.dwell !== "3000" || !scan.respondEnq) {
       throw new Error(`link scan options failed: ${JSON.stringify(scan)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 120));
@@ -1305,6 +1305,23 @@ async function run({ window, app, sendToRenderer }) {
     // ポート未選択なら失敗として扱い、ボタンは押せる状態へ戻す。
     if (!scanBlocked.log || scanBlocked.startDisabled) {
       throw new Error(`link scan without port failed: ${JSON.stringify(scanBlocked)}`);
+    }
+
+    // ENQへACKを返した後に警報STX本文を受信した判定結果を、画面へ反映できること。
+    const scanAlarmFrame = AlarmProtocol.buildFrame({ type: 0x00, infoBits: [1], buildingNo: 1, roomNo: 101 });
+    sendToRenderer("serial:scan", {
+      index: 0,
+      total: 1,
+      setting: { baudRate: 1200, parity: "even", dataBits: 8, stopBits: 1 },
+      bytes: [0x05, ...scanAlarmFrame],
+      error: null,
+      probe: { respondToEnq: true, observedEnq: 1, acksSent: 1, frameStarted: true },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const scanAckResult = await window.webContents.executeJavaScript(`document.getElementById("scanResults").textContent`);
+    if (!scanAckResult.includes("ACK 1回") || !scanAckResult.includes("この条件で読めます") ||
+        !scanAckResult.includes("警報STX（アイホン／HPC／TSS）")) {
+      throw new Error(`link scan ACK result failed: ${scanAckResult}`);
     }
 
     const help = await window.webContents.executeJavaScript(`

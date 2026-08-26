@@ -6,6 +6,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 const { SerialPort } = require("serialport");
 const { SerialSession } = require("./lib/serial-session");
+const { LinkScanProbe } = require("./lib/link-scan-probe");
 
 let mainWindow = null;
 const smokeMode = process.env.EXTERNAL_SIMULATOR_SMOKE_TEST === "1";
@@ -137,6 +138,7 @@ serialSession.on("data", (event) => {
     for (const byte of event.bytes) {
       if (scanState.bytes.length < SCAN_MAX_BYTES) scanState.bytes.push(byte);
     }
+    queueScanProbeReplies(event.bytes);
     return;
   }
   sendToRenderer("serial:data", event);
@@ -156,11 +158,24 @@ auxSession.on("serial-error", (event) => sendToRenderer("aux:error", event));
 
 // 通信条件の総当たり。相手が送ってきたデータを条件ごとに集め、
 // どの条件で意味のあるフレームになるかは画面側（プロトコルモジュール）で判定する。
-const scanState = { active: false, bytes: [] };
+const scanState = { active: false, bytes: [], probe: null, replyTail: Promise.resolve(), replyError: null };
 const SCAN_MAX_BYTES = 4096;
 const SCAN_MIN_DWELL_MS = 500;
 const SCAN_MAX_DWELL_MS = 15_000;
 const SCAN_MAX_SETTINGS = 40;
+const SCAN_POST_ACK_DWELL_MS = 1000;
+
+function queueScanProbeReplies(bytes) {
+  if (!scanState.probe) return;
+  const replies = scanState.probe.receive(bytes);
+  for (const reply of replies) {
+    scanState.replyTail = scanState.replyTail
+      .then(() => serialSession.write([reply]))
+      .catch((error) => {
+        if (!scanState.replyError) scanState.replyError = String(error && error.message || error);
+      });
+  }
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -176,6 +191,10 @@ async function scanLink(rawOptions) {
     throw new Error(`試す通信条件は1～${SCAN_MAX_SETTINGS}件で指定してください`);
   }
   const dwellMs = Math.min(Math.max(Number(options.dwellMs) || 3000, SCAN_MIN_DWELL_MS), SCAN_MAX_DWELL_MS);
+  if (options.respondToEnq !== undefined && typeof options.respondToEnq !== "boolean") {
+    throw new TypeError("respondToEnq はbooleanで指定してください");
+  }
+  const respondToEnq = options.respondToEnq !== false;
 
   // 判別中は通常の接続を手放す。終わっても開き直さず、画面側の操作に任せる。
   await serialSession.close().catch(() => undefined);
@@ -187,6 +206,9 @@ async function scanLink(rawOptions) {
     for (let index = 0; index < settings.length; index += 1) {
       const setting = settings[index] && typeof settings[index] === "object" ? settings[index] : {};
       scanState.bytes = [];
+      scanState.probe = new LinkScanProbe({ respondToEnq });
+      scanState.replyTail = Promise.resolve();
+      scanState.replyError = null;
       let error = null;
       try {
         await serialSession.open({
@@ -198,18 +220,29 @@ async function scanLink(rawOptions) {
           flowControl: setting.flowControl == null ? "none" : setting.flowControl,
         });
         await delay(dwellMs);
+        await scanState.replyTail;
+        // 待ち時間の終端付近でENQを受信した場合も、ACK後の本文を受け切る。
+        if (scanState.probe.acksSent > 0) {
+          await delay(SCAN_POST_ACK_DWELL_MS);
+          await scanState.replyTail;
+        }
       } catch (openError) {
         error = String(openError && openError.message || openError);
       }
       const bytes = scanState.bytes.slice();
+      const probe = scanState.probe.snapshot();
+      if (!error && scanState.replyError) error = `ENQへのACK送信に失敗しました: ${scanState.replyError}`;
       await serialSession.close().catch(() => undefined);
-      const result = { index, total: settings.length, setting, bytes, error };
+      const result = { index, total: settings.length, setting, bytes, error, probe };
       results.push(result);
       sendToRenderer("serial:scan", result);
     }
   } finally {
     scanState.active = false;
     scanState.bytes = [];
+    scanState.probe = null;
+    scanState.replyTail = Promise.resolve();
+    scanState.replyError = null;
   }
   return { results };
 }

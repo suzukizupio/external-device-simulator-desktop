@@ -293,7 +293,7 @@
           <ul class="check-list">
             <li>ボーレート・パリティなどを個別に指定できます（プリセットで足りないとき）</li>
             <li>DTR／RTSの操作と、CTS／DSR／DCDの取得ができます</li>
-            <li><strong>通信条件の判別</strong>で、相手の条件が分からないときに順に試して探せます</li>
+            <li><strong>通信条件の判別</strong>で、相手の条件が分からないときに順に試して探せます。ENQで始まる機器にはACKを返して本文まで取得します</li>
             <li>全画面の入力値をこのPCへ保存したり、設定JSONとして共有できます</li>
             <li>試験結果JSONにはバージョン、通信条件、設定、通信ログ、受信モニタ履歴がまとめて入ります</li>
             <li>通信ログの保持件数（2,000／20,000／100,000件）を選べます。画面には最新2,000件だけを描画し、保存時は保持中の全件を出力します</li>
@@ -305,7 +305,7 @@
 
           <h3 class="receive-subtitle">相手の通信速度やパリティが分からない</h3>
           <p>「通信設定」画面の<strong>通信条件の判別</strong>を使います。条件を順に切り替えて実際に受信し、仕様どおりのフレームとして読める設定を探します。見つかった条件はボタン1つで反映できます。</p>
-          <p class="callout">判別中は接続を切ります。<strong>相手が自発的に送信している状態</strong>（警報を発生させる、キーをかざす、など）にしてから実行してください。受信が1件もない条件は判定できません。</p>
+          <p class="callout">判別中は接続を切ります。<strong>相手が自発的に送信している状態</strong>（警報を発生させる、キーをかざす、など）にしてから実行してください。警報STX方式などは、ENQ受信時に試験用ACKを返して本文を取得します。</p>
 
           <h3 class="receive-subtitle">受信データが化けている</h3>
           <p>受信モニタが偏りから当たりを付けます。「1バイトあたりのビット変化が少なく00Hが多い」なら<strong>設定が相手より速い</strong>、「ビット変化が多いのに電文より短い」なら<strong>遅い</strong>可能性があります。目安のボーレートも示しますが、確定するには上記の判別を実行してください。</p>
@@ -890,7 +890,8 @@
             <label>1条件あたりの待ち時間 ms<input id="scanDwell" type="number" min="500" max="15000" step="500" value="3000"></label>
             <label>判別中の状態<input id="scanState" value="未実行" readonly></label>
           </div>
-          <p class="callout">判別中は接続を切り、条件を切り替えながら相手からの送信を待ちます。相手が自発的に送信する状態（警報の発生など）にしてから実行してください。受信が1件もない条件は判定できません。</p>
+          <div class="inline-options"><label><input id="scanRespondEnq" type="checkbox" checked> ENQ受信時にACKを返して本文を取得する（警報STX方式など）</label></div>
+          <p class="callout">判別中は接続を切り、条件を切り替えながら相手からの送信を待ちます。相手が自発的に送信する状態（警報の発生など）にしてから実行してください。上の項目がONの場合は、ENQに試験用ACKを返します。受信が1件もない条件は判定できません。</p>
           <div class="table-wrap"><table>
             <thead><tr><th>通信条件</th><th>受信</th><th>成立したフレーム</th><th>判定</th></tr></thead>
             <tbody id="scanResults"><tr class="receive-empty"><td colspan="4">未実行</td></tr></tbody>
