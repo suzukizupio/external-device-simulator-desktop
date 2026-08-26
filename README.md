@@ -103,7 +103,7 @@ npm run dist:win:signed
 不具合の報告時は「バージョン情報をコピー」で以下の形式を取得できます。
 
 ```
-external-device-simulator-next v1.12.4 / 2026-08-26 10:00:00（abcdef0） / Electron 43.4.0 / Chromium 150.0.7871.224 / Node 24.18.1 / win32-x64
+external-device-simulator-next v1.12.5 / 2026-08-26 10:00:00（abcdef0） / Electron 43.4.0 / Chromium 150.0.7871.224 / Node 24.18.1 / win32-x64
 ```
 
 ビルド日時とコミットは `npm run stamp`（`pack` と `dist:win` が自動で実行）が `build-stamp.json`

@@ -2695,8 +2695,10 @@ function handleMansionRequest(frame) {
     message: $("mcResponseMessage").value,
   });
   if (!result || logUnsupportedAutoResponse(result)) return;
+  // 一括要求へ完了のみを返したときは、データを持たないための即完了だと分かるようにする。
+  const completionNote = result.completionOnly ? "（該当住戸なしのため完了のみ）" : "";
   scheduleAutoResponse("MC自動応答", async () => {
-    addLog("info", "AUTO", result.frame, `${result.request.name}へ${result.definition.name}を送信`);
+    addLog("info", "AUTO", result.frame, `${result.request.name}へ${result.definition.name}を送信${completionNote}`);
     if ($("mcTransport").value === "direct") await transmit(result.frame, "frame");
     else await runHandshake([result.frame], { sendEot: false, textRetryMode: "sameText", priority: $("mcRole").value === "IC" });
   });

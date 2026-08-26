@@ -90,18 +90,22 @@
       (opts.version == null || definition.versions.includes(opts.version)) &&
       canSend(definition, { version: opts.version, role, product: opts.product }));
     // 応答電文があればそれを返し、初期化要求のように応答が完了電文しかない場合はそれを使う。
-    const answer = candidates.find((definition) => definition.type === COMMAND_TYPE.RESPONSE) ||
-      candidates.find((definition) => definition.type === COMMAND_TYPE.COMPLETION && !definition.bulk) || null;
-    // 一括応答は分割数と業務データが仕様だけでは決まらないため生成しない。
+    const answer = candidates.find((definition) => definition.type === COMMAND_TYPE.RESPONSE && !definition.bulk) ||
+      candidates.find((definition) => definition.type === COMMAND_TYPE.COMPLETION && !definition.bulk) ||
+      // 一括応答の中身は業務データ次第だが、疑似装置は該当する住戸を持たない。
+      // 仕様は該当住戸が存在しない場合に完了パケットを即送信すると定めているため、それに従う。
+      // （Q48-008I 34H:65H 全防犯情報完了／35H:67H 全警報情報完了／38H:65H 全メッセージ報告完了）
+      candidates.find((definition) => definition.type === COMMAND_TYPE.COMPLETION) || null;
     if (!answer) {
       const bulk = candidates.find((definition) => definition.bulk);
       if (bulk) return unsupported(`${bulk.name}は業務データが必要なため自動生成しません`, bulk);
       return unsupported(`${request.name}に対する応答コマンドが台帳にありません`, request);
     }
-    if (answer.bulk) return unsupported(`${answer.name}は業務データが必要なため自動生成しません`, answer);
 
-    const address = opts.keepAddress === false ? "" : inheritedAddress(parsed, opts);
-    const message = latin1Bytes(address + (opts.message == null ? "" : opts.message), "MESG");
+    // 完了パケットはパラメータ無しの終了通知なので、ADDRも自動応答MESGも付けない。
+    const completionOnly = answer.bulk === true;
+    const address = completionOnly || opts.keepAddress === false ? "" : inheritedAddress(parsed, opts);
+    const message = completionOnly ? [] : latin1Bytes(address + (opts.message == null ? "" : opts.message), "MESG");
     return {
       type: "frame",
       frame: MansionController.buildFrame({
@@ -115,6 +119,7 @@
       definition: answer,
       request,
       address,
+      completionOnly,
     };
   }
 

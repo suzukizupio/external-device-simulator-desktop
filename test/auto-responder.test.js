@@ -62,13 +62,43 @@ test("VIXUS Advanceで許可された静止画要求だけに応答する", () =
   }).command, 0x65);
 });
 
-test("一括応答が必要な要求は業務データ不足として断る", () => {
-  // 34/44 全防犯情報要求 → 34/64 全防犯情報応答（bulk）
+// 一括応答の中身は持てないが、該当住戸が無い場合は完了パケットを即送信する規定がある。
+test("一括応答が必要な要求へ完了パケットのみを返す", () => {
+  // 34/44 全防犯情報要求 → 34/65 全防犯情報完了（警戒設定住戸なし）
   const request = M.buildFrame({ kind: 0x34, command: 0x44, version: 3, from: M.ROLE.MC, message: [] });
   const result = AutoResponder.mansionResponse(request, { version: 3, role: M.ROLE.IC });
-  assert.equal(result.type, "unsupported");
-  assert.match(result.reason, /業務データ/);
-  assert.equal(result.definition.name, "全防犯情報応答");
+  assert.equal(result.type, "frame");
+  assert.equal(result.definition.name, "全防犯情報完了");
+  assert.equal(result.completionOnly, true);
+});
+
+test("完了パケットにはADDRも自動応答MESGも付けない", () => {
+  const request = M.buildFrame({ kind: 0x35, command: 0x46, version: 3, from: M.ROLE.MC, message: [] });
+  const result = AutoResponder.mansionResponse(request, { version: 3, role: M.ROLE.IC, message: "0" });
+  assert.equal(result.definition.name, "全警報情報完了");
+  // STX + LEN2 + KIND + CMD + ETX + BCC の7バイトで、MESGは空
+  assert.equal(result.frame.length, 7);
+  assert.equal(result.address, "");
+});
+
+test("全メッセージ再送要求へ全メッセージ報告完了を返す", () => {
+  const request = M.buildFrame({ kind: 0x38, command: 0x44, version: 3, from: M.ROLE.MC, message: [] });
+  const result = AutoResponder.mansionResponse(request, { version: 3, role: M.ROLE.IC });
+  assert.equal(result.definition.name, "全メッセージ報告完了");
+  assert.equal(result.completionOnly, true);
+});
+
+test("応答コマンドが台帳にある要求は従来どおり応答電文を返す", () => {
+  // 32/41 住戸全情報要求 → 32/61 住戸全情報応答（bulkではないので完了に流さない）
+  const address = M.buildResidenceAddress({ version: 3, topology: M.TOPOLOGY.STANDARD, building: "BB", room: 101 });
+  const request = M.buildFrame({
+    kind: 0x32, command: 0x41, version: 3, from: M.ROLE.MC,
+    message: Array.from(address, (character) => character.charCodeAt(0)),
+  });
+  const result = AutoResponder.mansionResponse(request, { version: 3, topology: M.TOPOLOGY.STANDARD, role: M.ROLE.IC });
+  assert.equal(result.definition.name, "住戸全情報応答");
+  assert.equal(result.completionOnly, false);
+  assert.equal(result.address, address);
 });
 
 test("要求ではない通知電文には応答しない", () => {
