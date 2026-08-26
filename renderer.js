@@ -43,6 +43,7 @@ const state = {
   // 制御コード待ちとは別の待ち行列で受け取る。
   panaAnswerWaiters: [],
   mcLifecycle: null,
+  mcLifecycleHintAt: 0,
   pevHealthTimer: null,
   pevHealthMonitor: null,
   activeTransaction: null,
@@ -2725,6 +2726,7 @@ function stopMcLifecycle(detail = "起動・周期通信を停止しました") 
     clearMcLifecycleTimer("healthTimer");
   }
   state.mcLifecycle = null;
+  state.mcLifecycleHintAt = 0;
   updateMcLifecycleState(detail);
 }
 
@@ -2800,9 +2802,36 @@ async function startMcLifecycle() {
   updateMcLifecycleState("最初の初期化電文を送信しました");
 }
 
+// 起動シーケンスを動かしていない間は初期化電文へ何も返さないため、
+// 相手が待ち続けていることをログに残す。
+// Q48-008I 6.1：通信接続開始(30,43)を送信するまで、MCは初期化以外の通信を無視する。
+function warnMcLifecycleIdle(frame) {
+  const api = window.MansionController;
+  if (!api) return;
+  let parsed;
+  // 役割の食い違いで台帳照合に失敗しても警告は出したいので、KIND/CMDだけ取り出す。
+  try {
+    parsed = api.parseFrame(frame, { validateCommand: false });
+  } catch (_error) {
+    return;
+  }
+  if (parsed.kind !== api.KIND.INITIALIZATION) return;
+  // 相手は10秒間隔で再送してくるため、警告は60秒に1回へ間引く。
+  const now = Date.now();
+  if (now - state.mcLifecycleHintAt < 60_000) return;
+  state.mcLifecycleHintAt = now;
+  const name = parsed.command === 0x42 ? "初期化完了"
+    : parsed.command === 0x41 ? "初期化要求"
+      : parsed.command === 0x43 ? "通信接続開始" : "初期化コマンド";
+  const detail = $("mcRole").value === api.ROLE.IC
+    ? `${name}を受信しましたが起動シーケンスが停止中です。「起動・周期通信開始」で初期化要求(30,41)と通信接続開始(30,43)を送信してください。通信接続開始を送るまでMCは初期化以外の電文を無視します`
+    : `${name}を受信しましたが起動シーケンスが停止中です。「起動・周期通信開始」で初期化完了(30,42)を送信してください`;
+  addLog("warn", "MC-LIFE", null, detail);
+}
+
 function handleMansionLifecycleFrame(frame) {
   const lifecycle = state.mcLifecycle;
-  if (!lifecycle) return;
+  if (!lifecycle) return warnMcLifecycleIdle(frame);
   const api = requireApi("MansionController");
   const incomingRole = lifecycle.role === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
   const parsed = api.parseFrame(frame, {
