@@ -886,12 +886,13 @@
         <article class="card form-card">
           <div class="card-title"><div><h2>通信条件の判別</h2><p>相手のボーレート・パリティが分からないときに、条件を順に試して受信できる設定を探します</p></div></div>
           <div class="form-grid cols-3">
-            <label>試す範囲<select id="scanScope"><option value="known">対応機器の条件のみ（8通り・約30秒）</option><option value="wide">標準ボーレート全て（16通り・約60秒）</option></select></label>
+            <label>試す範囲<select id="scanScope"><option value="known">対応機器の条件のみ（8通り）</option><option value="wide">標準ボーレート全て（16通り）</option></select></label>
             <label>1条件あたりの待ち時間 ms<input id="scanDwell" type="number" min="500" max="15000" step="500" value="3000"></label>
+            <label>判定時間の目安<input id="scanEstimate" value="計算中" readonly></label>
             <label>判別中の状態<input id="scanState" value="未実行" readonly></label>
           </div>
           <div class="inline-options"><label><input id="scanRespondEnq" type="checkbox" checked> ENQ受信時にACKを返して本文を取得する（警報STX方式など）</label></div>
-          <p class="callout">判別中は接続を切り、条件を切り替えながら相手からの送信を待ちます。相手が自発的に送信する状態（警報の発生など）にしてから実行してください。上の項目がONの場合は、ENQに試験用ACKを返します。受信が1件もない条件は判定できません。</p>
+          <p class="callout">判定時間の目安は、試す条件数と1条件あたりの待ち時間から自動計算します。ACK応答がONの場合は、ACK後の本文を待つ時間を含むため幅で表示します。判別中は接続を切り、条件を切り替えながら相手からの送信を待ちます。相手が自発的に送信する状態（警報の発生など）にしてから実行してください。受信が1件もない条件は判定できません。</p>
           <div class="table-wrap"><table>
             <thead><tr><th>通信条件</th><th>受信</th><th>成立したフレーム</th><th>判定</th></tr></thead>
             <tbody id="scanResults"><tr class="receive-empty"><td colspan="4">未実行</td></tr></tbody>

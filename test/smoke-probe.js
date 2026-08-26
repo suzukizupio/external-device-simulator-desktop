@@ -1286,8 +1286,26 @@ async function run({ window, app, sendToRenderer }) {
         document.querySelector('[data-view="settings"]').click();
         const initial = { state: $("scanState").value, rows: $("scanResults").textContent.trim(), applyDisabled: $("scanApply").disabled };
         const scopes = Array.from($("scanScope").options).map((option) => option.value);
+        const initialEstimate = $("scanEstimate").value;
+        const initialLabels = Array.from($("scanScope").options).map((option) => option.textContent);
+        $("scanDwell").value = "6000";
+        $("scanDwell").dispatchEvent(new Event("input", { bubbles: true }));
+        const longerEstimate = $("scanEstimate").value;
+        $("scanScope").value = "wide";
+        $("scanScope").dispatchEvent(new Event("change", { bubbles: true }));
+        const wideEstimate = $("scanEstimate").value;
+        $("scanRespondEnq").checked = false;
+        $("scanRespondEnq").dispatchEvent(new Event("change", { bubbles: true }));
+        const passiveEstimate = $("scanEstimate").value;
+        $("scanDwell").value = "3000";
+        $("scanScope").value = "known";
+        $("scanRespondEnq").checked = true;
+        $("scanDwell").dispatchEvent(new Event("input", { bubbles: true }));
         $("scanStart").click();
-        return { initial, scopes, dwell: $("scanDwell").value, respondEnq: $("scanRespondEnq").checked };
+        return {
+          initial, scopes, initialEstimate, initialLabels, longerEstimate, wideEstimate, passiveEstimate,
+          dwell: $("scanDwell").value, respondEnq: $("scanRespondEnq").checked,
+        };
       })()
     `);
     if (scan.initial.state !== "未実行" || scan.initial.rows !== "未実行" || !scan.initial.applyDisabled) {
@@ -1295,6 +1313,13 @@ async function run({ window, app, sendToRenderer }) {
     }
     if (scan.scopes.join(",") !== "known,wide" || scan.dwell !== "3000" || !scan.respondEnq) {
       throw new Error(`link scan options failed: ${JSON.stringify(scan)}`);
+    }
+    if (scan.initialEstimate !== "約30秒～40秒（8条件）" ||
+        scan.initialLabels.join("|") !== "対応機器の条件のみ（8通り・約30秒～40秒）|標準ボーレート全て（16通り・約1分～1分15秒）" ||
+        scan.longerEstimate !== "約55秒～1分（8条件）" ||
+        scan.wideEstimate !== "約1分45秒～2分（16条件）" ||
+        scan.passiveEstimate !== "約1分45秒（16条件）") {
+      throw new Error(`link scan estimate failed: ${JSON.stringify(scan)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 120));
     const scanBlocked = await window.webContents.executeJavaScript(`({

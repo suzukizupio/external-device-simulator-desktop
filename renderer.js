@@ -3801,6 +3801,54 @@ function wideLinkSettings() {
   ), []);
 }
 
+// シリアルポートの開閉に要する時間も見込み、5秒単位の目安として表示する。
+// ENQ応答を有効にした場合は、各条件でACK後の本文を待つ最長1秒も範囲へ含める。
+const SCAN_SETTING_OVERHEAD_MS = 500;
+const SCAN_POST_ACK_ESTIMATE_MS = 1000;
+
+function roundScanDurationSeconds(milliseconds) {
+  return Math.ceil(milliseconds / 5000) * 5;
+}
+
+function formatScanDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  if (minutes === 0) return `${seconds}秒`;
+  return `${minutes}分${remainder ? `${remainder}秒` : ""}`;
+}
+
+function scanDurationEstimate(settingCount, dwellMs, respondToEnq) {
+  const baseMs = settingCount * (dwellMs + SCAN_SETTING_OVERHEAD_MS);
+  const minimum = roundScanDurationSeconds(baseMs);
+  const maximum = respondToEnq
+    ? roundScanDurationSeconds(baseMs + settingCount * SCAN_POST_ACK_ESTIMATE_MS)
+    : minimum;
+  const duration = minimum === maximum
+    ? formatScanDuration(minimum)
+    : `${formatScanDuration(minimum)}～${formatScanDuration(maximum)}`;
+  return `約${duration}`;
+}
+
+function updateScanEstimate() {
+  const scope = $("scanScope");
+  const dwellMs = Number($("scanDwell").value);
+  const respondToEnq = $("scanRespondEnq").checked;
+  const counts = { known: KNOWN_LINK_SETTINGS.length, wide: wideLinkSettings().length };
+  const valid = Number.isFinite(dwellMs) && dwellMs >= 500 && dwellMs <= 15000;
+  for (const [value, count] of Object.entries(counts)) {
+    const option = Array.from(scope.options).find((candidate) => candidate.value === value);
+    if (!option) continue;
+    const label = value === "known" ? "対応機器の条件のみ" : "標準ボーレート全て";
+    option.textContent = valid
+      ? `${label}（${count}通り・${scanDurationEstimate(count, dwellMs, respondToEnq)}）`
+      : `${label}（${count}通り）`;
+  }
+  const selectedCount = counts[scope.value] || 0;
+  $("scanEstimate").value = valid
+    ? `${scanDurationEstimate(selectedCount, dwellMs, respondToEnq)}（${selectedCount}条件）`
+    : "待ち時間を入力してください";
+}
+
 function linkSettingLabel(setting) {
   const parity = setting.parity === "even" ? "E" : setting.parity === "odd" ? "O" : "N";
   return `${setting.baudRate},${parity},${setting.dataBits || 8},${setting.stopBits || 1}`;
@@ -4711,7 +4759,7 @@ function applyLogLimit() {
 function collectProfile() {
   const values = {};
   document.querySelectorAll("input[id], select[id], textarea[id]").forEach((element) => {
-    if (["serialPort", "profileImportFile", "logSearch", "pevAutoHealth"].includes(element.id) || element.type === "file") return;
+    if (["serialPort", "profileImportFile", "logSearch", "pevAutoHealth", "scanEstimate"].includes(element.id) || element.type === "file") return;
     values[element.id] = element.type === "checkbox" ? { checked: element.checked } : { value: element.value };
   });
   return {
@@ -4755,6 +4803,7 @@ function applyProfile(profile) {
   syncPanasonicForm();
   syncPanasonicElevatorForm();
   syncBridgeForm();
+  updateScanEstimate();
   refreshMcCommands();
   if (delayedCommand && typeof delayedCommand.value === "string" && Array.from($("mcCommand").options).some((option) => option.value === delayedCommand.value)) {
     $("mcCommand").value = delayedCommand.value;
@@ -5210,6 +5259,9 @@ function bindEvents() {
       logError(error, "通信条件の判別");
     });
   });
+  $("scanScope").addEventListener("change", updateScanEstimate);
+  $("scanDwell").addEventListener("input", updateScanEstimate);
+  $("scanRespondEnq").addEventListener("change", updateScanEstimate);
   $("scanApply").addEventListener("click", () => { try { applyScanSetting(); } catch (error) { logError(error, "条件の適用"); } });
   $("saveProfile").addEventListener("click", saveProfile);
   $("exportProfile").addEventListener("click", exportProfile);
@@ -5237,6 +5289,7 @@ async function initialize() {
   await applyAppVersion().catch((error) => logError(error, "バージョン取得"));
   const profileLoaded = loadSavedProfile();
   if (!profileLoaded) syncKeyForm();
+  updateScanEstimate();
   applyLogLimit();
   renderLocker4Table();
   renderLocker2Table();
