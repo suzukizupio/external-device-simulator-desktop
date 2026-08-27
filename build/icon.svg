@@ -1,33 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <defs>
-    <linearGradient id="tile" x1="72" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#162A54"/>
-      <stop offset="0.55" stop-color="#0B1730"/>
-      <stop offset="1" stop-color="#070D1B"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="132" y1="118" x2="392" y2="372" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#5EE7FF"/>
-      <stop offset="0.48" stop-color="#378BFF"/>
-      <stop offset="1" stop-color="#7B5CFF"/>
-    </linearGradient>
-  </defs>
-
-  <rect x="24" y="24" width="464" height="464" rx="104" fill="url(#tile)"/>
-  <rect x="29" y="29" width="454" height="454" rx="99" fill="none" stroke="#355385" stroke-width="10"/>
-
-  <path d="M89 171V132c0-24 19-43 43-43h39M341 89h39c24 0 43 19 43 43v39M423 341v39c0 24-19 43-43 43h-39M171 423h-39c-24 0-43-19-43-43v-39"
-        fill="none" stroke="url(#accent)" stroke-width="18" stroke-linecap="round"/>
-
-  <rect x="112" y="133" width="288" height="224" rx="38" fill="#091225" stroke="url(#accent)" stroke-width="16"/>
-  <path d="M120 191h272" stroke="#2E4772" stroke-width="12"/>
-  <circle cx="153" cy="163" r="10" fill="#5EE7FF"/>
-  <circle cx="188" cy="163" r="10" fill="#378BFF"/>
-  <circle cx="223" cy="163" r="10" fill="#7B5CFF"/>
-
-  <path d="M169 240l47 37-47 37" fill="none" stroke="#F5FAFF" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M252 314h92" fill="none" stroke="url(#accent)" stroke-width="24" stroke-linecap="round"/>
-
-  <path d="M256 357v62" stroke="#EAF4FF" stroke-width="18" stroke-linecap="round"/>
-  <path d="M211 419h90" stroke="url(#accent)" stroke-width="18" stroke-linecap="round"/>
-  <circle cx="256" cy="419" r="13" fill="#5EE7FF"/>
+  <!-- 送受信を表す双方向矢印。判別性を優先し、単色・要素2つに絞る。 -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#0F1E3A"/>
+  <g fill="none" stroke="#4FB4FF" stroke-width="38" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M144 198H352M306 152L352 198L306 244"/>
+    <path d="M368 314H160M206 268L160 314L206 360"/>
+  </g>
 </svg>

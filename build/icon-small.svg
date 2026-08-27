@@ -1,23 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <!-- 16/24px 用の簡略版。細い装飾を省き、太いシェブロンで判別性を確保する。 -->
-  <defs>
-    <linearGradient id="tile" x1="72" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1B3360"/>
-      <stop offset="0.55" stop-color="#0B1730"/>
-      <stop offset="1" stop-color="#070D1B"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="120" y1="120" x2="392" y2="392" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#5EE7FF"/>
-      <stop offset="0.5" stop-color="#378BFF"/>
-      <stop offset="1" stop-color="#7B5CFF"/>
-    </linearGradient>
-  </defs>
-
-  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#tile)"/>
-  <rect x="30" y="30" width="452" height="452" rx="96" fill="none" stroke="url(#accent)" stroke-width="26"/>
-
-  <!-- 太いシェブロン1本に集約 -->
-  <path d="M186 178l92 78-92 78" fill="none" stroke="#F5FAFF" stroke-width="52"
-        stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M300 334h30" fill="none" stroke="url(#accent)" stroke-width="52" stroke-linecap="round"/>
+  <!-- 16/24px 用の簡略版。矢頭をストロークではなく塗りの大きな三角にし、
+       上下の間隔も広げて、縮小時に「ただの横棒2本」に見えないようにする。 -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#0F1E3A"/>
+  <path d="M150 180H286" fill="none" stroke="#4FB4FF" stroke-width="56" stroke-linecap="round"/>
+  <path d="M286 112L400 180L286 248Z" fill="#4FB4FF"/>
+  <path d="M362 332H226" fill="none" stroke="#4FB4FF" stroke-width="56" stroke-linecap="round"/>
+  <path d="M226 264L112 332L226 400Z" fill="#4FB4FF"/>
 </svg>

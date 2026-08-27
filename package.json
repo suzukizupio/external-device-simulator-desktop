@@ -12,7 +12,7 @@
     "test": "node test/run-all.js",
     "test:smoke": "node test/electron-smoke.js",
     "test:hil": "node test/serial-hil.js",
-    "icons": "node tools/build-icons.js",
+    "icons": "electron tools/build-icons.js",
     "stamp": "node tools/build-stamp.js",
     "pack": "npm run stamp && electron-builder --dir",
     "dist:win": "npm run stamp && electron-builder --win portable --x64",
