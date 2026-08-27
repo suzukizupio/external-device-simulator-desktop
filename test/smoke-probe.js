@@ -703,6 +703,41 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   if (!mapping.note.includes("HPC → アイホン") || !/項目は変換先に枠がありません/.test(mapping.note) || mapping.rows < 5) {
     throw new Error(`alarm bridge mapping table failed: ${JSON.stringify(mapping)}`);
   }
+  // 相手の伝送手順に関与すること。STX形式（アイホン／HPC／TSS）はENQ手順を持つため、
+  // 受信ポートではACKを返し、送信ポートではENQでリンクを張ってから電文を送る。
+  const transport = await window.webContents.executeJavaScript(`
+    (() => {
+      const set = (id, value) => { const s = document.getElementById(id); s.value = value; s.dispatchEvent(new Event("change")); };
+      set("bridgeFrom", "tss");
+      set("bridgeTo", "aiphone");
+      set("bridgeTransport", "spec");
+      const block = {
+        source: bridgeSourceUsesHandshake(),
+        target: bridgeTargetUsesHandshake(),
+        view: viewUsesHandshake("bridge"),
+        timeout: receiveTimeoutFor("bridge", "frame"),
+        hint: document.getElementById("bridgePortHint").textContent,
+      };
+      set("bridgeTransport", "direct");
+      const direct = { hint: document.getElementById("bridgePortHint").textContent };
+      set("bridgeTransport", "spec");
+      set("bridgeTo", "daiko");
+      const record = { target: bridgeTargetUsesHandshake(), hint: document.getElementById("bridgePortHint").textContent };
+      set("bridgeFrom", "aiphone");
+      set("bridgeTo", "aiphone");
+      return { block, direct, record };
+    })()
+  `);
+  if (!transport.block.source || !transport.block.target || !transport.block.view || transport.block.timeout !== 2000) {
+    throw new Error(`bridge handshake detection failed: ${JSON.stringify(transport)}`);
+  }
+  if (!transport.block.hint.includes("ENQ→ACK→電文→ACK") || !transport.direct.hint.includes("直接送信")) {
+    throw new Error(`bridge transport hint failed: ${JSON.stringify(transport)}`);
+  }
+  if (transport.record.target || !transport.record.hint.includes("伝送制御を使わない")) {
+    throw new Error(`bridge handshake must be skipped for record protocols: ${JSON.stringify(transport)}`);
+  }
+
   // 宅配4線式 → マンションコントローラ。仕様の枠に沿って読み替えられること。
   await window.webContents.executeJavaScript(`
     (() => {

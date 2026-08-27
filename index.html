@@ -261,6 +261,14 @@
           <h2>電文変換（ブリッジ）</h2>
           <p>受信した電文を別の形式へ読み替えて送信します。<strong>受信ポートと送信ポートに別のCOMポートを使います。</strong></p>
           <p class="callout">画面上部の接続が<strong>受信ポート</strong>、この画面の「回線」で開くのが<strong>送信ポート</strong>です。RS422とRS232Cのように電気規格が違っても、それぞれの変換器を挿せばどちらもCOMポートとして扱えます。</p>
+          <h3 class="receive-subtitle">伝送手順（ENQ→ACK）</h3>
+          <ul class="check-list">
+            <li>アイホン Q49-023G、パナソニック HPC／TSS、マンションコントローラ Q48-008I は <strong>ENQ→ACK→電文→ACK</strong> の手順を持ちます。この画面でも受信ポート・送信ポートの両方でその手順を踏みます</li>
+            <li><strong>受信ポート</strong>：変換元が送ってきたENQへACKを返してから電文を受け取ります。返さないと相手はENQを繰り返すだけで、電文本文を送ってきません</li>
+            <li><strong>送信ポート</strong>：こちらからENQを送り、相手のACKを待ってから変換した電文を送ります。電文だけを送りつけても相手は受け取りません</li>
+            <li>手順を持たない相手（パナソニック大興／リモート、非接触キー）へは電文だけを送ります</li>
+            <li><strong>送信方式</strong>を「直接送信」にすると手順を踏まず電文だけを送ります。相手の受信仕様を無視した試験をするとき以外は「仕様手順」のままにしてください</li>
+          </ul>
           <h3 class="receive-subtitle">警報（メーカー間）</h3>
           <ul class="check-list">
             <li>アイホン Q49-023G ⇄ パナソニック4種を双方向に変換します</li>
@@ -810,6 +818,7 @@
             <label>受信ポート（変換元側）<input id="bridgeRxPort" value="未接続" readonly></label>
             <label>送信ポート（変換先側）<select id="bridgePort"><option value="">COMポートを選択</option></select></label>
             <label>送信ポートの通信条件<select id="bridgePortPreset"><option value="auto">変換先の規定に合わせる</option><option value="custom">下の値を使う</option></select></label>
+            <label>送信方式<select id="bridgeTransport"><option value="spec">仕様手順（ENQ→ACK→電文→ACK）</option><option value="direct">直接送信（電文のみ）</option></select></label>
             <label>ボーレート<input id="bridgeBaud" type="number" min="50" max="4000000" value="1200"></label>
             <label>パリティ<select id="bridgeParity"><option value="none">None</option><option value="odd">Odd</option><option value="even" selected>Even</option></select></label>
             <label>データ／ストップ<select id="bridgeFraming"><option value="8-1">8bit / 1</option><option value="8-2">8bit / 2</option><option value="7-1">7bit / 1</option></select></label>

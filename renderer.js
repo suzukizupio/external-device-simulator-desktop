@@ -69,6 +69,11 @@ const state = {
   bridgeResult: null,
   bridgePort: null,
   bridgeReader: null,
+  bridgeReaderProfile: null,
+  // 送信ポートは受信ポートと別の回線のため、ACK/NAK待ちの行列も分けて持つ。
+  bridgeControlWaiters: [],
+  bridgeInboundLink: false,
+  bridgeLastIoAt: 0,
   // 受信ポート2（2台目の装置）。
   auxPort: null,
   auxReader: null,
@@ -481,10 +486,10 @@ async function withTransaction(name, operation) {
 }
 
 // 相手機器が送信し続けると回線が空かないため、待機そのものにも上限を設ける。
-async function waitForBusIdle(milliseconds, timeoutMs = Math.max(milliseconds * 20, 3000)) {
+async function waitForBusIdle(milliseconds, timeoutMs = Math.max(milliseconds * 20, 3000), lastIoAt = () => state.lastIoAt) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const remaining = milliseconds - (Date.now() - state.lastIoAt);
+    const remaining = milliseconds - (Date.now() - lastIoAt());
     if (remaining <= 0) return true;
     const left = deadline - Date.now();
     if (left <= 0) {
@@ -707,11 +712,11 @@ async function transmit(bytes, phase = "frame") {
   return written;
 }
 
-function createControlWaiter(timeoutMs, acceptedCodes = [0x05, 0x06, 0x15]) {
+function createControlWaiter(timeoutMs, acceptedCodes = [0x05, 0x06, 0x15], waiters = state.controlWaiters) {
   let waiter;
   const promise = new Promise((resolve, reject) => {
     waiter = { resolve, reject, timer: null, acceptedCodes: new Set(acceptedCodes), done: false };
-    state.controlWaiters.push(waiter);
+    waiters.push(waiter);
   });
   promise.catch(() => undefined);
   return {
@@ -719,36 +724,36 @@ function createControlWaiter(timeoutMs, acceptedCodes = [0x05, 0x06, 0x15]) {
     arm() {
       if (waiter.done || waiter.timer) return;
       waiter.timer = setTimeout(() => {
-        const index = state.controlWaiters.indexOf(waiter);
-        if (index !== -1) state.controlWaiters.splice(index, 1);
+        const index = waiters.indexOf(waiter);
+        if (index !== -1) waiters.splice(index, 1);
         waiter.done = true;
         waiter.reject(new Error("ACK待ちタイムアウト"));
       }, timeoutMs);
     },
     cancel() {
-      const index = state.controlWaiters.indexOf(waiter);
-      if (index !== -1) state.controlWaiters.splice(index, 1);
+      const index = waiters.indexOf(waiter);
+      if (index !== -1) waiters.splice(index, 1);
       waiter.done = true;
       clearTimeout(waiter.timer);
     },
   };
 }
 
-function dispatchControl(bytes) {
-  if (state.controlWaiters.length === 0 || bytes.length !== 1) return false;
+function dispatchControl(bytes, waiters = state.controlWaiters) {
+  if (waiters.length === 0 || bytes.length !== 1) return false;
   const value = bytes[0];
   if (![0x05, 0x06, 0x15].includes(value)) return false;
-  const waiter = state.controlWaiters[0];
+  const waiter = waiters[0];
   if (!waiter.acceptedCodes.has(value)) return false;
-  state.controlWaiters.shift();
+  waiters.shift();
   waiter.done = true;
   clearTimeout(waiter.timer);
   waiter.resolve(value);
   return true;
 }
 
-function rejectControlWaiters(error) {
-  for (const waiter of state.controlWaiters.splice(0)) {
+function rejectControlWaiters(error, waiters = state.controlWaiters) {
+  for (const waiter of waiters.splice(0)) {
     waiter.done = true;
     clearTimeout(waiter.timer);
     waiter.reject(error);
@@ -758,8 +763,9 @@ function rejectControlWaiters(error) {
 function viewUsesHandshake(view) {
   // パナソニックはHPC／TSSだけがENQ–ACK–TEXT–ACKの手順を持つ。
   // 大興／リモートのアンサーバックは伝送制御コードではなく電文で返す。
-  // 変換画面は電文を読み替えるだけで、ENQ手順や自動ACKには関与しない。
-  if (view === "bridge") return false;
+  // 変換画面の受信ポートは変換元の装置とつながっているため、変換元の規定に従う。
+  // ここでACKを返さないと、相手はENQを繰り返すだけで電文本文を送ってこない。
+  if (view === "bridge") return bridgeSourceUsesHandshake();
   if (view === "panasonic") return panasonicStyle() === requireApi("PanasonicAlarm").STYLE.BLOCK;
   return ["locker4", "mansion", "elevator", "alarm", "panasonicElevator"].includes(view);
 }
@@ -776,6 +782,8 @@ function resetLocker4Inbound() {
 
 function receiveTimeoutFor(view, stage) {
   if (view === "locker4") return stage === "link" ? 5_000 : 60_000;
+  // 変換画面の受信ポートは変換元の装置につながっているため、待ち時間も変換元の規定を使う。
+  if (view === "bridge") return bridgeReceiveTimeoutFor(stage);
   // パナソニックはテキスト待ち（HPC 1秒／TSS 2秒）と
   // アンサーバック待ち（大興・リモート 5秒）を仕様値どおりに使う。
   if (view === "panasonic") {
@@ -910,9 +918,32 @@ function handleCompletedInboundFrame(valid) {
   });
 }
 
+// 送信手順を回す回線。画面上部の接続（受信ポート）と、変換画面の送信ポートでは
+// 書き込み先も制御コードの待ち行列も違うため、その差だけをここへ閉じ込める。
+const SERIAL_LINK = Object.freeze({
+  name: "serial",
+  prefix: "",
+  waiters: () => state.controlWaiters,
+  lastIoAt: () => state.lastIoAt,
+  write: (bytes, phase) => transmit(bytes, phase),
+  yieldToPeer: () => { state.inboundLink = true; armReceiveTimer(state.currentView, "link"); },
+  cancelYield: () => { state.inboundLink = false; clearReceiveTimer(); },
+});
+
+const BRIDGE_LINK = Object.freeze({
+  name: "bridge",
+  prefix: "送信ポート ",
+  waiters: () => state.bridgeControlWaiters,
+  lastIoAt: () => state.bridgeLastIoAt,
+  write: (bytes) => bridgeWrite(bytes),
+  yieldToPeer: () => { state.bridgeInboundLink = true; },
+  cancelYield: () => { state.bridgeInboundLink = false; },
+});
+
 async function runHandshake(packets, options) {
   const H = requireApi("HandshakeProtocol");
   const opts = options || {};
+  const link = opts.link || SERIAL_LINK;
   const fsm = new H.SendHandshakeFSM({
     packets,
     maxRetries: opts.maxRetries == null ? 5 : opts.maxRetries,
@@ -922,7 +953,7 @@ async function runHandshake(packets, options) {
     textRetryMode: opts.textRetryMode || "restart",
   });
   const queue = fsm.start();
-  setSequence("ENQ送信");
+  setSequence(`${link.prefix}ENQ送信`);
 
   while (queue.length) {
     const event = queue.shift();
@@ -932,46 +963,44 @@ async function runHandshake(packets, options) {
       continue;
     }
     if (event.type === "failed") {
-      setSequence("失敗");
-      throw new Error(`再送上限に到達しました (${event.reason})`);
+      setSequence(`${link.prefix}失敗`);
+      throw new Error(`${link.prefix}再送上限に到達しました (${event.reason})`);
     }
     if (event.type === "complete") {
-      setSequence("完了");
-      addLog("info", "SEQ", null, `正常完了 / 再送${event.retriesUsed}回`);
+      setSequence(`${link.prefix}完了`);
+      addLog("info", "SEQ", null, `${link.prefix}正常完了 / 再送${event.retriesUsed}回`);
       return event;
     }
     if (event.type !== "send") continue;
 
     if (event.kind === "EOT") {
-      setSequence("EOT送信");
-      await transmit(event.bytes, "eot");
+      setSequence(`${link.prefix}EOT送信`);
+      await link.write(event.bytes, "eot");
       continue;
     }
 
-    if (event.kind === "ENQ" && opts.idleBeforeEnqMs) await waitForBusIdle(opts.idleBeforeEnqMs);
+    if (event.kind === "ENQ" && opts.idleBeforeEnqMs) await waitForBusIdle(opts.idleBeforeEnqMs, undefined, link.lastIoAt);
     const timeout = event.kind === "ENQ" ? (opts.linkTimeoutMs || 1000) : (opts.textTimeoutMs || 1000);
-    setSequence(event.kind === "ENQ" ? "リンクACK待ち" : `電文ACK待ち ${event.packetIndex + 1}/${event.packetCount}`);
-    const waiter = createControlWaiter(timeout);
+    setSequence(event.kind === "ENQ" ? `${link.prefix}リンクACK待ち` : `${link.prefix}電文ACK待ち ${event.packetIndex + 1}/${event.packetCount}`);
+    const waiter = createControlWaiter(timeout, [0x05, 0x06, 0x15], link.waiters());
     try {
-      await transmit(event.bytes, event.kind === "TEXT" ? "frame" : "enq");
+      await link.write(event.bytes, event.kind === "TEXT" ? "frame" : "enq");
       waiter.arm();
       const control = await waiter.promise;
       if (control === H.CODE.ENQ) {
         if (opts.priority) {
           queue.push(...fsm.timeout("collision-priority"));
         } else {
-          state.inboundLink = true;
-          armReceiveTimer(state.currentView, "link");
+          link.yieldToPeer();
           try {
-            await transmit([H.CODE.ACK], "response");
+            await link.write([H.CODE.ACK], "response");
           } catch (error) {
-            state.inboundLink = false;
-            clearReceiveTimer();
+            link.cancelYield();
             throw error;
           }
           fsm.cancel("collision-yield");
-          setSequence("衝突・受信へ譲渡");
-          addLog("warn", "COLLISION", [H.CODE.ENQ], "相手機器へ送信権を譲り、受信電文を待機");
+          setSequence(`${link.prefix}衝突・受信へ譲渡`);
+          addLog("warn", "COLLISION", [H.CODE.ENQ], `${link.prefix}相手機器へ送信権を譲り、受信電文を待機`);
           return { type: "yielded" };
         }
       } else {
@@ -1657,7 +1686,7 @@ function handleApplicationFrame(view, frame, transportResponse, valid) {
     try { handlePanasonicRecordFrame(frame, valid); } catch (error) { logError(error, "アンサーバック処理"); }
     return;
   }
-  // 変換画面も伝送制御を使わないため、ACKの送出結果を待たずに読み替える。
+  // 変換画面は受け取った電文を読み替えるだけなので、ACKの送出結果に関わらず変換する。
   if (view === "bridge") {
     try { handleBridgeFrame(frame); } catch (error) { logError(error, "警報変換"); }
     return;
@@ -3389,7 +3418,26 @@ function syncBridgePortFields() {
   const hint = [];
   if (from && rxSerial) hint.push(`受信ポートは${from.short}の規定 ${presetLabel(rxSerial)} で接続してください`);
   if (to && serial) hint.push(`送信ポートは${to.short}の規定 ${presetLabel(serial)} で開きます`);
+  const transportHint = bridgeTransportHint();
+  if (transportHint) hint.push(transportHint);
   $("bridgePortHint").textContent = hint.join("／") || "変換元と変換先を選んでください";
+}
+
+// 伝送手順を持つ相手へ電文だけを送っても受け取ってもらえないため、
+// いま何を送る設定になっているのかを画面に出しておく。
+function bridgeTransportHint() {
+  const spec = bridgeTransportMode() === "spec";
+  if (bridgeMode() === "device") {
+    return spec
+      ? "送信はENQ→ACK→電文→ACKの手順で行います（マンションコントローラの規定）"
+      : "直接送信のため、マンションコントローラが待つENQ手順を踏みません";
+  }
+  const to = requireApi("AlarmIdentifier").findTarget($("bridgeTo").value);
+  if (!to) return "";
+  if (!bridgeTargetUsesHandshake()) return `${to.short}は伝送制御を使わないため、電文をそのまま送ります`;
+  return spec
+    ? `送信は${to.short}の手順（ENQ→ACK→電文→ACK）で行います`
+    : `直接送信のため、${to.short}が待つENQ手順を踏みません（相手が受け取らないことがあります）`;
 }
 
 function applyBridgePortState(snapshot) {
@@ -3405,6 +3453,13 @@ function applyBridgePortState(snapshot) {
   }
   $("bridgePortConnect").disabled = open;
   $("bridgePortDisconnect").disabled = !open;
+  if (!open) {
+    // 切断されたら送信手順のACK待ちは成立しない。待ち続けずに理由を返す。
+    rejectControlWaiters(new Error("送信ポートが切断されました"), state.bridgeControlWaiters);
+    state.bridgeInboundLink = false;
+    state.bridgeLastIoAt = 0;
+    if (state.bridgeReader) state.bridgeReader.reset();
+  }
   $("bridgeRxPort").value = state.connected && state.connectionOptions
     ? `${state.connectionOptions.path} ${presetLabel(state.connectionOptions)}`
     : "未接続";
@@ -3800,15 +3855,94 @@ function bridgeDirectionSpec(direction) {
   };
 }
 
-// 変換した電文の送り先。受信ポートは既存の送信経路（異常注入・ログを通る）を使う。
-async function sendBridgeVia(direction, frames) {
-  if (direction === "reverse") {
-    for (const frame of frames) await transmit(frame, "frame");
-    return;
-  }
+// 送信ポートへの書き込み。異常注入は受信ポート向けの機能のため通さない。
+async function bridgeWrite(bytes) {
   if (!window.bridgeAPI) throw new Error("送信ポートのAPIを利用できません");
   if (!state.bridgePort) throw new Error("送信ポートが未接続です");
-  for (const frame of frames) await window.bridgeAPI.write(frame);
+  const written = await window.bridgeAPI.write(Array.from(bytes));
+  state.bridgeLastIoAt = Date.now();
+  return written;
+}
+
+function bridgeTransportMode() {
+  return $("bridgeTransport").value === "direct" ? "direct" : "spec";
+}
+
+// 相手がENQ–ACK–TEXT–ACKの手順を持つ回線かどうか。持つ相手へ電文だけを
+// 送りつけても受け取ってもらえないため、送信・受信の両方でこの判定を使う。
+function usesAlarmHandshake(id) {
+  const identifier = requireApi("AlarmIdentifier");
+  const target = identifier.findTarget(id);
+  return !!target && target.style === requireApi("PanasonicAlarm").STYLE.BLOCK;
+}
+
+// 変換元（受信ポート側）。宅配4線式は4線式コンテンション、非接触キーは
+// 電文へ1byteで返す方式のため伝送手順を持たない。
+function bridgeSourceUsesHandshake() {
+  if (bridgeMode() === "device") return $("bridgeDeviceFrom").value === "locker4";
+  return usesAlarmHandshake($("bridgeFrom").value);
+}
+
+// 変換先（送信ポート側）。マンションコントローラQ48-008IはENQ手順を持つ。
+function bridgeTargetUsesHandshake() {
+  if (bridgeMode() === "device") return true;
+  return usesAlarmHandshake($("bridgeTo").value);
+}
+
+// 受信待ちの長さも変換元の規定に合わせる。
+function bridgeReceiveTimeoutFor(stage) {
+  if (bridgeMode() === "device") {
+    return $("bridgeDeviceFrom").value === "locker4" ? (stage === "link" ? 5_000 : 60_000) : null;
+  }
+  const identifier = requireApi("AlarmIdentifier");
+  const target = identifier.findTarget($("bridgeFrom").value);
+  if (!target) return null;
+  if (target.vendor === identifier.VENDOR.AIPHONE) return 6_000;
+  const info = requireApi("PanasonicAlarm").protocolInfo(target.protocol);
+  return info.style === requireApi("PanasonicAlarm").STYLE.BLOCK ? info.textWaitMs : null;
+}
+
+// 再送回数と待ち時間は送り先の仕様値を使う。ENQが衝突したときの優先権は
+// 送る側の立場で決まる。装置→MCではこちらがIC側なので優先し、警報変換では
+// こちらが警報を送り込む側（IFU／集合インターホンではない）ため相手へ譲る。
+function bridgeHandshakeOptions(link, targetId) {
+  const base = { link, sendEot: false, textRetryMode: "sameText", priority: false };
+  if (bridgeMode() === "device") return Object.assign(base, { priority: true, idleBeforeEnqMs: 50 });
+  const identifier = requireApi("AlarmIdentifier");
+  const target = identifier.findTarget(targetId);
+  if (!target) return base;
+  if (target.vendor === identifier.VENDOR.AIPHONE) return Object.assign(base, { maxRetries: 255 });
+  const info = requireApi("PanasonicAlarm").protocolInfo(target.protocol);
+  return Object.assign(base, {
+    maxRetries: info.peerRetries,
+    retryLimits: info.retryLimits,
+    retryUnexpectedControl: true,
+    linkTimeoutMs: info.linkTimeoutMs,
+    textTimeoutMs: info.textTimeoutMs,
+  });
+}
+
+// 変換した電文の送り先。受信ポートは既存の送信経路（異常注入・ログを通る）を使う。
+// 相手が伝送手順を持つ場合は電文だけを流さず、ENQでリンクを張ってから送る。
+// 送り切れたときだけ true を返す（ENQ衝突で送信権を譲った場合は false）。
+async function sendBridgeVia(direction, frames) {
+  const direct = bridgeTransportMode() === "direct";
+  if (direction === "reverse") {
+    if (direct || !bridgeSourceUsesHandshake()) {
+      for (const frame of frames) await transmit(frame, "frame");
+      return true;
+    }
+    if (!state.connected) throw new Error("受信ポートが未接続です");
+    const outcome = await runHandshake(frames, bridgeHandshakeOptions(SERIAL_LINK, $("bridgeFrom").value));
+    return outcome.type === "complete";
+  }
+  if (direct || !bridgeTargetUsesHandshake()) {
+    for (const frame of frames) await bridgeWrite(frame);
+    return true;
+  }
+  if (!state.bridgePort) throw new Error("送信ポートが未接続です");
+  const outcome = await runHandshake(frames, bridgeHandshakeOptions(BRIDGE_LINK, $("bridgeTo").value));
+  return outcome.type === "complete";
 }
 
 function convertBridgeFrame(frame, direction) {
@@ -3838,18 +3972,80 @@ function handleBridgeFrame(frame, direction) {
   const result = convertBridgeFrame(frame, way);
   if (!$("bridgeAuto").checked || result.error || result.frames.length === 0) return;
   scheduleAutoResponse("警報変換の送信", async () => {
-    await sendBridgeVia(way, result.frames);
-    addLog("info", "BRIDGE", null, `${result.direction.label}へ変換した${result.frames.length}電文を送信しました`);
+    const delivered = await sendBridgeVia(way, result.frames);
+    addLog(delivered ? "info" : "warn", "BRIDGE", null, delivered
+      ? `${result.direction.label}へ変換した${result.frames.length}電文を送信しました`
+      : `${result.direction.label}への送信を中断しました（相手のENQと衝突し送信権を譲りました）`);
   });
 }
 
 // 送信ポート側の受信は独自のリーダーで切り出す（受信ポートとは別の回線のため）。
+// 変換先に合わせて切り出す。警報は形式をまたぐため共通リーダーを使う。
 function bridgePortReader() {
-  if (!state.bridgeReader) {
+  const profile = bridgeMode() === "device" ? "mansion" : "panasonicAlarm";
+  if (!state.bridgeReader || state.bridgeReaderProfile !== profile) {
     const Reader = requireApi("FrameReader");
-    state.bridgeReader = new Reader("panasonicAlarm", { validateCommand: false });
+    state.bridgeReader = new Reader(profile, { validateCommand: false });
+    state.bridgeReaderProfile = profile;
   }
   return state.bridgeReader;
+}
+
+// 送信ポートで受けたバイト列。ACK/NAKは送信手順の待ち行列へ渡し、ENQと電文へは
+// 変換先の規定に沿って応答する。応答しないと相手はENQの再送を続ける。
+function handleBridgePortReceive(bytes) {
+  state.bridgeLastIoAt = Date.now();
+  const reader = bridgePortReader();
+  const relay = bridgeMode() !== "device" && $("bridgeReverse").checked;
+  for (const item of reader.push(bytes)) {
+    if (item.type === "control") {
+      const consumed = dispatchControl([item.code], state.bridgeControlWaiters);
+      handleBridgePortControl(item.code, consumed, relay);
+      continue;
+    }
+    if (item.type === "error") {
+      addLog("warn", "PARSE2", item.bytes.length ? item.bytes : null, `送信ポート: ${item.message}`);
+      if (state.bridgeInboundLink) respondOnBridgePort(false, "電文");
+      state.bridgeInboundLink = false;
+      continue;
+    }
+    state.rxFrames += 1;
+    updateMetrics();
+    addLog("info", "PARSE2", item.bytes, "送信ポートで電文を受信");
+    if (state.bridgeInboundLink) respondOnBridgePort(true, "電文");
+    state.bridgeInboundLink = false;
+    if (!relay) continue;
+    try {
+      handleBridgeFrame(item.bytes, "reverse");
+    } catch (error) {
+      logError(error, "警報変換（逆向き）");
+    }
+  }
+}
+
+function handleBridgePortControl(code, consumed, relay) {
+  if (consumed) return;
+  // 待ち行列で消費されなかったACK/NAKは、こちらの送信と対応しないため記録だけ残す。
+  if (code !== 0x05) {
+    if (code === 0x04) state.bridgeInboundLink = false;
+    return;
+  }
+  if (!relay || !bridgeTargetUsesHandshake() || bridgeTransportMode() === "direct") return;
+  state.bridgeInboundLink = true;
+  respondOnBridgePort(true, "ENQ");
+}
+
+// 送信ポートの相手へACK／NAKを返す。
+function respondOnBridgePort(valid, stage) {
+  if (!bridgeTargetUsesHandshake() || bridgeTransportMode() === "direct") return;
+  if (!state.bridgePort) return;
+  const code = valid ? 0x06 : 0x15;
+  bridgeWrite([code])
+    .then(() => addLog(valid ? "info" : "warn", "AUTO2", [code], `送信ポートの${stage}へ${valid ? "ACK" : "NAK"}`))
+    .catch((error) => {
+      state.bridgeInboundLink = false;
+      logError(error, "送信ポートの自動応答");
+    });
 }
 
 // 受信ポート2は必ず「装置→MC」で、送信先は送信ポートに固定される。
@@ -3859,8 +4055,10 @@ function handleAuxDeviceFrame(frame) {
   const result = convertDeviceFrame(frame, device);
   if (!$("bridgeAuto").checked || result.error || result.frames.length === 0) return;
   scheduleAutoResponse("警報変換の送信", async () => {
-    await sendBridgeVia("forward", result.frames);
-    addLog("info", "BRIDGE", null, `受信ポート2から変換した${result.frames.length}電文を送信しました`);
+    const delivered = await sendBridgeVia("forward", result.frames);
+    addLog(delivered ? "info" : "warn", "BRIDGE", null, delivered
+      ? `受信ポート2から変換した${result.frames.length}電文を送信しました`
+      : "受信ポート2から変換した電文の送信を中断しました（相手のENQと衝突し送信権を譲りました）");
   });
 }
 
@@ -3877,8 +4075,10 @@ async function sendBridgeFrames() {
   const result = state.bridgeResult;
   if (!result || result.error || result.frames.length === 0) throw new Error("送信できる変換結果がありません");
   const way = result.direction && result.direction.reverse ? "reverse" : "forward";
-  await sendBridgeVia(way, result.frames);
-  addLog("info", "BRIDGE", null, `変換した${result.frames.length}電文を送信しました`);
+  const delivered = await sendBridgeVia(way, result.frames);
+  addLog(delivered ? "info" : "warn", "BRIDGE", null, delivered
+    ? `変換した${result.frames.length}電文を送信しました`
+    : "送信を中断しました（相手のENQと衝突し送信権を譲りました）");
 }
 
 // ------------------------------------------------------------ 通信条件の判別
@@ -5345,6 +5545,7 @@ function bindEvents() {
     disconnectAuxPort().catch((error) => logError(error, "受信ポート2切断"));
   });
   $("bridgePortPreset").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信ポート条件"); } });
+  $("bridgeTransport").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信方式"); } });
   ["bridgeMode", "bridgeDeviceFrom", "bridgeMcVersion"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
@@ -5463,12 +5664,9 @@ async function initialize() {
       state.rxCount += 1;
       updateMetrics();
       addLog("rx", "RX2", bytes, `送信ポート seq=${event.sequence}`, event.timestamp);
-      // 逆向きの中継は、送信ポートで受けた電文を変換元の形式へ戻して受信ポートへ送る。
-      if (bridgeMode() === "device" || !$("bridgeReverse").checked) return;
+      // 制御コードは送信手順のACK待ちへ、電文は逆向きの中継へ回す。
       try {
-        for (const item of bridgePortReader().push(bytes)) {
-          if (item.type === "frame") handleBridgeFrame(item.bytes, "reverse");
-        }
+        handleBridgePortReceive(bytes);
       } catch (error) {
         logError(error, "送信ポートの受信解析");
       }
