@@ -1,6 +1,6 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.12.7",
+  "version": "1.12.8",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "author": {
     "name": "External Device Simulator Next Team"
@@ -54,7 +54,9 @@
       "target": [
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "external-device-simulator-next-${version}-${arch}.${ext}"
