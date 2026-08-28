@@ -287,6 +287,41 @@ async function verifyLayoutScroll({ window, sendToRenderer }) {
   return result;
 }
 
+// 画面の左右半分へ並べて使うため、1920幅の半分（960）でも横スクロールが出ず、
+// カードがはみ出さないことを実寸で確かめる。
+async function verifyHalfWidthLayout({ window }) {
+  const [width, height] = window.getSize();
+  window.setSize(960, height);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const result = await window.webContents.executeJavaScript(`(() => {
+    const doc = document.documentElement;
+    const active = document.querySelector(".view.active");
+    const cards = Array.from(active.querySelectorAll(".card"));
+    const overflowing = cards.filter((card) => card.getBoundingClientRect().right > window.innerWidth + 2).length;
+    const logPane = document.querySelector(".log-pane").getBoundingClientRect();
+    return {
+      innerWidth: window.innerWidth,
+      narrowMode: window.matchMedia("(max-width: 1180px)").matches,
+      horizontalScroll: doc.scrollWidth - doc.clientWidth,
+      overflowingCards: overflowing,
+      logWidth: Math.round(logPane.width),
+      logHeight: Math.round(logPane.height),
+    };
+  })()`);
+  window.setSize(width, height);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  if (result.horizontalScroll > 2) {
+    throw new Error(`half-width layout scrolls horizontally: ${JSON.stringify(result)}`);
+  }
+  if (result.overflowingCards > 0) {
+    throw new Error(`half-width layout overflows cards: ${JSON.stringify(result)}`);
+  }
+  if (!result.narrowMode || result.logWidth < 200 || result.logHeight < 200) {
+    throw new Error(`half-width layout hid the log pane: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
 // 受信モニタは「受信 → 解析 → 描画 → 反映」まで実DOMで確認する。
 // 実際のシリアル受信と同じ serial:data 経路へ電文を流し込む。
 async function verifyReceiveMonitors({ window, sendToRenderer }) {
@@ -1748,8 +1783,9 @@ async function run({ window, app, sendToRenderer }) {
 
     const receiveMonitor = await verifyReceiveMonitors({ window, sendToRenderer });
     const layoutScroll = await verifyLayoutScroll({ window, sendToRenderer });
+    const halfWidth = await verifyHalfWidthLayout({ window });
 
-    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, mcGuidance, mcPayload, receiveMonitor, layoutScroll })}`);
+    console.log(`electron-smoke: OK ${JSON.stringify({ ...initial, locker, streamParsed: receiver.parsed, rxFrames: receiver.rxFrames, logUi, alarm, presetWarning, mcGuidance, mcPayload, receiveMonitor, layoutScroll, halfWidth })}`);
     app.quit();
   } catch (error) {
     console.error(`electron-smoke: ${error && error.stack || error}`);

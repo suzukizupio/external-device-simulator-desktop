@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, screen } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
@@ -92,13 +92,36 @@ function confirmCloseWhileConnected(event) {
   if (choice !== 0) event.preventDefault();
 }
 
+// 試験中は相手装置のツールや仕様書と並べて使うため、画面の左右半分へ寄せられる
+// 必要がある。1920幅の半分（960）を下回る最小幅にして、スナップを妨げない。
+const MIN_WINDOW = Object.freeze({ width: 900, height: 620 });
+const MAX_INITIAL_WINDOW = Object.freeze({ width: 1440, height: 920 });
+
+// 起動時のサイズは画面の広さから決める。既定は作業領域の半分程度に収め、
+// 狭い画面でもはみ出さないようにする（smokeModeは検査条件を固定するため従来の幅）。
+function initialWindowSize() {
+  if (smokeMode) return { width: MAX_INITIAL_WINDOW.width, height: MAX_INITIAL_WINDOW.height };
+  let work;
+  try {
+    work = screen.getPrimaryDisplay().workAreaSize;
+  } catch (_error) {
+    return { width: MAX_INITIAL_WINDOW.width, height: MAX_INITIAL_WINDOW.height };
+  }
+  const half = Math.round(work.width / 2);
+  return {
+    width: Math.max(MIN_WINDOW.width, Math.min(MAX_INITIAL_WINDOW.width, Math.min(half, work.width))),
+    height: Math.max(MIN_WINDOW.height, Math.min(MAX_INITIAL_WINDOW.height, Math.round(work.height * 0.94))),
+  };
+}
+
 function createWindow() {
+  const size = initialWindowSize();
   mainWindow = new BrowserWindow({
     show: !smokeMode,
-    width: 1440,
-    height: 920,
-    minWidth: 1080,
-    minHeight: 720,
+    width: size.width,
+    height: size.height,
+    minWidth: MIN_WINDOW.width,
+    minHeight: MIN_WINDOW.height,
     backgroundColor: "#0b1020",
     icon: appIcon,
     webPreferences: {
