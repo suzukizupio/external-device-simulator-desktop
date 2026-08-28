@@ -212,8 +212,40 @@
         <article class="card help-section" id="help-elevator">
           <h2>エレベータ連動（アイホン）　Q46-005J</h2>
           <p>21byte固定、全13コマンドです。機種プロファイルで使えるコマンドが変わります。</p>
+          <h3 class="receive-subtitle">コマンド一覧</h3>
+          <p>集合インターホン制御装置 → エレベータコントローラ</p>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>コマンド</th><th>意味</th><th>いつ送るか</th><th>エレベータ側の動作</th></tr></thead>
+              <tbody>
+                <tr><td>HINFO</td><td>解錠通知（住戸・管理室）</td><td>居室または管理室親機が集合玄関機と通話中に解錠操作をした</td><td rowspan="3">エレベータを、その集合玄関のあるエントランス階へ移動</td></tr>
+                <tr><td>GINFO</td><td>解錠通知（暗証番号）</td><td>集合玄関機で暗証番号による解錠操作をした</td></tr>
+                <tr><td>KINFO</td><td>解錠通知（非接触キー）</td><td>非接触キーで解錠操作をした（個人番号付き）</td></tr>
+                <tr><td>ECALL</td><td>エレベータコール</td><td>居室でエレベータコールボタンを押した</td><td>エレベータを、その居室のある階へ移動</td></tr>
+                <tr><td>COPEN</td><td>連続解錠開始</td><td>制御装置に設定した連続解錠時間が始まった</td><td rowspan="2">乗り場ボタンの通常動作を許可／解除</td></tr>
+                <tr><td>CCLSE</td><td>連続解錠終了</td><td>連続解錠時間が終わった</td></tr>
+                <tr><td>EOPEN</td><td>非常解錠</td><td>集合玄関機の非常解錠ボタンが押された</td><td rowspan="2">乗り場ボタンの通常動作を許可／解除</td></tr>
+                <tr><td>ECLSE</td><td>非常解錠の復旧</td><td>非常解錠ボタンが復旧した</td></tr>
+                <tr><td>INITI</td><td>初期化</td><td>制御装置またはエレベータコントローラが初期化した</td><td>双方向で送れる唯一のコマンド</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>エレベータコントローラ → 集合インターホン制御装置</p>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>コマンド</th><th>意味</th><th>いつ送るか</th><th>インターホン側の動作</th></tr></thead>
+              <tbody>
+                <tr><td>ESTAT</td><td>動作情報</td><td>エレベータコールを受けてエレベータが動作した</td><td>居室に「呼出中」を表示</td></tr>
+                <tr><td>ESTOP</td><td>停止情報</td><td>エレベータコールを受けたときに停止中だった</td><td>居室に「点検中」を表示</td></tr>
+                <tr><td>INITE</td><td>初期化完了</td><td>初期化処理が完了した</td><td>初期化の完了を知る</td></tr>
+                <tr><td>CHECK</td><td>接続診断</td><td>エレベータコントローラが接続を確かめる</td><td>応答の有無で回線の生死を確認</td></tr>
+                <tr><td>INITI</td><td>初期化</td><td>エレベータコントローラが初期化した</td><td>相手の立ち上がりを知る</td></tr>
+              </tbody>
+            </table>
+          </div>
           <ul class="check-list">
-            <li><strong>対象</strong>で機種（DASH VHX、V-fine VBZ、VIXUSなど）を選ぶと、その機種で使えないコマンドは弾かれます</li>
+            <li>コマンドを選ぶと、画面にもその意味と動作が表示されます</li>
+            <li><strong>対象</strong>で機種（DASH VHX、V-fine VBZ、VIXUSなど）を選ぶと、その機種で使えないコマンドは弾かれます。V-fine VBZ は HINFO／GINFO／KINFO／EOPEN／ECLSE／INITI と、EV側からの INITI／INITE／CHECK だけに対応します</li>
             <li><strong>送信元</strong>で優先局が決まります。ENQ衝突時は集合インターホン側が優先します</li>
             <li>EV側で動作しているとき、ECALLを受けたらかご状態に応じてESTAT／ESTOPで自動応答できます</li>
           </ul>
@@ -623,7 +655,7 @@
         <div class="page-heading"><div><h1>エレベータ連動（アイホン）</h1><p>Q46-005J：21byte固定、全13コマンド、ENQ通信</p></div><span class="spec-badge">1200–19200,E,8,1</span></div>
         <article class="card form-card">
           <div class="form-grid cols-3">
-            <label>コマンド<select id="elevatorCommand"><option>ECALL</option><option>HINFO</option><option>GINFO</option><option>KINFO</option><option>COPEN</option><option>CCLSE</option><option>EOPEN</option><option>ECLSE</option><option>INITI</option><option>ESTAT</option><option>ESTOP</option><option>INITE</option><option>CHECK</option></select></label>
+            <label>コマンド<select id="elevatorCommand"><option value="ECALL">ECALL　エレベータコール</option><option value="HINFO">HINFO　解錠通知（住戸・管理室）</option><option value="GINFO">GINFO　解錠通知（暗証番号）</option><option value="KINFO">KINFO　解錠通知（非接触キー）</option><option value="COPEN">COPEN　連続解錠開始</option><option value="CCLSE">CCLSE　連続解錠終了</option><option value="EOPEN">EOPEN　非常解錠</option><option value="ECLSE">ECLSE　非常解錠の復旧</option><option value="INITI">INITI　初期化</option><option value="ESTAT">ESTAT　動作情報</option><option value="ESTOP">ESTOP　停止情報</option><option value="INITE">INITE　初期化完了</option><option value="CHECK">CHECK　接続診断</option></select></label>
             <label>対象<select id="elevatorProfile"><option value="full">標準</option><option value="dash-vhx">DASH VHX</option><option value="dash-wism">DASH WISM</option><option value="v-fine-vbz">V-fine VBZ</option><option value="fagus">FAGUS</option><option value="vixus">VIXUS</option><option value="vixus-1pr">VIXUS 1Pr</option><option value="vixus-advance">VIXUS Advance</option><option value="dearis">dearis</option></select></label>
             <label>送信元<select id="elevatorDirection"><option value="toElevator">集合インターホン → EV（優先）</option><option value="fromElevator">EV → 集合インターホン（非優先）</option></select></label>
             <label>送信方式<select id="elevatorTransport"><option value="handshake">仕様手順</option><option value="direct">電文のみ</option></select></label>
@@ -634,6 +666,7 @@
             <label>住戸番号<input id="elevatorRoom" value="101"></label>
             <label>かご状態<select id="elevatorCarState"><option value="moving">動作中（ESTATで応答）</option><option value="stopped">停止中（ESTOPで応答）</option></select></label>
           </div>
+          <p class="callout" id="elevatorCommandNote">—</p>
           <div class="inline-options"><label><input id="elevatorAutoResponse" type="checkbox"> EV側動作時、ECALLを受信したらかご状態で自動応答</label></div>
           <div class="preview"><span>プレビュー</span><code id="elevatorPreview">—</code></div>
           <div class="actions"><button class="secondary" id="elevatorPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="elevatorSendButton" disabled>送信</button></div>

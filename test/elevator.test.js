@@ -173,4 +173,22 @@ test("rejects a structurally valid frame with forbidden nonzero fields", functio
   assert.equal(E.validateFrame(rebuilt(invalidCheck)), false);
 });
 
+test("全13コマンドに意味と動作の説明がある", function () {
+  // コマンド名だけでは意味が読み取れないため、画面へ出す説明を必ず持たせる。
+  for (const command of Object.keys(E.COMMAND)) {
+    const info = E.commandInfo(command);
+    assert.ok(info, "説明がありません: " + command);
+    for (const key of ["label", "trigger", "effect"]) {
+      assert.equal(typeof info[key], "string", command + " の " + key + " が文字列ではありません");
+      assert.ok(info[key].length > 0, command + " の " + key + " が空です");
+    }
+  }
+  // 仕様書4.5.1の対応（一部を代表として固定）。
+  assert.equal(E.commandInfo("ECALL").label, "エレベータコール");
+  assert.equal(E.commandInfo("KINFO").label, "解錠通知（非接触キー）");
+  assert.equal(E.commandInfo("ESTOP").label, "停止情報");
+  assert.equal(E.commandInfo("CHECK").label, "接続診断");
+  assert.equal(E.commandInfo("XXXXX"), null);
+});
+
 console.log("=== " + passed + " elevator tests passed ===");

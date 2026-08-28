@@ -65,6 +65,81 @@
     CHECK: Object.freeze({ gate: false, room: false, person: false, directions: [DIRECTION.FROM_ELEVATOR] }),
   });
 
+  // Q46-005J 4.5.1「動作とコマンド例」および4.5.2の電文例より、各コマンドが
+  // 「何が起きたときの通知か」と「受け取った側が何をするか」を画面へ出せるようにする。
+  const COMMAND_INFO = Object.freeze({
+    ECALL: Object.freeze({
+      label: "エレベータコール",
+      trigger: "居室でエレベータコールボタンを押した",
+      effect: "エレベータを、その居室のある階へ移動させます",
+    }),
+    HINFO: Object.freeze({
+      label: "解錠通知（住戸・管理室）",
+      trigger: "居室または管理室親機が集合玄関機と通話中に解錠操作をした",
+      effect: "エレベータを、その集合玄関のあるエントランス階へ移動させます",
+    }),
+    GINFO: Object.freeze({
+      label: "解錠通知（暗証番号）",
+      trigger: "集合玄関機で暗証番号による解錠操作をした",
+      effect: "エレベータを、その集合玄関のあるエントランス階へ移動させます",
+    }),
+    KINFO: Object.freeze({
+      label: "解錠通知（非接触キー）",
+      trigger: "非接触キーで解錠操作をした",
+      effect: "エレベータを、その非接触キーのあるエントランス階へ移動させます。誰が解錠したかは個人番号で示します",
+    }),
+    COPEN: Object.freeze({
+      label: "連続解錠開始",
+      trigger: "制御装置に設定した連続解錠時間が始まった",
+      effect: "乗り場ボタンの通常動作を許可します（施錠による制限を解きます）",
+    }),
+    CCLSE: Object.freeze({
+      label: "連続解錠終了",
+      trigger: "連続解錠時間が終わった",
+      effect: "乗り場ボタンを通常動作の許可前の状態へ戻します",
+    }),
+    EOPEN: Object.freeze({
+      label: "非常解錠",
+      trigger: "集合玄関機の非常解錠ボタンが押された",
+      effect: "乗り場ボタンの通常動作を許可します（施錠による制限を解きます）",
+    }),
+    ECLSE: Object.freeze({
+      label: "非常解錠の復旧",
+      trigger: "非常解錠ボタンが復旧した",
+      effect: "乗り場ボタンを通常動作の許可前の状態へ戻します",
+    }),
+    INITI: Object.freeze({
+      label: "初期化",
+      trigger: "集合住宅インターホン制御装置またはエレベータコントローラが初期化した",
+      effect: "相手へ立ち上がりを知らせます",
+    }),
+    ESTAT: Object.freeze({
+      label: "動作情報",
+      trigger: "エレベータコールを受けてエレベータが動作した",
+      effect: "居室に「呼出中」を表示します",
+    }),
+    ESTOP: Object.freeze({
+      label: "停止情報",
+      trigger: "エレベータコールを受けた時点でエレベータが停止中だった",
+      effect: "居室に「点検中」を表示します",
+    }),
+    INITE: Object.freeze({
+      label: "初期化完了",
+      trigger: "初期化処理が完了した",
+      effect: "INITIで知らせた初期化が終わったことを示します",
+    }),
+    CHECK: Object.freeze({
+      label: "接続診断",
+      trigger: "エレベータコントローラが集合住宅インターホン制御装置との接続を確かめる",
+      effect: "応答が返るかどうかで回線の生死を確認します",
+    }),
+  });
+
+  function commandInfo(command) {
+    const name = String(command == null ? "" : command);
+    return own(COMMAND_INFO, name) ? COMMAND_INFO[name] : null;
+  }
+
   const PROFILE_CONFIG = Object.freeze({
     full: Object.freeze({ to: TO_ELEVATOR, from: FROM_ELEVATOR, managementMax: 9 }),
     "dash-vhx": Object.freeze({ to: TO_ELEVATOR, from: FROM_ELEVATOR, managementMax: 9 }),
@@ -341,6 +416,8 @@
     DIRECTION: DIRECTION,
     COMMAND: COMMAND,
     COMMAND_META: COMMAND_META,
+    COMMAND_INFO: COMMAND_INFO,
+    commandInfo: commandInfo,
     PROFILE: PROFILE,
     formatGate: formatGate,
     parseGate: parseGate,

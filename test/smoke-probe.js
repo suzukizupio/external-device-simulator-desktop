@@ -645,6 +645,59 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   await window.webContents.executeJavaScript(`${$("pevRxFollow")}.checked = true`);
   await click("pevRxClear");
 
+  // ------------------------------- エレベータ連動：コマンドの意味が画面で分かる
+  await navigate("elevator");
+  const elevator = await window.webContents.executeJavaScript(`
+    (() => {
+      const set = (id, value) => { const s = document.getElementById(id); s.value = value; s.dispatchEvent(new Event("change")); };
+      const optionText = (value) => Array.from(document.getElementById("elevatorCommand").options)
+        .find((option) => option.value === value).textContent;
+      const note = () => document.getElementById("elevatorCommandNote").textContent;
+      set("elevatorCommand", "ECALL");
+      const call = {
+        note: note(),
+        direction: document.getElementById("elevatorDirection").value,
+        personDisabled: document.getElementById("elevatorPerson").disabled,
+        gateDisabled: document.getElementById("elevatorGateId").disabled,
+        roomDisabled: document.getElementById("elevatorRoom").disabled,
+      };
+      // KINFOは個人番号を使う唯一のコマンド（4.4）。欄が使えるようになる。
+      set("elevatorCommand", "KINFO");
+      const key = {
+        note: note(),
+        personDisabled: document.getElementById("elevatorPerson").disabled,
+        gateDisabled: document.getElementById("elevatorGateId").disabled,
+      };
+      set("elevatorCommand", "ESTOP");
+      const stop = { note: note(), direction: document.getElementById("elevatorDirection").value };
+      set("elevatorCommand", "INITI");
+      const init = { note: note() };
+      set("elevatorCommand", "ECALL");
+      return { call, key, stop, init, ecallOption: optionText("ECALL"), kinfoOption: optionText("KINFO") };
+    })()
+  `);
+  if (!elevator.ecallOption.includes("エレベータコール") || !elevator.kinfoOption.includes("非接触キー")) {
+    throw new Error(`elevator command labels failed: ${JSON.stringify(elevator)}`);
+  }
+  if (!elevator.call.note.includes("居室のある階へ移動") || elevator.call.direction !== "toElevator") {
+    throw new Error(`elevator command note failed: ${JSON.stringify(elevator)}`);
+  }
+  // EV側からしか送れないコマンドを選ぶと送信元も追従する。
+  if (!elevator.stop.note.includes("点検中") || elevator.stop.direction !== "fromElevator") {
+    throw new Error(`elevator direction follow failed: ${JSON.stringify(elevator)}`);
+  }
+  if (!elevator.init.note.includes("双方向")) {
+    throw new Error(`elevator bidirectional note failed: ${JSON.stringify(elevator)}`);
+  }
+  // 使わない桁は入力しても全て0で送るため、欄を触れないようにして理由を出す。
+  if (!elevator.call.personDisabled || !elevator.call.gateDisabled || elevator.call.roomDisabled
+      || !elevator.call.note.includes("ゲート番号・個人番号はこのコマンドでは使わない")) {
+    throw new Error(`elevator unused field lockout failed: ${JSON.stringify(elevator)}`);
+  }
+  if (elevator.key.personDisabled || elevator.key.gateDisabled) {
+    throw new Error(`elevator KINFO field availability failed: ${JSON.stringify(elevator)}`);
+  }
+
   // ------------------------------- 警報変換：受信した電文を別メーカー形式へ
   await navigate("bridge");
   await window.webContents.executeJavaScript(`${$("bridgeAuto")}.checked = false`);

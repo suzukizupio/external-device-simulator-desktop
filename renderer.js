@@ -1516,6 +1516,39 @@ function buildKeyFrame() {
   return frame;
 }
 
+// Q46-005J 4.5.1「動作とコマンド例」：選んだコマンドが何の通知で、受けた側が
+// 何をするのかを画面に出す。コマンド名だけでは意味が読み取れないため。
+function syncElevatorCommandNote() {
+  const api = requireApi("ElevatorProtocol");
+  const command = $("elevatorCommand").value;
+  const info = api.commandInfo(command);
+  const note = $("elevatorCommandNote");
+  if (!info) {
+    note.textContent = "—";
+    return;
+  }
+  const meta = api.COMMAND_META[command];
+  const way = meta.directions.length === 2
+    ? "双方向"
+    : meta.directions[0] === api.DIRECTION.TO_ELEVATOR ? "集合インターホン → EV" : "EV → 集合インターホン";
+  // Q46-005J 4.4：使わない桁は「全て０」と定められている。入力しても送られないため、
+  // 該当する欄は操作できないようにし、理由を文で示す。
+  const fields = [
+    { used: meta.gate, name: "ゲート番号", ids: ["elevatorGateBuilding", "elevatorGateId"] },
+    { used: meta.room, name: "住戸番号", ids: ["elevatorRoomBuilding", "elevatorRoom"] },
+    { used: meta.person, name: "個人番号", ids: ["elevatorPerson"] },
+  ];
+  const unused = [];
+  for (const field of fields) {
+    for (const id of field.ids) $(id).disabled = !field.used;
+    if (!field.used) unused.push(field.name);
+  }
+  const unusedNote = unused.length
+    ? `／${unused.join("・")}はこのコマンドでは使わないため、入力に関わらず全て0で送ります（4.4）`
+    : "";
+  note.textContent = `${command}（${info.label}）／${way}：${info.trigger}ときに送ります。${info.effect}。${unusedNote}`;
+}
+
 function buildElevatorFrame() {
   const api = requireApi("ElevatorProtocol");
   const command = $("elevatorCommand").value;
@@ -4883,7 +4916,8 @@ function describeFrame(view, frame) {
     const incomingDirection = $("elevatorDirection").value === api.DIRECTION.TO_ELEVATOR
       ? api.DIRECTION.FROM_ELEVATOR : api.DIRECTION.TO_ELEVATOR;
     const value = api.parseFrame(frame, { profile: $("elevatorProfile").value, direction: incomingDirection });
-    return `EV ${value.command} gate=${value.gate.raw} room=${value.room.raw}`;
+    const info = api.commandInfo(value.command);
+    return `EV ${value.command}${info ? `（${info.label}）` : ""} gate=${value.gate.raw} room=${value.room.raw}`;
   }
   if (view === "alarm") {
     const api = requireApi("AlarmProtocol");
@@ -5133,6 +5167,7 @@ function applyProfile(profile) {
   syncAlarmInfoForm();
   syncPanasonicForm();
   syncPanasonicElevatorForm();
+  syncElevatorCommandNote();
   syncBridgeForm();
   updateScanEstimate();
   refreshMcCommands();
@@ -5305,7 +5340,9 @@ function bindEvents() {
     const api = requireApi("ElevatorProtocol");
     const directions = api.COMMAND_META[$("elevatorCommand").value].directions;
     if (directions.length === 1) $("elevatorDirection").value = directions[0];
+    syncElevatorCommandNote();
   });
+  ["elevatorDirection", "elevatorProfile"].forEach((id) => $(id).addEventListener("change", syncElevatorCommandNote));
   $("alarmRole").addEventListener("change", () => {
     $("alarmType").value = $("alarmRole").value === "intercom" ? "00" : "30";
     syncAlarmInfoForm();
@@ -5632,6 +5669,7 @@ async function initialize() {
   syncAlarmInfoForm();
   syncPanasonicForm();
   syncPanasonicElevatorForm();
+  syncElevatorCommandNote();
   syncBridgeForm();
   refreshMcCommands();
   state.alarmHistory = new (requireApi("AlarmProtocol").AlarmHistory)();
