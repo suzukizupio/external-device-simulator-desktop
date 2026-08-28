@@ -90,6 +90,7 @@ const RECEIVE_MONITORS = Object.freeze({
   locker4: { prefix: "locker4Rx", historyLimit: 50 },
   locker2: { prefix: "locker2Rx", historyLimit: 100 },
   key: { prefix: "keyRx", historyLimit: 100 },
+  mansion: { prefix: "mcRx", historyLimit: 100 },
   panasonic: { prefix: "panaRx", historyLimit: 100 },
   panasonicElevator: { prefix: "pevRx", historyLimit: 100 },
 });
@@ -4415,6 +4416,10 @@ function receiveInspectOptions(view) {
     const profile = keyProfile();
     return Object.assign(linkInspectOptions(view), { buildingMax: profile.buildingMax, personMax: profile.personMax, systemLabel: profile.label });
   }
+  if (view === "mansion") {
+    // MESGの割付は仕様Verで変わる（警報情報の桁数など）ため、画面の選択を渡す。
+    return Object.assign(linkInspectOptions(view), { version: Number($("mcVersion").value) });
+  }
   if (view === "panasonic") {
     // アイホンQ49-023Gの読みはビット割付で変わるため、警報（アイホン）画面の選択を渡す。
     return Object.assign(linkInspectOptions(view), { protocol: $("panaProtocol").value, aiphonePattern: alarmPatternSpec() });
@@ -4869,12 +4874,74 @@ function applyReceivedKey(result) {
   toast("受信内容を送信フォームへ取り込みました");
 }
 
+// 受信したKIND/CMDと住戸NOを送信フォームへ戻す。仕様Verと役割は解析の前提なので触らない。
+function applyReceivedMansion(result) {
+  const bytes = result.bytes || [];
+  if (bytes.length < 7) throw new Error("反映できる受信電文がありません");
+  const hexPair = (value) => Number(value).toString(16).toUpperCase().padStart(2, "0");
+
+  const kind = hexPair(bytes[3]);
+  if (!Array.from($("mcKind").options).some((option) => option.value === kind)) {
+    throw new Error(`KIND ${kind}H は送信フォームの選択肢にありません`);
+  }
+  $("mcKind").value = kind;
+  refreshMcCommands();
+
+  const command = hexPair(bytes[4]);
+  if (!Array.from($("mcCommand").options).some((option) => option.value === command)) {
+    // 受信した電文は相手が送るコマンドなので、役割が逆だと送信フォームには入らない。
+    const api = requireApi("MansionController");
+    let definition = null;
+    try { definition = api.findCommandDefinition(bytes[3], bytes[4]); } catch (_error) { definition = null; }
+    const role = $("mcRole").value;
+    const opposite = definition
+      && ((definition.direction === api.DIRECTION.IC_TO_MC && role === api.ROLE.MC)
+        || (definition.direction === api.DIRECTION.MC_TO_IC && role === api.ROLE.IC));
+    const hint = opposite
+      ? `。この電文は${definition.direction === api.DIRECTION.IC_TO_MC ? "IC（インターホン制御装置）" : "MC（マンションコントローラ）"}が送るコマンドです。役割を切り替えると反映できます`
+      : "";
+    throw new Error(`CMD ${command}H は現在の仕様Ver・役割・対象機種では送信できません${hint}`);
+  }
+  $("mcCommand").value = command;
+
+  // ADDRを持つコマンドなら、住戸NOの6桁を棟と番号へ戻す。
+  const address = (result.fields || []).find((field) => field.note === "ADDR");
+  const applied = ["KIND", "CMD"];
+  if (address && typeof address.ascii === "string" && address.ascii.length === 6) {
+    const building = address.ascii.slice(0, 2);
+    const target = address.ascii.slice(2);
+    const rules = [
+      { pattern: /^B(\d{3})$/, type: "room" },
+      { pattern: /^(\d{4})$/, type: "room" },
+      { pattern: /^C(\d{3})$/, type: "manager" },
+      { pattern: /^D(\d{3})$/, type: "entrance" },
+      { pattern: /^E(\d{3})$/, type: "group" },
+      { pattern: /^F(\d{3})$/, type: "floor" },
+    ];
+    const matched = rules.map((rule) => ({ rule, match: rule.pattern.exec(target) })).find((item) => item.match);
+    if (target === "CA00") {
+      $("mcAddressType").value = "common";
+      $("mcBuilding").value = building;
+      applied.push("ADDR");
+    } else if (matched) {
+      $("mcAddressType").value = matched.rule.type;
+      $("mcBuilding").value = building;
+      $("mcAddressNumber").value = String(Number(matched.match[1]));
+      applied.push("ADDR");
+    }
+  }
+
+  renderMcPayload();
+  toast(`受信内容を送信フォームへ反映しました（${applied.join("・")}）`);
+}
+
 function applyReceiveMonitor(view) {
   const result = inspectReceiveEntry(view, shownReceiveEntry(view));
   if (!result) throw new Error("反映できる受信電文がありません");
   if (view === "locker4") return applyReceivedLocker4(result);
   if (view === "locker2") return applyReceivedLocker2(result);
   if (view === "key") return applyReceivedKey(result);
+  if (view === "mansion") return applyReceivedMansion(result);
   if (view === "panasonic") return applyReceivedPanasonic(result);
   if (view === "panasonicElevator") return applyReceivedPanasonicElevator(result);
   throw new Error("この画面には反映機能がありません");
@@ -4974,14 +5041,9 @@ function describeFrame(view, frame) {
     return `パナソニックEV ${value.command} ${value.commandLabel}${extra}${building}${room}${lb}`;
   }
   if (view === "mansion") {
-    const api = requireApi("MansionController");
-    const incomingRole = $("mcRole").value === api.ROLE.IC ? api.ROLE.MC : api.ROLE.IC;
-    const value = (api.parseFrame || api.parseTelegram || api.parse).call(api, frame, {
-      version: Number($("mcVersion").value),
-      from: incomingRole,
-      product: $("mcProduct").value,
-    });
-    return `MC KIND=${Number(value.kind).toString(16).toUpperCase()} CMD=${Number(value.command == null ? value.cmd : value.command).toString(16).toUpperCase()}`;
+    // KIND/CMDの16進だけでは何が届いたのか分からないため、台帳の名称とMESGの中身まで出す。
+    const inspector = requireApi("ReceiveInspector");
+    return `MC ${inspector.inspect("mansion", frame, receiveInspectOptions("mansion")).summary}`;
   }
   return "";
 }

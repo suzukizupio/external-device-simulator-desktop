@@ -9,10 +9,10 @@ const Key = require("../protocol/noncontact-key");
 const fieldOf = (result, label) => result.fields.find((field) => field.label === label);
 
 // ---------------------------------------------------------------- 対象範囲
-assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4", "panasonic", "panasonicElevator"]);
+assert.deepStrictEqual(Inspector.PROFILES.slice().sort(), ["key", "locker2", "locker4", "mansion", "panasonic", "panasonicElevator"]);
 assert.strictEqual(Inspector.supports("locker4"), true);
-assert.strictEqual(Inspector.supports("mansion"), false);
-const unsupported = Inspector.inspect("mansion", [0x02, 0x03]);
+assert.strictEqual(Inspector.supports("elevator"), false);
+const unsupported = Inspector.inspect("elevator", [0x02, 0x03]);
 assert.strictEqual(unsupported.valid, false);
 assert.match(unsupported.error, /未対応/);
 
@@ -327,3 +327,56 @@ assert.throws(() => Inspector.inspect("key", 5), /バイト配列/);
 assert.strictEqual(Inspector.inspect("key", null).byteLength, 0);
 
 console.log("receive-inspector: OK");
+
+// ------------------------------------------- マンションコントローラ Q48-008I
+const Mansion = require("../protocol/mansion-controller.js");
+{
+  const addr = Mansion.address.residence({ building: "BB", room: 101, version: 3, topology: "standard" });
+  const message = Mansion.buildMessage(0x35, 0x41, {
+    version: 3,
+    values: { ADDR: Array.from(addr, (character) => character.charCodeAt(0)), KH_INF: [0] },
+  });
+  const alarm = Mansion.buildFrame({ kind: 0x35, command: 0x41, message, version: 3, from: "IC" });
+  const result = Inspector.inspect("mansion", alarm, { version: 3 });
+  assert.strictEqual(result.valid, true, result.error || "");
+  // KIND/CMDは台帳の名称で、MESGは定義どおりの桁で読み下す。
+  assert.match(result.summary, /警報変化情報（警報出力）/);
+  assert.match(result.summary, /標準（棟なし） 101号室/);
+  assert.match(result.summary, /火災/);
+  assert.strictEqual(fieldOf(result, "KIND").value, "35H 警報出力");
+  assert.strictEqual(fieldOf(result, "CMD").value, "41H 警報変化情報");
+  assert.match(fieldOf(result, "住戸NO").value, /BBB101（標準（棟なし） 101号室）/);
+  assert.match(fieldOf(result, "警報情報識別").value, /火災/);
+  assert.ok(result.badges.some((item) => item.label === "IC → MC"));
+  assert.ok(result.badges.some((item) => item.label === "通知"));
+
+  // BCCが壊れていても、読める桁は最後まで示す。
+  const badBcc = alarm.slice();
+  badBcc[badBcc.length - 1] ^= 0x01;
+  const broken = Inspector.inspect("mansion", badBcc, { version: 3 });
+  assert.strictEqual(broken.valid, false);
+  assert.match(broken.error, /BCC/);
+  assert.strictEqual(fieldOf(broken, "住戸NO").value, fieldOf(result, "住戸NO").value);
+
+  // 台帳にないKIND/CMDは理由を添えて示し、MESGは未分解のまま残す。
+  const unknown = alarm.slice();
+  unknown[4] = 0x7A;
+  const unknownResult = Inspector.inspect("mansion", unknown, { version: 3 });
+  assert.strictEqual(unknownResult.valid, false);
+  assert.match(unknownResult.error, /台帳にありません/);
+  assert.match(fieldOf(unknownResult, "MESG").note, /台帳にないため未分解/);
+
+  // 管理室・階層・共用部のADDRも読み分ける。
+  const managementAddr = Mansion.address.managementStation({ building: "BB", station: 1, version: 3, topology: "standard" });
+  assert.strictEqual(managementAddr, "BBC001");
+  const boxMessage = Mansion.buildMessage(0x36, 0x43, {
+    version: 3,
+    values: { "残PKT": 0, "PKT NO": 0x31, STS: 0x31, ADDR: Array.from("BBB102", (character) => character.charCodeAt(0)) },
+  });
+  const box = Mansion.buildFrame({ kind: 0x36, command: 0x43, message: boxMessage, version: 3, from: "IC" });
+  const boxResult = Inspector.inspect("mansion", box, { version: 3 });
+  assert.strictEqual(boxResult.valid, true, boxResult.error || "");
+  assert.match(boxResult.summary, /ICボックス情報/);
+  assert.match(boxResult.summary, /102号室/);
+  assert.match(fieldOf(boxResult, "ボックス状態識別").value, /着荷状態/);
+}

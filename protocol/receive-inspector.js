@@ -13,19 +13,20 @@
       require("./locker2.js"),
       require("./locker4.js"),
       require("./noncontact-key.js"),
+      require("./mansion-controller.js"),
       require("./panasonic-alarm.js"),
       require("./panasonic-elevator.js"),
       require("./alarm-identifier.js"),
       require("./link-analyzer.js")
     );
   } else {
-    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.PanasonicAlarm, root.PanasonicElevator, root.AlarmIdentifier, root.LinkAnalyzer);
+    root.ReceiveInspector = factory(root.Telegram2, root.Telegram4, root.NoncontactKey, root.MansionController, root.PanasonicAlarm, root.PanasonicElevator, root.AlarmIdentifier, root.LinkAnalyzer);
   }
-})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier, LinkAnalyzer) {
+})(typeof window !== "undefined" ? window : globalThis, function (Telegram2, Telegram4, NoncontactKey, MansionController, PanasonicAlarm, PanasonicElevator, AlarmIdentifier, LinkAnalyzer) {
   "use strict";
 
-  if (!Telegram2 || !Telegram4 || !NoncontactKey || !PanasonicAlarm || !PanasonicElevator || !AlarmIdentifier || !LinkAnalyzer) {
-    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, PanasonicAlarm, PanasonicElevator, AlarmIdentifier and LinkAnalyzer");
+  if (!Telegram2 || !Telegram4 || !NoncontactKey || !MansionController || !PanasonicAlarm || !PanasonicElevator || !AlarmIdentifier || !LinkAnalyzer) {
+    throw new Error("ReceiveInspector requires Telegram2, Telegram4, NoncontactKey, MansionController, PanasonicAlarm, PanasonicElevator, AlarmIdentifier and LinkAnalyzer");
   }
 
   const STX = 0x02;
@@ -39,6 +40,7 @@
     locker4: "宅配ボックス 4線式(B方式)",
     locker2: "宅配ボックス 2線式",
     key: "非接触キー",
+    mansion: "マンションコントローラ",
     panasonic: "警報（パナソニック）",
     panasonicElevator: "エレベータ連動（パナソニック）",
   });
@@ -887,10 +889,209 @@
     return finished;
   }
 
+  // ----------------------------------------------- マンションコントローラ
+  // Q48-008I：STX + LEN(2) + KIND(1) + CMD(1) + MESG(n) + ETX + BCC。
+  // MESGの割付はKIND/CMDと仕様Versionで変わるため、台帳の定義に従って桁を割る。
+
+  // ADDR(6byte)は上位2桁が棟、下位4桁が対象。対象は先頭文字で種別が決まる。
+  function describeMansionAddress(text) {
+    if (!text || text.length !== 6) return null;
+    const building = text.slice(0, 2);
+    const target = text.slice(2);
+    const buildingLabel = building === "BB" ? "標準（棟なし）"
+      : building === "FF" ? "全棟"
+        : /^B[1-9]$/.test(building) ? `${Number(building.slice(1))}棟`
+          : /^\d{2}$/.test(building) ? `${Number(building)}棟`
+            : null;
+    let targetLabel = null;
+    if (/^B\d{3}$/.test(target)) targetLabel = `${Number(target.slice(1))}号室`;
+    else if (/^\d{4}$/.test(target)) targetLabel = `${Number(target)}号室`;
+    else if (/^C\d{3}$/.test(target)) targetLabel = `管理室${Number(target.slice(1))}`;
+    else if (/^D\d{3}$/.test(target)) targetLabel = `集合玄関${Number(target.slice(1))}`;
+    else if (/^E\d{3}$/.test(target)) targetLabel = `グループ${Number(target.slice(1))}`;
+    else if (/^F\d{3}$/.test(target)) targetLabel = `${Number(target.slice(1))}階`;
+    else if (target === "CA00") targetLabel = "共用部";
+    else if (target === "FFFF") targetLabel = "全戸";
+    const label = buildingLabel && targetLabel ? `${buildingLabel} ${targetLabel}` : null;
+    return { text, building: buildingLabel, target: targetLabel, label };
+  }
+
+  const MC_DIRECTION_LABEL = Object.freeze({
+    IC_TO_MC: "IC → MC", MC_TO_IC: "MC → IC", BIDIRECTIONAL: "双方向",
+  });
+  const MC_TYPE_LABEL = Object.freeze({
+    request: "要求", response: "応答", completion: "完了", notification: "通知",
+  });
+
+  // MESGの1フィールドを読み下す。意味づけできない型はASCIIのまま示す。
+  function mansionMessageValue(field, slice, version) {
+    const text = printable(slice);
+    if (field.type === "address") {
+      const address = describeMansionAddress(text);
+      return address && address.label
+        ? { value: `${text}（${address.label}）`, status: STATUS.OK, address: address }
+        : { value: `${text}（住戸NOの割付に合いません）`, status: STATUS.WARN, address: address };
+    }
+    if (field.type === "alarmInfo") {
+      try {
+        const decoded = MansionController.decodeAlarmInfo(slice, version);
+        const active = decoded.active.length ? decoded.active.join("＋") : "警報なし（全復旧）";
+        const violation = decoded.violations.length ? `／未使用bit ${decoded.violations.join("・")}` : "";
+        return {
+          value: `${active}${violation}`,
+          status: decoded.violations.length ? STATUS.WARN : STATUS.OK,
+          summary: active,
+        };
+      } catch (error) {
+        return { value: `${text}（${String(error && error.message || error)}）`, status: STATUS.ERROR };
+      }
+    }
+    if (field.type === "enum") {
+      const name = field.values ? field.values[String(slice[0])] : null;
+      return name
+        ? { value: `${text} ${name}`, status: STATUS.OK, summary: name }
+        : { value: `${text}（定義にない値）`, status: STATUS.ERROR };
+    }
+    if (field.type === "digits") {
+      const value = digits(slice);
+      return value == null
+        ? { value: `${text}（ASCII数字ではありません）`, status: STATUS.ERROR }
+        : { value: String(Number(value)), status: STATUS.OK };
+    }
+    return { value: text, status: STATUS.INFO };
+  }
+
+  function inspectMansion(bytes, options) {
+    const M = MansionController;
+    const result = baseResult("mansion", bytes);
+    const opts = options || {};
+    const version = [1, 2, 3].indexOf(Number(opts.version)) === -1 ? 3 : Number(opts.version);
+    const length = bytes.length;
+
+    result.fields.push(makeField("STX", 0, 1, bytes,
+      bytes[0] === STX ? "電文開始 02H" : `${hexByte(bytes[0])}（STXではありません）`,
+      bytes[0] === STX ? STATUS.OK : STATUS.ERROR));
+    if (length >= 1 && bytes[0] !== STX) result.problems.push("先頭がSTX(02H)ではありません");
+
+    // STX+LEN(2)+KIND+CMD+ETX+BCC で最低7バイト。
+    if (length < 7) {
+      result.summary = `${length}バイト：マンションコントローラの電文として短すぎます`;
+      result.problems.push("STX・LEN・KIND・CMD・ETX・BCCを収める長さがありません");
+      result.fields = result.fields.concat(rawDumpFields(bytes));
+      return finalize(result);
+    }
+
+    // LENはLEN自身からETXまでの長さ。総バイト数はSTXとBCCを足した LEN+2。
+    const lenText = digits(bytes.slice(1, 3));
+    const declared = lenText == null ? null : Number(lenText);
+    const lenOk = declared != null && declared + 2 === length;
+    result.fields.push(makeField("LEN", 1, 2, bytes,
+      lenText == null ? "ASCII数字ではありません"
+        : lenOk ? `${declared}（LENからETXまで／総${length}バイト）`
+          : `${declared}（総${declared + 2}バイトのはずが${length}バイト）`,
+      lenOk ? STATUS.OK : STATUS.ERROR, "STXとBCCを除いた長さ"));
+    if (lenText == null) result.problems.push("LENがASCII数字ではありません");
+    else if (!lenOk) result.problems.push("LENと実際のバイト数が一致しません");
+
+    const kind = bytes[3];
+    const command = bytes[4];
+    const kindName = M.KIND_NAMES[String(kind)] || null;
+    result.fields.push(makeField("KIND", 3, 1, bytes,
+      kindName ? `${hexByte(kind)} ${kindName}` : `${hexByte(kind)}（種別台帳にありません）`,
+      kindName ? STATUS.OK : STATUS.ERROR, "電文種別"));
+    if (!kindName) result.problems.push(`KIND ${hexByte(kind)} は種別台帳にありません`);
+
+    let definition = null;
+    try { definition = M.findCommandDefinition(kind, command); } catch (_error) { definition = null; }
+    result.fields.push(makeField("CMD", 4, 1, bytes,
+      definition ? `${hexByte(command)} ${definition.name}` : `${hexByte(command)}（KIND/CMD台帳にありません）`,
+      definition ? STATUS.OK : STATUS.ERROR, "コマンド"));
+    if (!definition) result.problems.push(`KIND/CMD ${hexByte(kind)}/${hexByte(command)} は台帳にありません`);
+
+    if (definition) {
+      result.badges.push(badge(MC_DIRECTION_LABEL[definition.direction] || definition.direction, STATUS.INFO));
+      result.badges.push(badge(MC_TYPE_LABEL[definition.type] || definition.type, STATUS.INFO));
+      if (Array.isArray(definition.versions) && definition.versions.indexOf(version) === -1) {
+        result.problems.push(`このコマンドはVer${definition.versions.join("・")}専用です（選択中はVer${version}）`);
+        result.badges.push(badge(`Ver${definition.versions.join("・")}専用`, STATUS.ERROR));
+      }
+    }
+
+    // ETXとBCCは末尾から数える。LENが壊れていても位置は変わらない。
+    const etxIndex = length - 2;
+    const messageLength = Math.max(0, etxIndex - 5);
+    const messageBytes = bytes.slice(5, 5 + messageLength);
+
+    let schema = null;
+    try {
+      schema = definition ? M.messageSchema(kind, command, { version: version }) : null;
+    } catch (_error) {
+      schema = null;
+    }
+
+    const details = [];
+    let addressLabel = null;
+    if (schema && schema.length) {
+      let offset = 5;
+      let short = false;
+      for (const field of schema) {
+        const fieldLength = field.type === "alarmInfo" ? M.alarmInfoByteLength(version) : field.bytes;
+        const slice = bytes.slice(offset, offset + fieldLength);
+        if (slice.length !== fieldLength) {
+          result.fields.push(makeField(field.label || field.name, offset, fieldLength, bytes,
+            `${slice.length}バイトしかありません`, STATUS.ERROR, field.name));
+          result.problems.push(`${field.label || field.name}の桁が足りません`);
+          short = true;
+          break;
+        }
+        const read = mansionMessageValue(field, slice, version);
+        result.fields.push(makeField(field.label || field.name, offset, fieldLength, bytes, read.value, read.status, field.name));
+        if (read.status === STATUS.ERROR) result.problems.push(`${field.label || field.name}が仕様の値ではありません`);
+        if (read.address && read.address.label) addressLabel = read.address.label;
+        else if (read.summary) details.push(read.summary);
+        offset += fieldLength;
+      }
+      if (!short && offset < 5 + messageLength) {
+        const extra = bytes.slice(offset, 5 + messageLength);
+        result.fields.push(makeField("余剰データ", offset, extra.length, bytes,
+          `${printable(extra)}（定義より${extra.length}バイト多い）`, STATUS.ERROR, "仕様外"));
+        result.problems.push(`MESGが定義より${extra.length}バイト長くなっています`);
+      }
+    } else if (messageLength > 0) {
+      result.fields.push(makeField("MESG", 5, messageLength, bytes, printable(messageBytes),
+        definition ? STATUS.WARN : STATUS.INFO,
+        definition ? "このコマンドはパラメータなしの定義です" : "台帳にないため未分解"));
+      if (definition) result.problems.push("パラメータを持たない定義のコマンドにMESGが付いています");
+    }
+
+    const etx = bytes[etxIndex];
+    result.fields.push(makeField("ETX", etxIndex, 1, bytes,
+      etx === ETX ? "電文終了 03H" : `${hexByte(etx)}（ETXではありません）`,
+      etx === ETX ? STATUS.OK : STATUS.ERROR));
+    if (etx !== ETX) result.problems.push("ETX(03H)の位置が仕様と違います");
+
+    const bcc = bytes[length - 1];
+    let bccOk = false;
+    try { bccOk = M.verifyBcc(bytes); } catch (_error) { bccOk = false; }
+    result.fields.push(makeField("BCC", length - 1, 1, bytes,
+      bccOk ? `${hexByte(bcc)}（一致）` : `${hexByte(bcc)}（不一致）`,
+      bccOk ? STATUS.OK : STATUS.ERROR, "LEN～ETXの排他的論理和"));
+    if (!bccOk) result.problems.push("BCCが一致しません");
+
+    const finished = finalize(result);
+    finished.badges.unshift(badge(finished.valid ? "検証OK" : "検証NG", finished.valid ? STATUS.OK : STATUS.ERROR));
+    finished.summary = `${definition ? `${definition.name}（${kindName || hexByte(kind)}）` : `KIND ${hexByte(kind)} / CMD ${hexByte(command)}`}`
+      + `${addressLabel ? ` / ${addressLabel}` : ""}`
+      + `${details.length ? ` / ${details.join(" / ")}` : ""}`
+      + ` / ${finished.valid ? "検証OK" : "検証NG"}`;
+    return finished;
+  }
+
   const HANDLERS = Object.freeze({
     locker4: inspectLocker4,
     locker2: inspectLocker2,
     key: inspectKey,
+    mansion: inspectMansion,
     panasonic: inspectPanasonic,
     panasonicElevator: inspectPanasonicElevator,
   });

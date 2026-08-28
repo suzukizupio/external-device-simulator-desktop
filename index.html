@@ -206,6 +206,8 @@
             <li>「ボックス再送要求」を受けたら、宅配4線式画面で送信登録したロッカーのうち取出し以外を残PKT付きで返し、ボックス再送完了で締めます（自動応答が有効なとき）</li>
             <li>それ以外のコマンドは「仕様定義でメッセージを組み立てる」のチェックを外し、MESGを直接入力します</li>
             <li>ADDR（住戸アドレス）は棟コード2桁＋装置番号4桁です。棟なしはBB、1〜9棟はB1〜B9になります</li>
+            <li><strong>受信モニタ</strong>で、受けた電文をKIND/CMD台帳とMESGの定義に沿って桁ごとに分解します。警報情報や住戸NOは警報名・号室まで読み下します</li>
+            <li>受信内容は送信フォームへ取り込めます。ただし受信した電文は相手が送るコマンドなので、<strong>動作側を切り替えてから</strong>取り込んでください（IC→MCの電文はIC側でのみ送信できます）</li>
           </ul>
         </article>
 
@@ -648,6 +650,27 @@
           <div class="inline-options"><span class="mc-guidance" id="mcGuidance" hidden></span></div>
           <div class="preview"><span>プレビュー</span><code id="mcPreview">—</code></div>
           <div class="actions"><button class="secondary" id="mcPreviewButton">検証・プレビュー</button><button class="primary requires-connection" id="mcSendButton" disabled>送信</button><button class="secondary requires-connection" id="mcLifecycleStart" disabled>起動・周期通信開始</button><button class="danger" id="mcLifecycleStop" disabled>起動・周期通信停止</button></div>
+        </article>
+
+        <article class="card receive-card">
+          <div class="card-title">
+            <div><h2>受信モニタ</h2><p>受信電文をKIND/CMD台帳とMESGの定義で桁ごとに分解して表示</p></div>
+            <span class="receive-verdict" id="mcRxVerdict">未受信</span>
+          </div>
+          <div class="receive-summary" id="mcRxSummary">まだ電文を受信していません。接続して相手装置からの送信を待ってください。</div>
+          <div class="receive-badges" id="mcRxBadges"></div>
+          <div class="receive-notes" id="mcRxNotes"></div>
+          <div class="preview receive-bytes"><span>受信HEX</span><code id="mcRxHex">—</code></div>
+          <div class="receive-table-wrap">
+            <table class="receive-table">
+              <thead><tr><th>位置</th><th>項目</th><th>HEX</th><th>意味</th></tr></thead>
+              <tbody id="mcRxFields"><tr class="receive-empty"><td colspan="4">受信待ち</td></tr></tbody>
+            </table>
+          </div>
+          <div class="inline-options"><label><input id="mcRxFollow" type="checkbox" checked> 受信するたび最新の電文へ表示を切り替える</label></div>
+          <h3 class="receive-subtitle">受信履歴 <small id="mcRxHistoryCount">0件</small></h3>
+          <div class="receive-history" id="mcRxHistory"><p class="receive-empty-text">受信履歴はありません</p></div>
+          <div class="actions"><button class="secondary" id="mcRxApply">受信内容を送信フォームへ取り込む</button><button class="danger" id="mcRxClear">受信履歴を消去</button></div>
         </article>
       </section>
 

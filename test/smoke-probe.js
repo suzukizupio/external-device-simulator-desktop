@@ -152,7 +152,7 @@ const RECEIVER_SCRIPT = `
     const rxRows = Array.from(log.querySelectorAll(".log-entry.rx"));
     const last = rxRows[rxRows.length - 1];
     resolve({
-      parsed: log.textContent.includes("MC KIND=3A CMD=41"),
+      parsed: log.textContent.includes("MC ヘルスチェック要求（ヘルスチェック）"),
       lastRxTime: last ? last.querySelector(".log-meta span").textContent : null,
       rxFrames: document.getElementById("metricRx").textContent,
       dateSeparators: log.querySelectorAll(".log-date").length,
@@ -387,6 +387,70 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
   if (keyForm.gate !== "2" || keyForm.building !== "1" || keyForm.room !== "0101" || keyForm.person !== "3") {
     throw new Error(`key apply-to-form failed: ${JSON.stringify(keyForm)}`);
   }
+
+  // -------------------------------- マンションコントローラ：KIND/CMD台帳とMESGの分解
+  await navigate("mansion");
+  // 自動応答は受信モニタとは独立の機能なので、ここでは切っておく。
+  await window.webContents.executeJavaScript(`${$("mcAutoResponse")}.checked = false`);
+  // 起動シーケンスの検査で受けたヘルスチェックが履歴に残っているため、数える前に空にする。
+  await click("mcRxClear");
+  const mcAddress = MansionController.address.residence({ building: "BB", room: 101, version: 3, topology: "standard" });
+  const mcAlarm = MansionController.buildFrame({
+    kind: 0x35,
+    command: 0x41,
+    version: 3,
+    from: "IC",
+    message: MansionController.buildMessage(0x35, 0x41, {
+      version: 3,
+      values: { ADDR: Array.from(mcAddress, (character) => character.charCodeAt(0)), KH_INF: [0] },
+    }),
+  });
+  await send(mcAlarm);
+  const mc = await monitorOf("mcRx");
+  if (mc.verdict !== "検証OK" || !mc.verdictClass.includes("ok")) {
+    throw new Error(`mansion receive verdict failed: ${JSON.stringify(mc)}`);
+  }
+  if (mc.fields["KIND"] !== "35H 警報出力" || mc.fields["CMD"] !== "41H 警報変化情報") {
+    throw new Error(`mansion KIND/CMD decode failed: ${JSON.stringify(mc.fields)}`);
+  }
+  if (!mc.fields["住戸NO"].includes("101号室") || !mc.fields["警報情報識別"].includes("火災")) {
+    throw new Error(`mansion MESG decode failed: ${JSON.stringify(mc.fields)}`);
+  }
+  if (!mc.summary.includes("警報変化情報") || mc.historyCount !== "1件") {
+    throw new Error(`mansion summary/history failed: ${JSON.stringify(mc)}`);
+  }
+
+  // 受信内容を送信フォームへ戻せる（KIND/CMD/住戸NO）。警報変化情報はICが送る
+  // コマンドなので、役割をICへ切り替えてから反映する。
+  await window.webContents.executeJavaScript(`
+    (() => { const s = document.getElementById("mcRole"); s.value = "IC"; s.dispatchEvent(new Event("change")); })()
+  `);
+  await wait(120);
+  await click("mcRxApply");
+  await wait(120);
+  const mcApplied = await window.webContents.executeJavaScript(`({
+    kind: ${$("mcKind")}.value,
+    command: ${$("mcCommand")}.value,
+    addressType: ${$("mcAddressType")}.value,
+    building: ${$("mcBuilding")}.value,
+    number: ${$("mcAddressNumber")}.value,
+  })`);
+  if (mcApplied.kind !== "35" || mcApplied.command !== "41" || mcApplied.addressType !== "room"
+      || mcApplied.building !== "BB" || mcApplied.number !== "101") {
+    throw new Error(`mansion apply to form failed: ${JSON.stringify(mcApplied)}`);
+  }
+
+  // MCのBCCはストリーム分解の段階で検証されるため、BCC異常はフレーム不成立として
+  // 理由付きで示される（桁の割付までは進まない）。
+  const mcBadBcc = mcAlarm.slice();
+  mcBadBcc[mcBadBcc.length - 1] ^= 0x01;
+  await send(mcBadBcc);
+  const mcBad = await monitorOf("mcRx");
+  if (mcBad.verdict !== "検証NG" || !mcBad.notes.some((note) => note.includes("BCCが一致しません"))
+      || !mcBad.badges.some((label) => label.includes("フレーム不成立"))) {
+    throw new Error(`mansion bad BCC not reported: ${JSON.stringify(mcBad)}`);
+  }
+  await click("mcRxClear");
 
   // ------------------------------------------------------ 4線式：情報応答
   await navigate("locker4");
