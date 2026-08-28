@@ -1,6 +1,6 @@
 {
   "name": "external-device-simulator-next",
-  "version": "1.12.13",
+  "version": "1.12.14",
   "description": "集合住宅システム向け外部疑似装置・通信試験アプリ",
   "author": {
     "name": "External Device Simulator Next Team"
@@ -31,6 +31,11 @@
     "copyright": "Copyright © 2026 External Device Simulator Next Team",
     "asar": true,
     "npmRebuild": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "ja",
+      "en-US"
+    ],
     "directories": {
       "output": "dist"
     },
