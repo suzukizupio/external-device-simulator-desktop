@@ -945,16 +945,29 @@ const ALARM_UI_SCRIPT = `
     const fromHex = boxes().map((box) => box.checked);
     const hint = $("alarmInfoHint").textContent;
 
-    // 警戒設定情報には標準割付がないため、標準は選べずパターンへ寄せられる。
+    // 5.2.3（防犯発報）と5.2.4（警戒設定・解除）は仕様書でも実機でも別々に選ぶ設定。
+    // 防犯発報を標準へ戻しても、警戒設定・解除側の割付だけでビットの読み方が決まる。
+    change($("alarmBitPattern"), "standard");
+    change($("alarmGuardPattern"), "standard");
     change($("alarmType"), "04");
-    const securityPattern = $("alarmBitPattern").value;
-    const standardDisabled = Array.from($("alarmBitPattern").options)
-      .find((option) => option.value === "standard").disabled;
+    const guardUnassignedLabels = labels();
+    const guardUnassignedHint = $("alarmInfoHint").textContent;
+    change($("alarmGuardPattern"), "pattern1");
     const securityLabels = labels();
+    const securityHint = $("alarmInfoHint").textContent;
+    change($("alarmGuardPattern"), "pattern3");
+    const guardPattern3Labels = labels();
+    // 5.2.4を変えても、警報情報①（5.2.3）の割付は標準のまま連動しない。
+    change($("alarmType"), "00");
+    const alarmStillStandard = labels();
+    const alarmStandardHint = $("alarmInfoHint").textContent;
+    change($("alarmType"), "04");
+    change($("alarmGuardPattern"), "pattern1");
 
     // ヒストリー要求は発信情報を持たないのでビット選択ごと無効になる。
     change($("alarmType"), "30");
-    const requestDisabled = boxes().every((box) => box.disabled) && $("alarmBitPattern").disabled;
+    const requestDisabled = boxes().every((box) => box.disabled)
+      && $("alarmBitPattern").disabled && $("alarmGuardPattern").disabled;
     const requestHint = $("alarmInfoHint").textContent;
 
     // 全bit OFFボタンで復旧電文（00H）に戻せる。
@@ -978,9 +991,13 @@ const ALARM_UI_SCRIPT = `
       pattern1Labels,
       fromHex,
       hint,
-      securityPattern,
-      standardDisabled,
+      guardUnassignedLabels,
+      guardUnassignedHint,
       securityLabels,
+      securityHint,
+      guardPattern3Labels,
+      alarmStillStandard,
+      alarmStandardHint,
       requestDisabled,
       requestHint,
       clearedHex,
@@ -1257,11 +1274,21 @@ async function run({ window, app, sendToRenderer }) {
     if (alarm.fromHex.join(",") !== "false,false,false,false,true,true,false,false") {
       throw new Error(`alarm hex-to-bit sync failed: ${JSON.stringify(alarm.fromHex)}`);
     }
-    if (!alarm.hint.includes("防犯(侵入)＋外出警戒")) {
+    if (!alarm.hint.includes("防犯(侵入)＋外出警戒") || !alarm.hint.includes("5.2.3 パターン１")) {
       throw new Error(`alarm info hint failed: ${alarm.hint}`);
     }
-    if (alarm.securityPattern !== "pattern1" || !alarm.standardDisabled || alarm.securityLabels[0] !== "bit1 警戒設定◇") {
-      throw new Error(`alarm security-set pattern fallback failed: ${JSON.stringify(alarm)}`);
+    if (alarm.securityLabels[0] !== "bit1 警戒設定◇" || !alarm.securityHint.includes("5.2.4 パターン１")
+        || alarm.guardPattern3Labels[0] !== "bit1 外出警戒設定◇") {
+      throw new Error(`alarm guard pattern assignment failed: ${JSON.stringify(alarm)}`);
+    }
+    // 割付なし（実機の初期値）では、その発信種別を送れないことを画面で示す。
+    if (alarm.guardUnassignedLabels[0] !== "bit1（未使用）" || !alarm.guardUnassignedHint.includes("割付がありません")) {
+      throw new Error(`alarm guard unassigned notice failed: ${JSON.stringify(alarm)}`);
+    }
+    // 5.2.4を切り替えても5.2.3側（警報情報①）は標準のまま。両者は連動しない。
+    if (alarm.alarmStillStandard[0] !== "bit1 火災、遠隔試験" || alarm.alarmStillStandard[5] !== "bit6（未割付）"
+        || !alarm.alarmStandardHint.includes("5.2.2")) {
+      throw new Error(`alarm 5.2.3/5.2.4 independence failed: ${JSON.stringify(alarm)}`);
     }
     if (!alarm.requestDisabled || !alarm.requestHint.includes("00H固定")) {
       throw new Error(`alarm history-request lockout failed: ${JSON.stringify(alarm)}`);

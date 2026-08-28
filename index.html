@@ -235,11 +235,14 @@
           <h2>警報（アイホン）　Q49-023G</h2>
           <p>11byte固定。発信情報のビットに警報が割り付けられています。</p>
           <ul class="check-list">
-            <li><strong>ビット割付</strong>（標準／パターン1〜3）を選ぶと、各ビットの意味が変わります。画面には警報名が出ます</li>
+            <li>ビット割付は<strong>2つの設定に分かれています</strong>。仕様書でも 5.2.3 と 5.2.4 で別々に選ぶもので、システムによって選べるパターンが違います（例：VIXUSは5.2.3がパターン1・3、5.2.4はパターン1〜3）</li>
+            <li><strong>防犯発報の割付（5.2.3）</strong> … 警報情報①②のビットの意味。発信種別 00H・01H に効きます</li>
+            <li><strong>警戒設定・解除の割付（5.2.4）</strong> … 発信種別 04H 警戒設定・44H 警戒解除のビットの意味。「割付なし」だとこの2種別は送れません</li>
             <li>◇が付くビットは対応付けを変更できない項目、空欄は未割付です。未使用ビットはチェックできません</li>
             <li>ヒストリー要求を受けたら、記録した履歴を古い順に返せます（最大15件、リング状）</li>
             <li>発報元は住戸のほか、管理室・集合玄関・共用部を選べます</li>
           </ul>
+          <p class="callout">実機側にも同じ設定があります。dearis の場合、メンテナンスシステムの「システム設定 － 物件基本設定 － 外部移報設定」にある<strong>「外部移報情報出力 Bit 割付」が 5.2.3</strong>、<strong>「警戒設定・解除情報割付」が 5.2.4</strong> に対応します。どちらも初期値は「割付なし」なので、警戒設定・解除を試験するときは実機側の設定も合わせてください。</p>
         </article>
 
         <article class="card help-section" id="help-panasonic">
@@ -272,6 +275,7 @@
           <h3 class="receive-subtitle">警報（メーカー間）</h3>
           <ul class="check-list">
             <li>アイホン Q49-023G ⇄ パナソニック4種を双方向に変換します</li>
+            <li>アイホン側のビット割付は<strong>防犯発報（5.2.3）と警戒設定・解除（5.2.4）を別々に</strong>選びます。相手機の設定と合わせないと、送ったつもりの警報が落ちます</li>
             <li><strong>この対応付けは通信仕様書には規定がありません。</strong>両仕様書の警報名が一致することだけを根拠にした変換です</li>
             <li>相手に枠がない警報（HPCの「水漏れ」「CO」など）は送れないため、理由を表示します</li>
             <li>変換表を画面で確認できます</li>
@@ -684,7 +688,8 @@
           <div class="form-grid cols-3">
             <label>動作側<select id="alarmRole"><option value="intercom">集合インターホン（優先局）</option><option value="alarm">警報発信装置（非優先局）</option></select></label>
             <label>発信種別<select id="alarmType"><option value="00">00 警報情報①</option><option value="01">01 警報情報②</option><option value="04">04 警戒設定</option><option value="44">44 警戒解除</option><option value="30">30 ヒストリー要求</option></select></label>
-            <label>ビット割付<select id="alarmBitPattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
+            <label>防犯発報の割付（5.2.3）<select id="alarmBitPattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１：侵入・外出警戒・在宅警戒</option><option value="pattern2">パターン２：防犯1～3・外出警戒・在宅警戒</option><option value="pattern3">パターン３：防犯1～5・外出警戒・在宅警戒</option></select></label>
+            <label>警戒設定・解除の割付（5.2.4）<select id="alarmGuardPattern"><option value="standard">割付なし（警戒設定・解除を使わない）</option><option value="pattern1">パターン１：警戒設定・解除</option><option value="pattern2">パターン２：外出／在宅警戒 設定・解除</option><option value="pattern3">パターン３：外出＋在宅警戒1～5 設定・解除</option></select></label>
             <label>発信情報 (HEX)<input id="alarmInfo" value="01" maxlength="2"></label>
             <label>棟番号（00～99、BCD符号化）<input id="alarmBuilding" value="00" maxlength="2"></label>
             <label>発報元<select id="alarmSource"><option value="room">住戸</option><option value="manager">管理室</option><option value="entrance">集合玄関</option><option value="common">共用部</option><option value="none">なし</option></select></label>
@@ -801,7 +806,8 @@
           <div class="form-grid cols-3" id="bridgeAlarmForm">
             <label>変換元<select id="bridgeFrom"></select></label>
             <label>変換先<select id="bridgeTo"></select></label>
-            <label id="bridgePatternField">アイホンのビット割付<select id="bridgePattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１（受注対応）</option><option value="pattern2">パターン２（受注対応）</option><option value="pattern3">パターン３（受注対応）</option></select></label>
+            <label id="bridgePatternField">アイホン 防犯発報の割付（5.2.3）<select id="bridgePattern"><option value="standard">標準（5.2.2 初期値割付）</option><option value="pattern1">パターン１：侵入・外出警戒・在宅警戒</option><option value="pattern2">パターン２：防犯1～3・外出警戒・在宅警戒</option><option value="pattern3">パターン３：防犯1～5・外出警戒・在宅警戒</option></select></label>
+            <label id="bridgeGuardPatternField">アイホン 警戒設定・解除の割付（5.2.4）<select id="bridgeGuardPattern"><option value="standard">割付なし（警戒設定・解除を使わない）</option><option value="pattern1">パターン１：警戒設定・解除</option><option value="pattern2">パターン２：外出／在宅警戒 設定・解除</option><option value="pattern3">パターン３：外出＋在宅警戒1～5 設定・解除</option></select></label>
           </div>
           <div class="form-grid cols-3" id="bridgeDeviceForm">
             <label>変換元<select id="bridgeDeviceFrom"><option value="locker4">宅配ボックス 4線式(B方式) Q48-005F</option><option value="key">非接触キー Q48-006F</option></select></label>

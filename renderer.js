@@ -1529,41 +1529,47 @@ function buildElevatorFrame() {
 }
 
 // Q49-023G 5.2.2／5.2.3／5.2.4：発信情報の各bitが何を指すかは割付パターンで変わる。
+// 5.2.3（警報情報①②の防犯発報）と5.2.4（警戒設定・解除情報）は別々に選ぶ設定のため、
+// どちらの節の割付で読んだのかまで示す。
 const ALARM_BIT_PATTERN_NOTE = Object.freeze({
-  standard: "5.2.2 初期値警報ビット割付",
-  pattern1: "5.2.3／5.2.4 パターン１",
-  pattern2: "5.2.3／5.2.4 パターン２",
-  pattern3: "5.2.3／5.2.4 パターン３",
+  pattern1: "パターン１",
+  pattern2: "パターン２",
+  pattern3: "パターン３",
 });
+
+function alarmPatternNote(detail) {
+  const api = requireApi("AlarmProtocol");
+  const guard = api.usesGuardPattern(detail.type);
+  if (detail.pattern === api.BIT_PATTERN.STANDARD) {
+    return guard ? "5.2.4 割付なし" : "5.2.2 初期値警報ビット割付";
+  }
+  return `${guard ? "5.2.4" : "5.2.3"} ${ALARM_BIT_PATTERN_NOTE[detail.pattern] || detail.pattern}`;
+}
 
 function alarmInfoCheckboxes() {
   return Array.from($("alarmInfoBits").querySelectorAll("input[type=checkbox]"));
 }
 
-// 選択中の割付が対象の発信種別に存在しないとき（警戒設定／解除に標準割付はない）は
-// パターン１として読む。受信電文の桁を読めないまま捨てないための保険。
-function alarmBitPatternFor(type) {
-  const api = requireApi("AlarmProtocol");
-  const pattern = $("alarmBitPattern").value;
-  return api.bitAssignments(type, pattern) ? pattern : api.BIT_PATTERN.PATTERN_1;
+// 5.2.3と5.2.4は実機（dearisメンテナンスシステムの「外部移報情報出力Bit割付」と
+// 「警戒設定・解除情報割付」）でも別々に設定するため、両方を組で渡す。
+// 発信種別に応じてどちらを使うかは protocol/alarm.js が判断する。
+function alarmPatternSpec() {
+  return { alarm: $("alarmBitPattern").value, guard: $("alarmGuardPattern").value };
 }
 
 function alarmInfoDetail(info, type) {
-  return requireApi("AlarmProtocol").describeInfo(info, { type, pattern: alarmBitPatternFor(type) });
+  return requireApi("AlarmProtocol").describeInfo(info, { type, pattern: alarmPatternSpec() });
 }
 
 // 発信情報はHEX欄を唯一の値とし、チェックボックスは選択中の割付でそれを読み書きする窓にする。
 function syncAlarmInfoForm(source = "hex") {
   const api = requireApi("AlarmProtocol");
   const type = parseHexByte($("alarmType").value, "発信種別");
-  const patternSelect = $("alarmBitPattern");
   const isRequest = type === api.TYPE.HISTORY_REQUEST;
-  // 警戒設定／解除は受注対応の3パターンだけで、標準割付を持たない。
-  const standardOption = Array.from(patternSelect.options).find((option) => option.value === api.BIT_PATTERN.STANDARD);
-  const hasStandard = !isRequest && api.bitAssignments(type, api.BIT_PATTERN.STANDARD) !== null;
-  standardOption.disabled = !hasStandard;
-  if (!hasStandard && patternSelect.value === api.BIT_PATTERN.STANDARD) patternSelect.value = api.BIT_PATTERN.PATTERN_1;
-  patternSelect.disabled = isRequest;
+  // 実機の設定をそのまま写せるよう、どちらの割付もいつでも変更できるようにする。
+  // 選択中の発信種別でどちらが効くのかは、下のヒントに節番号で示す。
+  $("alarmBitPattern").disabled = isRequest;
+  $("alarmGuardPattern").disabled = isRequest;
 
   const boxes = alarmInfoCheckboxes();
   if (source === "bits") {
@@ -1603,7 +1609,9 @@ function syncAlarmInfoForm(source = "hex") {
   else if (!detail) hint.textContent = "発信情報は2桁HEXで入力してください";
   else {
     const violation = detail.violations.length ? `／注意: bit${detail.violations.join("・")}は仕様上未使用です` : "";
-    hint.textContent = `${ALARM_BIT_PATTERN_NOTE[detail.pattern] || detail.pattern}：${detail.hex}H = ${detail.summary}${violation}`;
+    // 「割付なし」の種別は実機側も受け付けないため、設定の食い違いとして知らせる。
+    const unassigned = detail.assigned ? "" : "／この発信種別に割付がありません。実機側の割付設定と合わせてください";
+    hint.textContent = `${alarmPatternNote(detail)}：${detail.hex}H = ${detail.summary}${violation}${unassigned}`;
   }
 }
 
@@ -2248,7 +2256,7 @@ function autoDetectPanasonicProtocol(bytes) {
   if (state.currentView !== "panasonic" || !$("panaAutoDetect").checked) return false;
   const identifier = requireApi("AlarmIdentifier");
   let identified = null;
-  try { identified = identifier.identify(bytes, { aiphonePattern: $("alarmBitPattern").value }); } catch (_error) { return false; }
+  try { identified = identifier.identify(bytes, { aiphonePattern: alarmPatternSpec() }); } catch (_error) { return false; }
   const target = identified.target;
   if (!target) return false;
   // アイホンの電文はこの画面では送受信できないため、切り替えず案内だけ残す。
@@ -3505,9 +3513,14 @@ function bridgeMode() {
   return $("bridgeMode").value === "device" ? "device" : "alarm";
 }
 
+// 変換画面もアイホン側は5.2.3と5.2.4を別々に指定する。
+function bridgePatternSpec() {
+  return { alarm: $("bridgePattern").value, guard: $("bridgeGuardPattern").value };
+}
+
 function bridgeSpec(which) {
   const id = $(which === "from" ? "bridgeFrom" : "bridgeTo").value;
-  return { id, pattern: $("bridgePattern").value };
+  return { id, pattern: bridgePatternSpec() };
 }
 
 // 宅配・非接触キーからマンションコントローラへの変換は、Q48-008I側に
@@ -3831,7 +3844,9 @@ function syncBridgeForm() {
   }
   refreshBridgeTargets();
   // ビット割付はアイホンが絡むときだけ効く。
-  $("bridgePatternField").hidden = !bridgeUsesAiphone();
+  const usesAiphone = bridgeUsesAiphone();
+  $("bridgePatternField").hidden = !usesAiphone;
+  $("bridgeGuardPatternField").hidden = !usesAiphone;
   const identifier = requireApi("AlarmIdentifier");
   const from = identifier.findTarget($("bridgeFrom").value);
   const to = identifier.findTarget($("bridgeTo").value);
@@ -4369,12 +4384,12 @@ function receiveInspectOptions(view) {
   }
   if (view === "panasonic") {
     // アイホンQ49-023Gの読みはビット割付で変わるため、警報（アイホン）画面の選択を渡す。
-    return Object.assign(linkInspectOptions(view), { protocol: $("panaProtocol").value, aiphonePattern: $("alarmBitPattern").value });
+    return Object.assign(linkInspectOptions(view), { protocol: $("panaProtocol").value, aiphonePattern: alarmPatternSpec() });
   }
   if (view === "bridge") {
     const identifier = requireApi("AlarmIdentifier");
     const from = identifier.findTarget($("bridgeFrom").value);
-    const identified = identifier.identify(frame, { aiphonePattern: $("bridgePattern").value });
+    const identified = identifier.identify(frame, { aiphonePattern: bridgePatternSpec() });
     const names = identified.target ? identified.target.label
       : identified.targets.length ? identified.targets.map((item) => item.short).join(" / ") : null;
     if (!names) throw new Error("警報電文として解釈できません");
@@ -4878,7 +4893,7 @@ function describeFrame(view, frame) {
     } catch (error) {
       // Q49-023GとパナソニックHPC／TSSは外形が同じなので、読めない電文は
       // 他メーカーの警報かどうかを判定して理由に添える。
-      const identified = requireApi("AlarmIdentifier").identify(frame, { aiphonePattern: $("alarmBitPattern").value });
+      const identified = requireApi("AlarmIdentifier").identify(frame, { aiphonePattern: alarmPatternSpec() });
       if (identified.targets.length === 0) throw error;
       const names = identified.target ? identified.target.label : identified.targets.map((item) => item.label).join("・");
       throw new Error(`${error.message}／${names} の電文の可能性があります`);
@@ -5104,6 +5119,16 @@ function applyProfile(profile) {
   const legacyKeyProfile = profile.values.keyProfile && profile.values.keyProfile.value;
   if (legacyKeyProfile === "general") $("keyProfile").value = "other";
   if (legacyKeyProfile === "limited8") $("keyProfile").value = "vFine";
+  // v1.12.8以前は5.2.3と5.2.4を1つの「ビット割付」で同時に切り替えていた。
+  // 保存済みの値を警戒設定・解除側にも引き継ぎ、従来と同じ読み方を再現する。
+  // 標準（＝5.2.4では割付なし）はそのまま引き継がず、実機の初期値と同じ扱いにする。
+  for (const [legacyId, guardId] of [["alarmBitPattern", "alarmGuardPattern"], ["bridgePattern", "bridgeGuardPattern"]]) {
+    if (profile.values[guardId]) continue;
+    const legacy = profile.values[legacyId] && profile.values[legacyId].value;
+    if (typeof legacy === "string" && legacy !== "standard" && Array.from($(guardId).options).some((option) => option.value === legacy)) {
+      $(guardId).value = legacy;
+    }
+  }
   syncKeyForm();
   syncAlarmInfoForm();
   syncPanasonicForm();
@@ -5285,7 +5310,7 @@ function bindEvents() {
     $("alarmType").value = $("alarmRole").value === "intercom" ? "00" : "30";
     syncAlarmInfoForm();
   });
-  ["alarmType", "alarmBitPattern"].forEach((id) => $(id).addEventListener("change", () => syncAlarmInfoForm()));
+  ["alarmType", "alarmBitPattern", "alarmGuardPattern"].forEach((id) => $(id).addEventListener("change", () => syncAlarmInfoForm()));
   $("alarmInfo").addEventListener("input", () => syncAlarmInfoForm());
   $("alarmInfoBits").addEventListener("change", () => syncAlarmInfoForm("bits"));
   $("alarmInfoClearButton").addEventListener("click", () => {
@@ -5549,7 +5574,7 @@ function bindEvents() {
   ["bridgeMode", "bridgeDeviceFrom", "bridgeMcVersion"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
-  ["bridgeFrom", "bridgeTo", "bridgePattern"].forEach((id) => $(id).addEventListener("change", () => {
+  ["bridgeFrom", "bridgeTo", "bridgePattern", "bridgeGuardPattern"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
   $("bridgeConvertButton").addEventListener("click", () => { try { convertLatestReceive(); } catch (error) { logError(error, "警報変換"); } });

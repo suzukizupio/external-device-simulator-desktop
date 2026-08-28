@@ -156,17 +156,35 @@
     [TYPE.HISTORY_REQUEST]: "ヒストリー要求（発信情報なし）",
   });
 
-  function resolveBitPattern(value) {
+  // 5.2.3（警報情報①②の防犯発報割付）と5.2.4（警戒設定情報／警戒解除情報の割付）は、
+  // 仕様書でも選択できるパターンがシステムごとに別々に定められている（例：VIXUSは
+  // 5.2.3がパターン１・３、5.2.4はパターン１・２・３）。dearisメンテナンスシステムでも
+  // 「外部移報情報出力Bit割付」と「警戒設定・解除情報割付」の2項目に分かれているため、
+  // { alarm: ..., guard: ... } で発信種別ごとの割付を指定できる。
+  // 文字列を渡した場合は両方へ同じパターンを使う（従来の呼び出しとの互換）。
+  function usesGuardPattern(type) {
+    return type === TYPE.SECURITY_SET || type === TYPE.SECURITY_CLEAR;
+  }
+
+  function normalizeBitPattern(value) {
     const pattern = value == null ? BIT_PATTERN.STANDARD : String(value);
     if (BIT_PATTERN_NAMES.indexOf(pattern) === -1) throw new RangeError("unknown alarm bit pattern: " + pattern);
     return pattern;
   }
 
-  // 割付表を持たない組み合わせ（ヒストリー要求、警戒設定／解除の標準）はnullを返す。
+  function resolveBitPattern(value, type) {
+    if (value != null && typeof value === "object") {
+      return normalizeBitPattern(value[usesGuardPattern(type) ? "guard" : "alarm"]);
+    }
+    return normalizeBitPattern(value);
+  }
+
+  // 割付表を持たない組み合わせ（ヒストリー要求、警戒設定／解除の割付なし）はnullを返す。
   function bitAssignments(type, pattern) {
-    const table = BIT_ASSIGNMENTS[resolveType(type)];
+    const code = resolveType(type);
+    const table = BIT_ASSIGNMENTS[code];
     if (!table) return null;
-    const row = table[resolveBitPattern(pattern)];
+    const row = table[resolveBitPattern(pattern, code)];
     return row ? row.slice() : null;
   }
 
@@ -196,7 +214,7 @@
     options = options || {};
     const value = byte(info, "alarm information");
     const type = resolveType(options.type == null ? TYPE.ALARM_1 : options.type);
-    const pattern = resolveBitPattern(options.pattern);
+    const pattern = resolveBitPattern(options.pattern, type);
     const row = bitAssignments(type, pattern);
     const bits = [];
     const labels = [];
@@ -551,6 +569,7 @@
     SOURCE_KIND: SOURCE_KIND,
     BIT_PATTERN: BIT_PATTERN,
     BIT_PATTERN_NAMES: BIT_PATTERN_NAMES,
+    usesGuardPattern: usesGuardPattern,
     bitAssignments: bitAssignments,
     bitMask: bitMask,
     encodeInfo: encodeInfo,

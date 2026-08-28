@@ -155,7 +155,8 @@
     const id = String(spec.id == null ? "" : spec.id);
     const target = AlarmIdentifier.findTarget(id);
     if (!target) throw new RangeError("変換先が不明です: " + (id || "(指定なし)"));
-    return { id: id, pattern: spec.pattern || AlarmProtocol.BIT_PATTERN.STANDARD, target: target };
+    // patternは文字列（両方に同じ割付）でも { alarm, guard }（5.2.3／5.2.4を別々）でもよい。
+    return { id: id, pattern: spec.pattern == null ? AlarmProtocol.BIT_PATTERN.STANDARD : spec.pattern, target: target };
   }
 
   // ------------------------------------------------------------------

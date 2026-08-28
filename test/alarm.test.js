@@ -297,6 +297,32 @@ test("警戒設定／解除に標準割付はなく、ヒストリー要求は�
   assert.throws(function () { A.bitAssignments(A.TYPE.ALARM_1, "pattern9"); }, /unknown alarm bit pattern/);
 });
 
+test("5.2.3と5.2.4の割付は種別ごとに別々へ指定できる", function () {
+  // 仕様書もdearisメンテナンスシステムも、防犯発報（5.2.3）と警戒設定・解除（5.2.4）を
+  // 別々の設定項目として持つ。片方だけを変えても、もう片方は連動しない。
+  const guardOnly = { alarm: A.BIT_PATTERN.STANDARD, guard: A.BIT_PATTERN.PATTERN_1 };
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, guardOnly), labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.STANDARD));
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_SET, guardOnly), labelsOf(A.TYPE.SECURITY_SET, A.BIT_PATTERN.PATTERN_1));
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_CLEAR, guardOnly), labelsOf(A.TYPE.SECURITY_CLEAR, A.BIT_PATTERN.PATTERN_1));
+
+  const alarmOnly = { alarm: A.BIT_PATTERN.PATTERN_1, guard: A.BIT_PATTERN.STANDARD };
+  assert.deepEqual(labelsOf(A.TYPE.ALARM_1, alarmOnly), labelsOf(A.TYPE.ALARM_1, A.BIT_PATTERN.PATTERN_1));
+  assert.equal(A.bitAssignments(A.TYPE.SECURITY_SET, alarmOnly), null, "警戒設定・解除は割付なし");
+
+  // VIXUSのように5.2.3と5.2.4で選べるパターンが違う組み合わせも表現できる。
+  const mixed = { alarm: A.BIT_PATTERN.PATTERN_1, guard: A.BIT_PATTERN.PATTERN_3 };
+  assert.equal(A.bitAssignments(A.TYPE.ALARM_1, mixed)[5].label, "外出警戒");
+  assert.equal(A.bitAssignments(A.TYPE.SECURITY_SET, mixed)[1].label, "在宅警戒１設定");
+
+  // 文字列指定は従来どおり両方へ同じ割付を使う。
+  assert.deepEqual(labelsOf(A.TYPE.SECURITY_SET, "pattern1"), ["警戒設定", null, null, null, null, null, null, null]);
+  assert.equal(A.describeInfo(0x01, { type: A.TYPE.SECURITY_SET, pattern: guardOnly }).labels[0], "警戒設定");
+  assert.equal(A.describeInfo(0x10, { type: A.TYPE.ALARM_1, pattern: guardOnly }).labels[0], "防犯(侵入)");
+  assert.equal(A.usesGuardPattern(A.TYPE.SECURITY_CLEAR), true);
+  assert.equal(A.usesGuardPattern(A.TYPE.ALARM_2), false);
+  assert.throws(function () { A.bitAssignments(A.TYPE.SECURITY_SET, { alarm: "pattern1", guard: "pattern9" }); }, /unknown alarm bit pattern/);
+});
+
 test("bit1がLSB、bit8がMSBとして発信情報を組み立て・分解する", function () {
   assert.equal(A.encodeInfo([1]), 0x01);
   assert.equal(A.encodeInfo([8]), 0x80);
