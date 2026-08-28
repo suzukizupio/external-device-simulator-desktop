@@ -929,6 +929,52 @@ async function verifyReceiveMonitors({ window, sendToRenderer }) {
     throw new Error(`device bridge form failed: ${JSON.stringify(device)}`);
   }
 
+  // 装置→MC変換は、送信ポート側でICとして起動シーケンスを踏まないとMCが電文を捨てる。
+  // 画面に枠と案内が出ること、送信ポートで受けたMC電文を解析することを確かめる。
+  const bridgeMcIdle = await window.webContents.executeJavaScript(`({
+    sectionHidden: ${$("bridgeMcSection")}.hidden,
+    startDisabled: ${$("bridgeMcStart")}.disabled,
+    guidance: ${$("bridgeMcGuidance")}.textContent,
+    guidanceHidden: ${$("bridgeMcGuidance")}.hidden,
+    state: ${$("bridgeMcText")}.textContent,
+  })`);
+  if (bridgeMcIdle.sectionHidden || !bridgeMcIdle.startDisabled
+      || !bridgeMcIdle.guidance.includes("送信ポートへ接続してください")) {
+    throw new Error(`bridge MC lifecycle idle guidance failed: ${JSON.stringify(bridgeMcIdle)}`);
+  }
+
+  // 送信ポートが開いた状態を渡すと、案内が次の一手（起動・周期通信開始）へ変わる。
+  sendToRenderer("bridge:status", {
+    status: "open",
+    options: { path: "COM99", baudRate: 4800, dataBits: 8, stopBits: 1, parity: "even", flowControl: "none" },
+  });
+  await wait(150);
+  const bridgeMcReady = await window.webContents.executeJavaScript(`({
+    startDisabled: ${$("bridgeMcStart")}.disabled,
+    guidance: ${$("bridgeMcGuidance")}.textContent,
+    state: ${$("bridgeMcText")}.textContent,
+  })`);
+  if (bridgeMcReady.startDisabled || !bridgeMcReady.guidance.includes("起動・周期通信開始")
+      || !bridgeMcReady.state.includes("起動シーケンス停止中")) {
+    throw new Error(`bridge MC lifecycle ready guidance failed: ${JSON.stringify(bridgeMcReady)}`);
+  }
+
+  // 起動していない間にMCの初期化完了を受けたら、理由を残して捨てる。
+  const initComplete = MansionController.buildInitializationComplete({ version: 3 });
+  sendToRenderer("bridge:data", { sessionId: 997, sequence: 1, timestamp: Date.now(), bytes: initComplete });
+  await wait(200);
+  const bridgeMcLog = await window.webContents.executeJavaScript(`({
+    text: document.getElementById("communicationLog").textContent,
+  })`);
+  if (!bridgeMcLog.text.includes("初期化完了（初期化）")) {
+    throw new Error("bridge MC frame was not analysed on the send port");
+  }
+  if (!bridgeMcLog.text.includes("起動シーケンスが停止中です")) {
+    throw new Error("bridge MC idle warning was not logged");
+  }
+  sendToRenderer("bridge:status", { status: "closed", options: null });
+  await wait(120);
+
   // 受信ポート2：宅配を受信ポート1にすると、残る非接触キーが2台目になる。
   const aux = await window.webContents.executeJavaScript(`
     (() => {

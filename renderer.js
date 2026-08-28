@@ -74,6 +74,9 @@ const state = {
   bridgeControlWaiters: [],
   bridgeInboundLink: false,
   bridgeLastIoAt: 0,
+  // 装置→MC変換では送信ポート側でICとして起動シーケンスを回す。
+  bridgeMcLifecycle: null,
+  bridgeMcHintAt: 0,
   // 受信ポート2（2台目の装置）。
   auxPort: null,
   auxReader: null,
@@ -3501,6 +3504,9 @@ function applyBridgePortState(snapshot) {
     state.bridgeInboundLink = false;
     state.bridgeLastIoAt = 0;
     if (state.bridgeReader) state.bridgeReader.reset();
+    stopBridgeMcLifecycle("送信ポートの切断により起動・周期通信を停止しました");
+  } else {
+    try { updateBridgeMcState(); } catch (_error) { /* 初期化前は無視 */ }
   }
   $("bridgeRxPort").value = state.connected && state.connectionOptions
     ? `${state.connectionOptions.path} ${presetLabel(state.connectionOptions)}`
@@ -3864,6 +3870,7 @@ function syncBridgeForm() {
     ? "Q48-008Iの6.7 宅配ボックス制御／6.8 非接触キー制御に対応する枠があるため、仕様の定義に沿って読み替えます。対応する状態がないもの（集荷預り・食配着荷など）は送れないため、下の対応表と変換結果で確認してください。"
     : "この対応付けは通信仕様書には規定がありません。両仕様書の警報名が一致することだけを根拠にした変換です。相手に枠がない警報は送れないため、下の変換表と変換結果で必ず確認してください。";
   $("bridgeAuxSection").hidden = !device;
+  $("bridgeMcSection").hidden = !device;
   if (device) {
     const api = deviceBridgeApi();
     const both = auxEnabled() ? `＋${api.SOURCE_LABEL[auxDeviceFrom()]}` : "";
@@ -3889,6 +3896,7 @@ function syncBridgeForm() {
   renderBridgeResult();
   syncBridgePortFields();
   applyBridgePortState(state.bridgePort);
+  updateBridgeMcState();
   if (state.currentView === "bridge") updatePresetWarning();
 }
 
@@ -3986,10 +3994,12 @@ async function sendBridgeVia(direction, frames) {
     return outcome.type === "complete";
   }
   if (direct || !bridgeTargetUsesHandshake()) {
+    warnBridgeMcLifecycleIdle();
     for (const frame of frames) await bridgeWrite(frame);
     return true;
   }
   if (!state.bridgePort) throw new Error("送信ポートが未接続です");
+  warnBridgeMcLifecycleIdle();
   const outcome = await runHandshake(frames, bridgeHandshakeOptions(BRIDGE_LINK, $("bridgeTo").value));
   return outcome.type === "complete";
 }
@@ -4040,16 +4050,240 @@ function bridgePortReader() {
   return state.bridgeReader;
 }
 
+// ------------------------------------ 送信ポート側のMC起動シーケンス（装置→MC変換）
+// Q48-008I 6.1：通信接続開始(30,43)を送信するまで、MCは初期化以外の通信を無視する。
+// 装置→MCの中継ではこちらがIC（インターホン制御装置）としてMCへつながるため、
+// マンション制御画面と同じ手順を送信ポート回線で踏む必要がある。
+
+// 通信接続開始を送る前に変換結果を流しても、MCは黙って捨てる。理由をログへ残す。
+function warnBridgeMcLifecycleIdle() {
+  if (bridgeMode() !== "device") return;
+  if (state.bridgeMcLifecycle && state.bridgeMcLifecycle.healthTimer) return;
+  addLog("warn", "BRIDGE", null, state.bridgeMcLifecycle
+    ? "MCの初期化完了(30,42)をまだ受信していません。通信接続開始(30,43)を送るまで、MCはこの電文を無視します"
+    : "MCの起動シーケンスが停止中です。「起動・周期通信開始」を押してください。通信接続開始(30,43)を送るまで、MCはこの電文を無視します");
+}
+
+function bridgeMcVersion() {
+  const version = Number($("bridgeMcVersion").value);
+  return [1, 2, 3].indexOf(version) === -1 ? 3 : version;
+}
+
+async function sendBridgeMcFrame(frame, label) {
+  if (!state.bridgePort) throw new Error("送信ポートが未接続です");
+  if (bridgeTransportMode() === "direct") await bridgeWrite(frame);
+  else await runHandshake([frame], bridgeHandshakeOptions(BRIDGE_LINK, null));
+  addLog("info", "MC-LIFE2", frame, `送信ポート ${label}`);
+}
+
+// 起動シーケンスの送信も、変換した電文の送信と同じ排他で直列化する。
+function queueBridgeMcFrame(label, build) {
+  const lifecycle = state.bridgeMcLifecycle;
+  if (!lifecycle || !state.bridgePort) return;
+  if (state.activeTransaction) {
+    addLog("warn", "MC-LIFE2", null, `送信ポートの${label}を保留: ${state.activeTransaction}の通信中です`);
+    return;
+  }
+  withTransaction(label, async () => {
+    if (state.bridgeMcLifecycle !== lifecycle) return;
+    await sendBridgeMcFrame(build(), label);
+  }).catch((error) => logError(error, label));
+}
+
+function clearBridgeMcTimer(name) {
+  if (!state.bridgeMcLifecycle || !state.bridgeMcLifecycle[name]) return;
+  clearInterval(state.bridgeMcLifecycle[name]);
+  state.bridgeMcLifecycle[name] = null;
+}
+
+function stopBridgeMcLifecycle(detail = "起動・周期通信を停止しました") {
+  if (state.bridgeMcLifecycle) {
+    clearBridgeMcTimer("initTimer");
+    clearBridgeMcTimer("healthTimer");
+  }
+  state.bridgeMcLifecycle = null;
+  updateBridgeMcState(detail);
+}
+
+// 通信接続開始のあとは30秒周期でヘルスチェックを送り、MCからの要求にも応える。
+function startBridgeMcHealthChecks(detail) {
+  const lifecycle = state.bridgeMcLifecycle;
+  if (!lifecycle || lifecycle.healthTimer) return;
+  const api = requireApi("MansionController");
+  lifecycle.healthTimer = setInterval(() => {
+    if (state.bridgeMcLifecycle !== lifecycle) return;
+    queueBridgeMcFrame("ヘルスチェック要求", () => api.buildHealthCheckRequest({
+      version: lifecycle.version,
+      from: api.ROLE.IC,
+    }));
+  }, 30_000);
+  updateBridgeMcState(detail);
+}
+
+async function startBridgeMcLifecycle() {
+  if (!state.bridgePort) throw new Error("送信ポートが未接続です");
+  if (bridgeMode() !== "device") throw new Error("MC起動シーケンスは装置→MC変換のときに使います");
+  stopBridgeMcLifecycle("起動シーケンスを開始します");
+  const api = requireApi("MansionController");
+  const lifecycle = {
+    version: bridgeMcVersion(),
+    deliveryNotification: $("bridgeMcDelivery").checked,
+    initTimer: null,
+    healthTimer: null,
+    sawInitializationComplete: false,
+  };
+  state.bridgeMcLifecycle = lifecycle;
+
+  await sendBridgeMcFrame(api.buildInitializationRequest({
+    version: lifecycle.version,
+    deliveryNotification: lifecycle.deliveryNotification,
+  }), "初期化要求");
+  // 初期化完了が返るまで10秒間隔で再送する（Q48-008I 6.1）。
+  lifecycle.initTimer = setInterval(() => {
+    if (state.bridgeMcLifecycle !== lifecycle) return;
+    if (lifecycle.sawInitializationComplete) return clearBridgeMcTimer("initTimer");
+    queueBridgeMcFrame("初期化要求10秒再送", () => api.buildInitializationRequest({
+      version: lifecycle.version,
+      deliveryNotification: lifecycle.deliveryNotification,
+    }));
+  }, 10_000);
+  updateBridgeMcState("初期化要求を送信しました");
+}
+
+// 送信ポートで受けたMC電文を、起動シーケンスの状態遷移と自動応答へ回す。
+function handleBridgeMcFrame(frame) {
+  const api = requireApi("MansionController");
+  let parsed = null;
+  try {
+    parsed = api.parseFrame(frame, { validateCommand: false });
+  } catch (error) {
+    addLog("warn", "PARSE2", frame, `送信ポートのMC電文を解釈できません: ${String(error && error.message || error)}`);
+    return;
+  }
+  try {
+    const inspector = requireApi("ReceiveInspector");
+    addLog("info", "PARSE2", null, `送信ポート ${inspector.inspect("mansion", frame, { version: bridgeMcVersion() }).summary}`);
+  } catch (_error) { /* 表示できなくても処理は続ける */ }
+  handleBridgeMcLifecycleFrame(api, parsed);
+  handleBridgeMcRequest(frame, api, parsed);
+}
+
+function handleBridgeMcLifecycleFrame(api, parsed) {
+  const lifecycle = state.bridgeMcLifecycle;
+  if (!lifecycle) {
+    if (parsed.kind === api.KIND.INITIALIZATION) warnBridgeMcIdle(api, parsed);
+    return;
+  }
+  // 初期化完了(30,42)を受けたら通信接続開始(30,43)を送り、周期通信へ移る。
+  if (parsed.kind === api.KIND.INITIALIZATION && parsed.command === 0x42) {
+    if (lifecycle.sawInitializationComplete) return;
+    lifecycle.sawInitializationComplete = true;
+    clearBridgeMcTimer("initTimer");
+    queueBridgeMcFrame("通信接続開始", () => api.buildConnectionStart({ version: lifecycle.version }));
+    startBridgeMcHealthChecks("初期化完了を受信し、通信接続開始を送信します");
+    return;
+  }
+  if (parsed.kind === api.KIND.HEALTH_CHECK && parsed.command === 0x41) {
+    queueBridgeMcFrame("ヘルスチェック応答", () => api.buildHealthCheckResponse({
+      version: lifecycle.version,
+      from: api.ROLE.IC,
+    }));
+  }
+}
+
+// 起動シーケンスを動かしていない間は初期化電文へ何も返さないため、理由をログに残す。
+function warnBridgeMcIdle(api, parsed) {
+  const now = Date.now();
+  if (now - state.bridgeMcHintAt < 60_000) return;
+  state.bridgeMcHintAt = now;
+  const name = parsed.command === 0x42 ? "初期化完了"
+    : parsed.command === 0x41 ? "初期化要求"
+      : parsed.command === 0x43 ? "通信接続開始" : "初期化コマンド";
+  addLog("warn", "MC-LIFE2", null, `送信ポートで${name}を受信しましたが起動シーケンスが停止中です。`
+    + "「起動・周期通信開始」を押してください。通信接続開始(30,43)を送るまでMCは変換した電文を無視します");
+}
+
+function handleBridgeMcRequest(frame, api, parsed) {
+  // 起動シーケンスとヘルスチェックはライフサイクル側が応答するため二重送信しない。
+  if (state.bridgeMcLifecycle && [api.KIND.INITIALIZATION, api.KIND.HEALTH_CHECK].indexOf(parsed.kind) !== -1) return;
+  if (!$("bridgeMcAutoResponse").checked) return;
+  let result = null;
+  try {
+    result = requireApi("AutoResponder").mansionResponse(frame, {
+      version: bridgeMcVersion(),
+      topology: api.TOPOLOGY.STANDARD,
+      role: api.ROLE.IC,
+      product: api.PRODUCT.GENERIC,
+      message: "",
+    });
+  } catch (error) {
+    logError(error, "送信ポートの自動応答の準備");
+    return;
+  }
+  if (!result || logUnsupportedAutoResponse(result)) return;
+  scheduleAutoResponse("MC自動応答（送信ポート）", async () => {
+    const note = result.completionOnly ? "（該当住戸なしのため完了のみ）" : "";
+    addLog("info", "AUTO2", result.frame, `送信ポート ${result.request.name}へ${result.definition.name}を送信${note}`);
+    await sendBridgeMcFrame(result.frame, result.definition.name);
+  });
+}
+
+function updateBridgeMcState(detail) {
+  const lifecycle = state.bridgeMcLifecycle;
+  const dot = $("bridgeMcDot");
+  const text = $("bridgeMcText");
+  if (!dot || !text) return;
+  if (lifecycle) {
+    const phase = lifecycle.healthTimer ? "通信接続済み・30秒ヘルスチェック中" : "初期化シーケンス中（10秒再送）";
+    dot.className = lifecycle.healthTimer ? "open" : "";
+    text.textContent = `${phase}${detail ? ` — ${detail}` : ""}`;
+  } else {
+    dot.className = "";
+    text.textContent = detail || "起動シーケンス停止中";
+  }
+  $("bridgeMcStop").disabled = !lifecycle;
+  $("bridgeMcStart").disabled = !state.bridgePort;
+  updateBridgeMcGuidance();
+}
+
+// いま足りていない設定を1つずつ示す。MC側は黙って電文を捨てるため、画面で気づけるようにする。
+function updateBridgeMcGuidance() {
+  const element = $("bridgeMcGuidance");
+  if (!element) return;
+  if (bridgeMode() !== "device") {
+    element.hidden = true;
+    return;
+  }
+  const messages = [];
+  if (!state.bridgePort) messages.push("送信ポートへ接続してください");
+  else if (!state.bridgeMcLifecycle) {
+    messages.push("「起動・周期通信開始」を押してください。通信接続開始(30,43)を送るまで、MCは変換した電文を無視します");
+  } else if (!state.bridgeMcLifecycle.healthTimer) {
+    messages.push("MCからの初期化完了(30,42)を待っています");
+  }
+  if (state.bridgeMcLifecycle && !state.bridgeMcLifecycle.deliveryNotification
+      && $("bridgeDeviceFrom").value === "locker4") {
+    messages.push("宅配ボックスを中継するときは「IC起動時：宅配通知あり」で初期化してください（MCが宅配ボックス設定異常として扱います）");
+  }
+  if (!$("bridgeMcAutoResponse").checked) {
+    messages.push("自動応答が無効です。MCからの要求へ応答しないため、MC側が処理中のまま待ち続けます");
+  }
+  element.hidden = messages.length === 0;
+  element.textContent = messages.length ? `⚠ ${messages[0]}` : "";
+}
+
 // 送信ポートで受けたバイト列。ACK/NAKは送信手順の待ち行列へ渡し、ENQと電文へは
 // 変換先の規定に沿って応答する。応答しないと相手はENQの再送を続ける。
 function handleBridgePortReceive(bytes) {
   state.bridgeLastIoAt = Date.now();
   const reader = bridgePortReader();
-  const relay = bridgeMode() !== "device" && $("bridgeReverse").checked;
+  const device = bridgeMode() === "device";
+  const relay = !device && $("bridgeReverse").checked;
   for (const item of reader.push(bytes)) {
     if (item.type === "control") {
       const consumed = dispatchControl([item.code], state.bridgeControlWaiters);
-      handleBridgePortControl(item.code, consumed, relay);
+      // 装置→MC変換でも、MCが送ってくるENQへACKを返さないと初期化完了を受け取れない。
+      handleBridgePortControl(item.code, consumed, relay || device);
       continue;
     }
     if (item.type === "error") {
@@ -4060,9 +4294,18 @@ function handleBridgePortReceive(bytes) {
     }
     state.rxFrames += 1;
     updateMetrics();
-    addLog("info", "PARSE2", item.bytes, "送信ポートで電文を受信");
     if (state.bridgeInboundLink) respondOnBridgePort(true, "電文");
     state.bridgeInboundLink = false;
+    // 装置→MC変換では、MCからの初期化・要求電文で起動シーケンスと自動応答を回す。
+    if (device) {
+      try {
+        handleBridgeMcFrame(item.bytes);
+      } catch (error) {
+        logError(error, "送信ポートのMC電文");
+      }
+      continue;
+    }
+    addLog("info", "PARSE2", item.bytes, "送信ポートで電文を受信");
     if (!relay) continue;
     try {
       handleBridgeFrame(item.bytes, "reverse");
@@ -4072,14 +4315,14 @@ function handleBridgePortReceive(bytes) {
   }
 }
 
-function handleBridgePortControl(code, consumed, relay) {
+function handleBridgePortControl(code, consumed, accepts) {
   if (consumed) return;
   // 待ち行列で消費されなかったACK/NAKは、こちらの送信と対応しないため記録だけ残す。
   if (code !== 0x05) {
     if (code === 0x04) state.bridgeInboundLink = false;
     return;
   }
-  if (!relay || !bridgeTargetUsesHandshake() || bridgeTransportMode() === "direct") return;
+  if (!accepts || !bridgeTargetUsesHandshake() || bridgeTransportMode() === "direct") return;
   state.bridgeInboundLink = true;
   respondOnBridgePort(true, "ENQ");
 }
@@ -5111,6 +5354,9 @@ function navigate(view) {
     return;
   }
   if (state.currentView === "mansion" && view !== "mansion") stopMcLifecycle("画面切替により起動・周期通信を停止しました");
+  if (state.currentView === "bridge" && view !== "bridge") {
+    stopBridgeMcLifecycle("画面切替により送信ポートの起動・周期通信を停止しました");
+  }
   if (state.currentView === "panasonicElevator" && view !== "panasonicElevator") {
     $("pevAutoHealth").checked = false;
     stopPanasonicElevatorHealth("画面切替により周期監視を停止しました");
@@ -5670,6 +5916,14 @@ function bindEvents() {
   });
   $("bridgePortPreset").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信ポート条件"); } });
   $("bridgeTransport").addEventListener("change", () => { try { syncBridgePortFields(); } catch (error) { logError(error, "送信方式"); } });
+  $("bridgeMcStart").addEventListener("click", () => {
+    withTransaction("MC起動シーケンス（送信ポート）", startBridgeMcLifecycle)
+      .catch((error) => logError(error, "MC起動シーケンス（送信ポート）"));
+  });
+  $("bridgeMcStop").addEventListener("click", () => stopBridgeMcLifecycle());
+  ["bridgeMcAutoResponse", "bridgeMcDelivery"].forEach((id) => {
+    $(id).addEventListener("change", () => { try { updateBridgeMcGuidance(); } catch (error) { logError(error, "MC起動シーケンス"); } });
+  });
   ["bridgeMode", "bridgeDeviceFrom", "bridgeMcVersion"].forEach((id) => $(id).addEventListener("change", () => {
     try { syncBridgeForm(); } catch (error) { logError(error, "変換設定"); }
   }));
